@@ -1,0 +1,36 @@
+{
+  "name": "swarm-alright",
+  "version": "0.1.0",
+  "description": "Autonomous multi-agent runs on any project folder, powered by opencode + Ollama Cloud",
+  "type": "module",
+  "author": "kimi k3 from moonshot ai",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevinkicho/swarm_alright.git"
+  },
+  "homepage": "https://github.com/kevinkicho/swarm_alright#readme",
+  "bugs": "https://github.com/kevinkicho/swarm_alright/issues",
+  "keywords": [
+    "opencode",
+    "agents",
+    "swarm",
+    "blackboard",
+    "autonomous",
+    "ollama",
+    "ollama-cloud",
+    "ai-agents"
+  ],
+  "bin": {
+    "swarm": "./src/cli.ts"
+  },
+  "scripts": {
+    "swarm": "node src/cli.ts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
+  }
+}
