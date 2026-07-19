@@ -6,6 +6,11 @@ works on it forever in a plan → build → audit loop, coordinating through a s
 blackboard and git. Built on top of the [opencode](https://opencode.ai) server
 and SDK, powered by [Ollama Cloud](https://ollama.com/cloud) models.
 
+<p align="center">
+  <img src="screenshots/storage/ktopology.gif" width="45%" alt="Topology run demo" />
+  <img src="screenshots/storage/kyahoo.gif" width="45%" alt="Road to Reality run demo" />
+</p>
+
 - **Autonomous & infinite**: runs cycle forever on their own — planning, building,
   testing, merging — with retries and backoff when things fail
 - **Blackboard swarm**: agents coordinate through a shared `BLACKBOARD.md`
@@ -22,38 +27,42 @@ and SDK, powered by [Ollama Cloud](https://ollama.com/cloud) models.
 
 ## Table of contents
 
-- [Requirements](#requirements)
-- [Install](#install)
 - [Quick start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [One-time setup](#one-time-setup)
+  - [Start your first run](#start-your-first-run)
 - [Commands](#commands)
 - [How it works](#how-it-works)
 - [Documentation](#documentation)
 - [License](#license)
 
-## Requirements
+## Quick start
 
-- **Node.js ≥ 22.6** (the app is TypeScript run natively — no build step)
-- **opencode CLI** installed and on PATH (`npm i -g opencode-ai`)
+### Prerequisites
+
+- **Node.js ≥ 22.6** — the app is TypeScript run natively, no build step
+- **opencode CLI** — `npm i -g opencode-ai` (the app spawns `opencode serve` per run)
 - **git** on PATH
-- An **[Ollama Cloud](https://ollama.com/settings/keys) API key**
+- An **[Ollama Cloud](https://ollama.com/settings/keys) API key** — the app uses
+  Ollama Cloud models (`deepseek-v4-flash`, `gemma4:31b`, etc.) via the
+  OpenAI-compatible endpoint at `https://ollama.com/v1`
 
-## Install
+### One-time setup
 
 ```powershell
 git clone https://github.com/kevinkicho/swarm_alright.git
 cd swarm_alright
 ```
 
-No dependencies to install — the app is zero-dependency TypeScript executed by
-Node's native type stripping.
-
-Put your Ollama Cloud key in `.env` in the repo root (gitignored), or export it:
+Put your Ollama Cloud key in `.env` (gitignored, never committed):
 
 ```
 OLLAMA_API_KEY=your_key_here
 ```
 
-## Quick start
+That's it — the app has zero runtime dependencies.
+
+### Start your first run
 
 The fastest way is the interactive hub (firebase-init style):
 
@@ -61,7 +70,7 @@ The fastest way is the interactive hub (firebase-init style):
 node src/cli.ts
 ```
 
-It shows active runs in a status panel and walks you through everything with
+It shows a status panel of active runs and walks you through everything with
 arrow-key menus: start a run (folder → directive → workers → per-role models
 picked from your live Ollama Cloud model list), restart from history, watch,
 attach, stop, prune.
