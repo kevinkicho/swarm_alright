@@ -108,6 +108,14 @@ ${feedback}
   }
 
   async start(): Promise<void> {
+    // Catch crashes that slip through — log them to the run log before dying.
+    process.on("unhandledRejection", (reason) => {
+      this.log(`[FATAL] unhandled rejection: ${reason instanceof Error ? reason.message : String(reason)}`)
+    })
+    process.on("uncaughtException", (err) => {
+      this.log(`[FATAL] uncaught exception: ${err.message}`)
+    })
+
     const project = path.resolve(this.opts.project)
     if (!fs.existsSync(project) || !fs.statSync(project).isDirectory()) {
       throw new Error(`project folder does not exist: ${project}`)

@@ -217,27 +217,29 @@ export class EventBus {
       list.push({ resolve, reject })
       this.waiters.set(sessionID, list)
 
-      const poll = setInterval(async () => {
+      const poll = setInterval(() => {
         if (shouldStop?.()) {
           clearInterval(poll)
           reject(new Error("stopped"))
           return
         }
-        try {
-          const statuses = await this.api.sessionStatus(directory)
-          const status = statuses[sessionID]
-          if (!status || status.type === "idle") {
+        this.api.sessionStatus(directory).then(
+          (statuses) => {
+            const status = statuses[sessionID]
+            if (!status || status.type === "idle") {
+              clearInterval(poll)
+              const pending = this.waiters.get(sessionID) ?? []
+              this.waiters.delete(sessionID)
+              for (const w of pending) w.resolve()
+            }
+          },
+          (err) => {
             clearInterval(poll)
             const pending = this.waiters.get(sessionID) ?? []
             this.waiters.delete(sessionID)
-            for (const w of pending) w.resolve()
-          }
-        } catch (err) {
-          clearInterval(poll)
-          const pending = this.waiters.get(sessionID) ?? []
-          this.waiters.delete(sessionID)
-          for (const w of pending) w.reject(err instanceof Error ? err : new Error(String(err)))
-        }
+            for (const w of pending) w.reject(err instanceof Error ? err : new Error(String(err)))
+          },
+        )
       }, 4000)
     })
   }
