@@ -209,7 +209,7 @@ export class EventBus {
     }
   }
 
-  /** Resolve when the session becomes idle; reject on session error or stop. Polls as a fallback to SSE. */
+  /** Resolve when the session becomes idle; reject on session error, stop, or 30-min timeout. Polls as a fallback to SSE. */
   async waitIdle(directory: string, sessionID: string, shouldStop?: () => boolean): Promise<void> {
     this.start()
     return new Promise<void>((resolve, reject) => {
@@ -217,9 +217,17 @@ export class EventBus {
       list.push({ resolve, reject })
       this.waiters.set(sessionID, list)
 
+      const timeout = setTimeout(() => {
+        clearInterval(poll)
+        const pending = this.waiters.get(sessionID) ?? []
+        this.waiters.delete(sessionID)
+        for (const w of pending) w.reject(new Error("turn timed out after 30 minutes"))
+      }, 30 * 60 * 1000)
+
       const poll = setInterval(() => {
         if (shouldStop?.()) {
           clearInterval(poll)
+          clearTimeout(timeout)
           reject(new Error("stopped"))
           return
         }
@@ -228,6 +236,7 @@ export class EventBus {
             const status = statuses[sessionID]
             if (!status || status.type === "idle") {
               clearInterval(poll)
+              clearTimeout(timeout)
               const pending = this.waiters.get(sessionID) ?? []
               this.waiters.delete(sessionID)
               for (const w of pending) w.resolve()
@@ -235,6 +244,7 @@ export class EventBus {
           },
           (err) => {
             clearInterval(poll)
+            clearTimeout(timeout)
             const pending = this.waiters.get(sessionID) ?? []
             this.waiters.delete(sessionID)
             for (const w of pending) w.reject(err instanceof Error ? err : new Error(String(err)))
