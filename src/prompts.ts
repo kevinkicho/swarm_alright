@@ -75,7 +75,9 @@ Your job each cycle:
    git -C "${worker.worktree}" commit -m "swarm ${ctx.id} ${worker.name}: <short summary>"
 6. Append ONE line to the WORK LOG section of the blackboard:
    - cycle <n> ${worker.name}: DONE <summary>   (or: BLOCKED <reason>)
-Do not edit any other blackboard section. Do not commit outside your worktree. Do not stop until the contract is implemented and committed, or you are truly blocked.`
+Do not edit any other blackboard section. Do not commit outside your worktree. Do not stop until the contract is implemented and committed, or you are truly blocked.
+
+IMPORTANT — bash timeouts: If a bash command runs for more than 2 minutes without producing new output, press Ctrl+C to abort it and try a different approach. Do not let commands hang forever. Prefer commands that have built-in timeouts (e.g., \`npm install\` with \`--timeout=60000\`).`
 }
 
 export function auditorSystem(ctx: RunContext): string {

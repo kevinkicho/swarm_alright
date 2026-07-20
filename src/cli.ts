@@ -3,7 +3,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { Run } from "./run.ts"
 import { spawnDetachedRun } from "./detach.ts"
-import { killServerByPort } from "./opencode.ts"
+import { killServerByPort, Api } from "./opencode.ts"
+import { PROVIDER_ID, bareModel } from "./config.ts"
 import { watch } from "./watch.ts"
 import { pick } from "./pick.ts"
 import { wizard } from "./wizard.ts"
@@ -22,6 +23,7 @@ Usage:
   swarm ls                       List all runs
   swarm watch [run-id]           Live terminal dashboard: todo-board + activity (all runs, or one run)
   swarm tui [run-id]             Attach the full opencode TUI to an agent's session in a run
+  swarm interject [run-id]       Abort the current turn and send a new prompt to an agent
   swarm logs [run-id]            Tail a run's event log
   swarm stop [run-id]            Stop a running run gracefully
   swarm clean                    Prune finished/errored runs from the registry
@@ -212,6 +214,45 @@ function cmdClean(): void {
   if (crashed.length) console.log(`also killed ${crashed.length} orphaned opencode server(s) from crashed run(s)`)
 }
 
+async function cmdInterject(args: Args): Promise<void> {
+  const id = args.positional[0] ?? (await pickRunId((r) => r.status === "running" && Registry.alive(r.pid)))
+  const rec = id ? Registry.load(id) : undefined
+  if (!rec) {
+    console.error(id === undefined ? "error: no run selected (no active runs?)" : `error: unknown run id "${id}"`)
+    process.exit(1)
+  }
+  const agents = rec.agents ?? []
+  if (!agents.length) {
+    console.error(`error: no agent sessions found for run ${id}`)
+    process.exit(1)
+  }
+  let agentName = args.flags.agent
+  if (!agentName) {
+    agentName = await pick(
+      `interject into which agent?  (↑/↓, enter, esc)`,
+      agents.map((a) => ({ label: a.name, hint: a.model, value: a.name })),
+    )
+  }
+  const agent = agents.find((a) => a.name === agentName || a.role === agentName)
+  if (!agent) {
+    console.error(`error: no agent "${agentName}" in run ${id}`)
+    process.exit(1)
+  }
+  const message = args.flags.message ?? args.positional.slice(1).join(" ")
+  if (!message) {
+    console.error("error: --message is required (or pass the message as the last argument)")
+    process.exit(1)
+  }
+  const api = new Api(`http://127.0.0.1:${rec.port}`)
+  console.log(`aborting ${agent.name}'s current turn and sending: "${message.slice(0, 80)}..."`)
+  await api.abort(agent.directory, agent.sessionID)
+  await api.promptAsync(agent.directory, agent.sessionID, {
+    model: { providerID: PROVIDER_ID, modelID: bareModel(agent.model) },
+    parts: [{ type: "text", text: message }],
+  })
+  console.log("interjection sent — the agent will process it now")
+}
+
 async function cmdModels(args: Args): Promise<void> {
   const key = loadApiKey(args.flags["api-key"])
   const res = await fetch("https://ollama.com/api/tags", {
@@ -252,6 +293,9 @@ async function main(): Promise<void> {
       break
     case "tui":
       await cmdTui(args)
+      break
+    case "interject":
+      await cmdInterject(args)
       break
     case "models":
       await cmdModels(args)
