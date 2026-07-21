@@ -75,25 +75,54 @@ function lastActivity(rec: Registry.RunRecord): string {
 }
 
 function statusPanel(): void {
+  Registry.reconcileCrashed()
   const width = Math.min((process.stdout.columns ?? 100) - 2, 110)
   const runs = Registry.list()
   const active = runs.filter((r) => r.status === "running" && Registry.alive(r.pid))
+  const crashed = runs.filter((r) => Registry.effectiveStatus(r) === "crashed")
   if (!active.length) {
-    console.log(frameBox("swarm", ["no active runs", `${runs.length} run(s) in history — restart one, or start a new one`], width).join("\n"), "\n")
+    const hints = [
+      `${runs.length} run(s) in history — restart or continue a lineage`,
+      crashed.length ? `${crashed.length} crashed — swarm clean, then swarm restart` : "",
+      "prefer: swarm run <folder> --continue  (one branch lineage, not a fork mess)",
+      "diagnose: swarm doctor <folder>",
+    ].filter(Boolean)
+    console.log(frameBox("swarm command center", ["no active runs", ...hints], width).join("\n"), "\n")
     return
   }
   const lines: string[] = []
   for (const r of active) {
-    lines.push(`${r.id}  cycle ${r.cycle}  ${path.basename(r.project)}  (planner+auditor+${r.workers ?? "?"} workers)`)
+    lines.push(
+      `${r.id}  cycle ${r.cycle}  ${r.phase ?? "?"}  ${path.basename(r.project)}  (p+a+${r.workers ?? "?"}w)`,
+    )
     const last = lastActivity(r)
-    if (last) lines.push(`  last: ${last}`)
+    if (last) lines.push(`  ${last}`)
   }
-  console.log(frameBox(`active runs (${active.length})`, lines, width).join("\n"), "\n")
+  console.log(frameBox(`command center — ${active.length} alive`, lines, width).join("\n"), "\n")
 }
 
 async function newRunFlow(): Promise<void> {
   const folder = await askFolder()
   if (!folder) return
+
+  // Prefer continuing one lineage (avoids swarm/<id> branch sprawl)
+  let resumeFrom: string | undefined
+  try {
+    const { findLatestSwarmBase, listSwarmRunIds } = await import("./git.ts")
+    const ids = await listSwarmRunIds(folder)
+    const latest = await findLatestSwarmBase(folder)
+    if (latest && ids.length) {
+      console.log(`\n  found ${ids.length} prior swarm lineage(s); latest accepted base: ${latest.branch} @ ${latest.sha}`)
+      const cont = await question("continue that lineage? (recommended) [Y/n]: ")
+      if (!cont || /^y/i.test(cont)) {
+        resumeFrom = latest.runId
+        console.log(`  → will resume from run ${resumeFrom}`)
+      } else {
+        console.log("  → fresh base (new swarm/<id> branches). Clean old ones later: swarm clean --branches --project …")
+      }
+    }
+  } catch {}
+
   const directive = await askText("directive (empty = planner infers the mission from the project)")
   const workers = await askWorkers()
 
@@ -113,6 +142,7 @@ async function newRunFlow(): Promise<void> {
 
   console.log("\nabout to start:\n")
   console.log(`  project:   ${folder}`)
+  console.log(`  lineage:   ${resumeFrom ? `continue ${resumeFrom}` : "fresh swarm/<new-id> base"}`)
   console.log(`  directive: ${directive || "(planner infers from project)"}`)
   console.log(`  agents:    planner + auditor + ${workers} worker(s)`)
   console.log(`  models:    planner=${models.planner}  worker=${models.worker}  auditor=${models.auditor}\n`)
@@ -135,12 +165,19 @@ async function newRunFlow(): Promise<void> {
       "--auditor-model",
       models.auditor,
       ...(directive ? ["--directive", directive] : []),
+      ...(resumeFrom ? ["--continue"] : []),
     ]
     const pid = spawnDetachedRun(args)
-    console.log(`run starting in background (pid ${pid}) — find it under \`swarm ls\`, watch with \`swarm watch\`, stop with \`swarm stop\`.`)
+    console.log(`run starting in background (pid ${pid}) — swarm status / watch / stop`)
     return
   }
-  const run = new Run({ project: folder, directive: directive || undefined, workers, models })
+  const run = new Run({
+    project: folder,
+    directive: directive || undefined,
+    workers,
+    models,
+    resumeFrom,
+  })
   await run.start()
   process.exit(0)
 }
@@ -187,18 +224,23 @@ export async function wizard(): Promise<void> {
     const active = runs.filter((r) => r.status === "running" && Registry.alive(r.pid))
     const finished = runs.length - active.length
     const action = await pick(
-      "what do you want to do?  (↑/↓, enter, esc to exit)",
+      "command center  (↑/↓, enter, esc to exit)",
       [
-        { label: "start a new run", hint: "guided setup: folder, directive, workers, models", value: "new" },
-        ...(runs.length ? [{ label: "restart a run from history", hint: "continues its blackboard + accepted work", value: "restart" }] : []),
+        { label: "start / continue a run", hint: "prefers continuing latest swarm base (less branch mess)", value: "new" },
+        ...(runs.length
+          ? [{ label: "restart a run from history", hint: "blackboard + accepted base", value: "restart" }]
+          : []),
+        { label: "status", hint: "phase, git ahead, opencode busy (facilitation snapshot)", value: "status" },
+        { label: "doctor", hint: "branch sprawl, dirty root, worktrees, tips", value: "doctor" },
         ...(active.length
           ? [
-              { label: `watch ${active.length} active run(s)`, hint: "live dashboard", value: "watch" },
-              { label: "attach to an agent", hint: "full opencode TUI on a live agent session", value: "attach" },
+              { label: `watch ${active.length} active run(s)`, hint: "live board", value: "watch" },
+              { label: "attach (OpenCode TUI)", hint: "opencode attach to a live agent session", value: "attach" },
               { label: "stop a run", hint: "graceful shutdown", value: "stop" },
             ]
           : []),
-        ...(finished ? [{ label: `prune ${finished} finished run(s) from history`, value: "clean" }] : []),
+        ...(finished ? [{ label: `prune ${finished} finished run record(s)`, value: "clean" }] : []),
+        { label: "clean branches & worktrees", hint: "drop dead swarm/* refs and worktrees", value: "prune-git" },
         { label: "list ollama cloud models", value: "models" },
         { label: "exit", value: "exit" },
       ],
@@ -209,12 +251,39 @@ export async function wizard(): Promise<void> {
       await restartInteractive({})
       continue
     }
+    if (action === "status") {
+      const { printStatus } = await import("./doctor.ts")
+      await printStatus()
+      await question("press enter")
+      continue
+    }
+    if (action === "doctor") {
+      const folder = await askText("project folder", process.cwd())
+      const { printDoctor } = await import("./doctor.ts")
+      await printDoctor(folder)
+      await question("press enter")
+      continue
+    }
     if (action === "watch") return watch()
     if (action === "attach") return attachFlow()
     if (action === "stop") await stopFlow()
     if (action === "clean") {
       const { pruned, kept } = Registry.pruneFinished()
       console.log(`pruned ${pruned} finished run record(s) (${kept} kept). Run folders on disk are untouched.`)
+    }
+    if (action === "prune-git") {
+      const folder = await askText("project folder", process.cwd())
+      const { spawn } = await import("node:child_process")
+      // Reuse CLI clean path
+      const cli = process.argv[1]
+      await new Promise<void>((resolve) => {
+        const p = spawn(process.execPath, ["--experimental-strip-types", cli, "clean", "--worktrees", "--branches", "--project", folder], {
+          stdio: "inherit",
+        })
+        p.on("exit", () => resolve())
+      })
+      await question("press enter")
+      continue
     }
     if (action === "models") await modelsFlow()
   }

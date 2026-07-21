@@ -38,6 +38,34 @@ wizard) starts the run as a console-less background process:
 - Shows up in `swarm ls`/`swarm watch` a few seconds later
 - Also available on `swarm restart --detach`
 
+## One project, one lineage (avoid branch mess)
+
+Each run creates `swarm/<run-id>/base` and `swarm/<run-id>/wN`.  
+Starting **fresh** runs forever → dozens of disconnected branches and half-finished worktrees.
+
+**Do this instead:**
+
+```text
+swarm run <folder> --continue          # latest swarm/*/base on that project
+swarm restart <old-run-id>             # same idea + old blackboard
+swarm doctor <folder>                  # see how many lineages you have
+swarm clean --branches --project <folder>
+swarm clean --worktrees --project <folder>
+```
+
+Command center (`swarm` with no args) asks to continue the latest base by default.
+
+## Command center (OpenCode-style ops)
+
+| Command | Role |
+| --- | --- |
+| `swarm` | Interactive hub (status strip + actions) |
+| `swarm status [id]` | Facilitation snapshot: phase, w1 ahead, re-home signals, OpenCode busy (SDK) |
+| `swarm doctor [folder]` | Branch sprawl, dirty root, worktrees, continue tip |
+| `swarm tui` | Official OpenCode attach to a live agent session |
+
+Reliability is not “more agent chatter” — it is **visible state + one lineage + host git gates** (re-home, commit, audit only when ahead).
+
 ## Restarting from history
 
 `swarm restart` works on any stopped/errored/crashed run:

@@ -14,42 +14,38 @@ import { DEFAULT_MODELS, loadApiKey, type Models } from "./config.ts"
 import { runDetail } from "./runview.ts"
 import * as Registry from "./registry.ts"
 
-const USAGE = `swarm — autonomous multi-agent runs on any project folder
+const USAGE = `swarm — command center for autonomous multi-agent runs (OpenCode + Ollama Cloud)
 
 Usage:
-  swarm                          Interactive guided setup (firebase-init style)
-  swarm run <folder> [options]   Start an autonomous run on a project folder
-  swarm restart [run-id]         Restart a run from history: confirm params, continue its work
+  swarm                          Interactive command center (status + actions)
+  swarm status [run-id]          Live facilitation snapshot (phase, git ahead, opencode busy)
+  swarm doctor [folder]          Diagnose branch mess, dirty root, dead worktrees, tips
+  swarm run <folder> [options]   Start a run (prefer --continue to stay on one lineage)
+  swarm restart [run-id]         Continue a past run's blackboard + accepted base
   swarm ls                       List all runs
-  swarm watch [run-id]           Live terminal dashboard: todo-board + activity (all runs, or one run)
-  swarm tui [run-id]             Attach the full opencode TUI to an agent's session in a run
-  swarm logs [run-id]            Tail a run's event log
-  swarm stop [run-id]            Stop a running run gracefully
-  swarm clean                    Prune finished/errored runs from the registry
-  swarm clean --worktrees        Also remove git worktrees for dead runs (optional --project <folder>)
-  swarm models                   List available Ollama Cloud models
-
-  swarm help                     Show this help
-
-run-id is optional for tui/logs/stop — omit it to pick from an interactive arrow-key list.
-
-restart options: same model/worker flags as run, plus --yes (accept previous params, no prompts),
-  --detach (background, survives terminal closing), and --project <folder> (load history from
-  the project's .swarm/runs if the registry was pruned)
+  swarm watch [run-id]           Live todo-board + activity
+  swarm tui [run-id]             Attach OpenCode TUI to an agent session (opencode attach)
+  swarm logs [run-id]            Tail events.log
+  swarm stop [run-id]            Graceful stop
+  swarm clean                    Prune finished registry records (+ orphan servers)
+  swarm clean --worktrees        Also drop git worktrees for dead runs
+  swarm clean --branches         Also delete swarm/<dead-id>/* branches
+  swarm models                   List Ollama Cloud models
+  swarm help                     This help
 
 run options:
-  --directive "..."    Mission for the swarm (optional; without it the planner infers the mission from the project)
-  --workers N          Number of worker agents (default 1). Total agents = workers + planner + auditor
-  --planner-model M    Model for the planner  (default ${DEFAULT_MODELS.planner})
-  --worker-model M     Model for the workers  (default ${DEFAULT_MODELS.worker})
-  --auditor-model M    Model for the auditor  (default ${DEFAULT_MODELS.auditor})
-  --model M            Shorthand: use M for all three roles
-  --api-key K          Ollama Cloud API key (or set OLLAMA_API_KEY / .env)
-  --max-cycles N       Stop after N cycles (default: run forever)
-  --detach             Run in background — survives closing the terminal (stop with \`swarm stop\`)
+  --continue           Resume from latest swarm/*/base on this project (avoids branch sprawl)
+  --directive "..."    Mission (optional)
+  --workers N          Workers 1–8 (default 1)
+  --planner-model M    (default ${DEFAULT_MODELS.planner})
+  --worker-model M     (default ${DEFAULT_MODELS.worker})
+  --auditor-model M    (default ${DEFAULT_MODELS.auditor})
+  --model M            Same model for all roles
+  --api-key K          Or OLLAMA_API_KEY / .env
+  --max-cycles N       Stop after N cycles
+  --detach             Background (survives terminal close)
 
-Models are Ollama Cloud model ids, e.g. deepseek-v4-flash, gemma4:31b, nemotron-3-nano:30b.
-Runs are concurrent: start several \`swarm run\` commands (same or different folders) in separate terminals.
+Tip: one project → one alive run. New work should --continue or restart, not fork endless swarm/<id> branches.
 `
 
 type Args = { positional: string[]; flags: Record<string, string> }
@@ -97,10 +93,23 @@ async function cmdRun(args: Args): Promise<void> {
     auditor: args.flags["auditor-model"] ?? all ?? DEFAULT_MODELS.auditor,
   }
   const maxCycles = args.flags["max-cycles"] ? Number(args.flags["max-cycles"]) : undefined
+  const project = path.resolve(folder)
+
+  // --continue: stay on one accepted-work lineage (latest swarm/*/base) instead of forking a disconnected base
+  let resumeFrom = args.flags["resume-from"]
+  if (args.flags.continue === "true" || args.flags.continue) {
+    const { findLatestSwarmBase } = await import("./git.ts")
+    const latest = await findLatestSwarmBase(project)
+    if (!latest) {
+      console.error(`error: --continue but no swarm/*/base found under ${project}`)
+      process.exit(1)
+    }
+    resumeFrom = latest.runId
+    console.log(`continuing lineage from ${latest.branch} @ ${latest.sha} (run ${latest.runId})`)
+  }
+
   if (args.flags.detach === "true") {
-    // Single-flight check before detach so we fail fast in the parent shell
     const { loadProjectConfig } = await import("./project-config.ts")
-    const project = path.resolve(folder)
     const cfg = loadProjectConfig(project)
     if (cfg.singleFlight) {
       const clash = Registry.list().find(
@@ -117,11 +126,34 @@ async function cmdRun(args: Args): Promise<void> {
         process.exit(1)
       }
     }
-    const childArgs = ["run", folder, ...Object.entries(args.flags).flatMap(([k, v]) => (k === "detach" ? [] : [ `--${k}`, v ]))]
+    const childArgs = [
+      "run",
+      folder,
+      ...Object.entries(args.flags).flatMap(([k, v]) => (k === "detach" ? [] : [`--${k}`, v])),
+    ]
     const pid = spawnDetachedRun(childArgs)
-    console.log(`run starting in background (pid ${pid}) — it will appear in \`swarm ls\` shortly. Watch with \`swarm watch\`, stop with \`swarm stop\`.`)
+    console.log(
+      `run starting in background (pid ${pid}) — swarm status / swarm watch / swarm stop`,
+    )
     return
   }
+
+  // Warn when forking a fresh base while prior swarm bases exist (branch sprawl)
+  if (!resumeFrom) {
+    try {
+      const { listSwarmRunIds, findLatestSwarmBase } = await import("./git.ts")
+      const ids = await listSwarmRunIds(project)
+      const latest = await findLatestSwarmBase(project)
+      if (ids.length >= 1 && latest) {
+        console.log(
+          `note: ${ids.length} prior swarm lineage(s) on this project (latest ${latest.branch}).\n` +
+            `  Prefer: swarm run "${folder}" --continue …  or  swarm restart ${latest.runId}\n` +
+            `  Fresh run will create yet another swarm/<new-id>/base. Prune later: swarm clean --branches --project "${folder}"`,
+        )
+      }
+    } catch {}
+  }
+
   const run = new Run({
     project: folder,
     directive: args.flags.directive,
@@ -129,9 +161,9 @@ async function cmdRun(args: Args): Promise<void> {
     models,
     maxCycles,
     apiKey: args.flags["api-key"],
+    resumeFrom,
   })
   await run.start()
-  // Guarantee exit even if a socket outlived the server shutdown.
   process.exit(0)
 }
 
@@ -225,44 +257,50 @@ async function cmdTui(args: Args): Promise<void> {
 }
 
 async function cmdClean(args: Args): Promise<void> {
-  // Crashed runs (marked running but process is gone) leave their opencode servers orphaned.
   const crashed = Registry.list().filter((r) => r.status === "running" && !Registry.alive(r.pid))
   for (const r of crashed) killServerByPort(r.port)
   const { pruned, kept } = Registry.pruneFinished()
-  console.log(`pruned ${pruned} finished run record(s) (${kept} kept). Run folders on disk are untouched by default.`)
-  if (crashed.length) console.log(`also killed ${crashed.length} orphaned opencode server(s) from crashed run(s)`)
+  console.log(`pruned ${pruned} finished run record(s) (${kept} kept). Run folders on disk stay by default.`)
+  if (crashed.length) console.log(`also killed ${crashed.length} orphaned opencode server(s)`)
 
-  // Optional: remove git worktrees for dead runs under one or more projects.
-  if (args.flags.worktrees === "true" || args.flags.worktrees) {
-    const { pruneStaleWorktrees } = await import("./git.ts")
-    const keep = new Set(
-      Registry.list()
-        .filter((r) => r.status === "running" && Registry.alive(r.pid))
-        .map((r) => r.id),
-    )
-    const projects = new Set<string>()
-    if (args.flags.project) projects.add(path.resolve(args.flags.project))
-    for (const r of Registry.list()) projects.add(path.resolve(r.project))
-    // Also scan disk run folders for project paths we know about
-    for (const r of Registry.list()) {
-      try {
-        const disk = Registry.loadFromDisk(r.project, r.id)
-        if (disk) projects.add(path.resolve(disk.project))
-      } catch {}
-    }
-    let totalRemoved = 0
+  const keep = new Set(
+    Registry.list()
+      .filter((r) => r.status === "running" && Registry.alive(r.pid))
+      .map((r) => r.id),
+  )
+  const projects = new Set<string>()
+  if (args.flags.project) projects.add(path.resolve(args.flags.project))
+  for (const r of Registry.list()) projects.add(path.resolve(r.project))
+
+  const doWorktrees = args.flags.worktrees === "true" || !!args.flags.worktrees
+  const doBranches = args.flags.branches === "true" || !!args.flags.branches
+
+  if (doWorktrees || doBranches) {
+    const { pruneStaleWorktrees, pruneSwarmBranches } = await import("./git.ts")
     for (const project of projects) {
-      try {
-        const { removed } = await pruneStaleWorktrees(project, keep)
-        if (removed.length) {
-          console.log(`worktrees pruned under ${project}: ${removed.join(", ")}`)
-          totalRemoved += removed.length
+      if (doWorktrees) {
+        try {
+          const { removed } = await pruneStaleWorktrees(project, keep)
+          if (removed.length) console.log(`worktrees pruned ${project}: ${removed.join(", ")}`)
+        } catch (err) {
+          console.log(`worktree prune skipped ${project}: ${err instanceof Error ? err.message : String(err)}`)
         }
-      } catch (err) {
-        console.log(`worktree prune skipped for ${project}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      if (doBranches) {
+        try {
+          // Remove worktrees first so branch -D succeeds
+          if (!doWorktrees) await pruneStaleWorktrees(project, keep)
+          const { deleted } = await pruneSwarmBranches(project, keep)
+          if (deleted.length) {
+            console.log(`branches deleted under ${project} (${deleted.length}):`)
+            for (const b of deleted.slice(0, 30)) console.log(`  ${b}`)
+            if (deleted.length > 30) console.log(`  … +${deleted.length - 30} more`)
+          } else console.log(`no dead swarm/* branches under ${project}`)
+        } catch (err) {
+          console.log(`branch prune skipped ${project}: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
     }
-    if (!totalRemoved) console.log("no stale worktrees removed (alive run worktrees are kept)")
   }
 }
 
@@ -292,6 +330,16 @@ async function main(): Promise<void> {
     case "ls":
       cmdLs()
       break
+    case "status": {
+      const { printStatus } = await import("./doctor.ts")
+      await printStatus(args.positional[0])
+      break
+    }
+    case "doctor": {
+      const { printDoctor } = await import("./doctor.ts")
+      await printDoctor(args.positional[0] ?? args.flags.project)
+      break
+    }
     case "stop":
       await cmdStop(args)
       break

@@ -229,6 +229,66 @@ export async function restoreTrackedPathsToHead(repo: string, paths: string[]): 
   return restored
 }
 
+/** List run ids that have swarm/<id>/base (or any swarm/<id>/*) branches. */
+export async function listSwarmRunIds(repo: string): Promise<string[]> {
+  const out = await gitAllowFail(repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads/swarm"])
+  if (out.code !== 0 || !out.stdout) return []
+  const ids = new Set<string>()
+  for (const line of out.stdout.split(/\r?\n/)) {
+    const m = line.trim().match(/^swarm\/([^/]+)\//)
+    if (m) ids.add(m[1])
+  }
+  return [...ids].sort()
+}
+
+/** Latest swarm/<id>/base by committer date (accepted-work tip to continue from). */
+export async function findLatestSwarmBase(
+  repo: string,
+): Promise<{ runId: string; branch: string; sha: string } | undefined> {
+  const out = await gitAllowFail(repo, [
+    "for-each-ref",
+    "--sort=-committerdate",
+    "--format=%(refname:short) %(objectname:short)",
+    "refs/heads/swarm",
+  ])
+  if (out.code !== 0 || !out.stdout) return undefined
+  for (const line of out.stdout.split(/\r?\n/)) {
+    const m = line.trim().match(/^(swarm\/([^/]+)\/base)\s+(\S+)$/)
+    if (!m) continue
+    return { branch: m[1], runId: m[2], sha: m[3] }
+  }
+  return undefined
+}
+
+/**
+ * Delete swarm/<id>/* branches for run ids not in keepIds.
+ * Call after worktree remove for those ids.
+ */
+export async function pruneSwarmBranches(
+  repo: string,
+  keepIds: Set<string>,
+): Promise<{ deleted: string[]; kept: string[] }> {
+  const deleted: string[] = []
+  const kept: string[] = []
+  const out = await gitAllowFail(repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads/swarm"])
+  if (out.code !== 0 || !out.stdout) return { deleted, kept }
+  for (const line of out.stdout.split(/\r?\n/)) {
+    const ref = line.trim()
+    if (!ref) continue
+    const m = ref.match(/^swarm\/([^/]+)\//)
+    if (!m) continue
+    const id = m[1]
+    if (keepIds.has(id)) {
+      kept.push(ref)
+      continue
+    }
+    const r = await gitAllowFail(repo, ["branch", "-D", ref])
+    if (r.code === 0) deleted.push(ref)
+    else kept.push(ref)
+  }
+  return { deleted, kept }
+}
+
 /**
  * Remove git worktrees for finished runs under project/.swarm/worktrees/.
  * Keeps worktrees whose run id is still "alive" or in keepIds.
