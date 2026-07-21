@@ -21,7 +21,7 @@ Usage:
   swarm status [run-id]          Live facilitation snapshot (phase, git ahead, opencode busy)
   swarm doctor [folder]          Diagnose branch mess, dirty root, dead worktrees, tips
   swarm run <folder> [options]   Start a run (prefer --continue to stay on one lineage)
-  swarm restart [run-id]         Continue a past run's blackboard + accepted base
+  swarm restart [run-id]         Continue a past run (pick models ↑/↓; --yes keeps previous)
   swarm ls                       List all runs
   swarm watch [run-id]           Live todo-board + activity
   swarm tui [run-id]             Attach OpenCode TUI to an agent session (opencode attach)
