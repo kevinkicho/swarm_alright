@@ -6,10 +6,49 @@ Resolved in this order (first hit wins):
 
 1. `--api-key` flag
 2. `OLLAMA_API_KEY` environment variable
-3. `.env` in the current directory (`OLLAMA_API_KEY=...`)
-4. `~/.swarm/.env`
+3. `.env` in the current directory
+4. `%SWARM_HOME%\.env` and the swarm install root `.env` (via the `cli.ts` path — works when you run `swarm` from any folder)
+5. `~/.swarm/.env`
+6. `<project>/.env` or `<project>/.swarm/.env` when starting a run on a project
 
 Get a key at <https://ollama.com/settings/keys>.
+
+Your key can stay in the swarm repo `.env` next to `src/`; you do not need to
+`cd` into the repo first. Optionally copy it to `%USERPROFILE%\.swarm\.env` for a home-wide key.
+
+## Global CLI path (`SWARM_HOME`)
+
+`.\scripts\install-path.ps1` sets:
+
+| Variable | Value |
+| --- | --- |
+| `SWARM_HOME` | Absolute path to the swarm_alright repo |
+| User `Path` | Prepends `%SWARM_HOME%\bin` |
+
+Wrappers: `bin\swarm.cmd`, `bin\swarm-tui.cmd`.
+
+## Per-project config (optional)
+
+Create `<project>/.swarm/config.json` to reduce waste on *that* repo without
+changing swarm itself. Missing file = defaults (works on any project).
+
+```json
+{
+  "verify": "npm test",
+  "maxFilesPerContract": 2,
+  "linkDirs": ["node_modules"],
+  "singleFlight": true
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `verify` | _(none)_ | Shell command the **host** runs in the worktree after auto-commit when there are new commits. Result is logged and shown to the auditor. Fail-soft (never aborts the run). |
+| `maxFilesPerContract` | `3` | Host asks planner to shrink contracts that name more files than this. |
+| `linkDirs` | `["node_modules"]` if `package.json` + `node_modules` exist, else `[]` | Dirs junction/symlink from project root into each worker worktree (skips reinstall). |
+| `singleFlight` | `true` | Refuse a second concurrent alive run on the same project folder. |
+
+Keep `verify` as **your** project's normal check (unit tests, `go test ./...`, etc.). Prefer a focused command over an entire CI matrix so cycles stay cheap.
 
 ## Models
 

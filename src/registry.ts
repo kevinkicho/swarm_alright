@@ -15,9 +15,12 @@ export type RunRecord = {
   project: string
   pid: number
   port: number
-  status: "running" | "stopped" | "errored"
+  status: "running" | "stopped" | "errored" | "crashed"
   startedAt: string
   cycle: number
+  /** Updated every cycle and periodically during long waits — stale means host likely dead. */
+  lastHeartbeat?: string
+  phase?: string
   runDir: string
   models: { planner: string; worker: string; auditor: string }
   directive?: string
@@ -90,7 +93,27 @@ export function alive(pid: number): boolean {
 /** Display status: a "running" record whose process is gone actually died ungracefully. */
 export function effectiveStatus(r: RunRecord): "alive" | "crashed" | "stopped" | "errored" {
   if (r.status === "running") return alive(r.pid) ? "alive" : "crashed"
+  if (r.status === "crashed") return "crashed"
   return r.status
+}
+
+/**
+ * Persist crashed status for registry entries still marked running with a dead pid.
+ * Returns how many records were updated. Does not kill processes or delete files.
+ */
+export function reconcileCrashed(): number {
+  let n = 0
+  for (const r of list()) {
+    if (r.status !== "running") continue
+    if (alive(r.pid)) continue
+    r.status = "crashed"
+    try {
+      save(r)
+      saveLocal(r)
+      n++
+    } catch {}
+  }
+  return n
 }
 
 export function newId(): string {
@@ -99,6 +122,7 @@ export function newId(): string {
 
 /** Delete records of runs that are finished or whose process is gone. Run folders stay on disk. */
 export function pruneFinished(): { pruned: number; kept: number } {
+  reconcileCrashed()
   const runs = list()
   const dead = runs.filter((r) => r.status !== "running" || !alive(r.pid))
   for (const r of dead) {

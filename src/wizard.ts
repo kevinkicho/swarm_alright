@@ -99,7 +99,7 @@ async function newRunFlow(): Promise<void> {
 
   let apiKey: string | undefined
   try {
-    apiKey = loadApiKey()
+    apiKey = loadApiKey(undefined, folder)
   } catch {}
   const available = await fetchModels(apiKey)
   const modelList = available.length ? available : [...new Set(Object.values(DEFAULT_MODELS))]

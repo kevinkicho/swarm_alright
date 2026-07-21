@@ -1,28 +1,31 @@
 import fs from "node:fs"
 import path from "node:path"
-import { spawn } from "node:child_process"
 import { pick } from "./pick.ts"
 import { runDetail } from "./runview.ts"
 import * as Registry from "./registry.ts"
+import { attachTuiAndWait, connectClient, sessionList } from "./opencode.ts"
 
-/** Find agent sessions for a run: registry record first, then live server discovery by session title. */
+/** Find agent sessions for a run: registry record first, then SDK session.list discovery. */
 async function resolveAgents(rec: Registry.RunRecord): Promise<Registry.AgentRecord[]> {
   if (rec.agents?.length) return rec.agents
-  const base = `http://127.0.0.1:${rec.port}`
+
+  const url = `http://127.0.0.1:${rec.port}`
   const dirs = [rec.project]
   try {
     const wtRoot = path.join(rec.project, ".swarm", "worktrees", rec.id)
     for (const d of fs.readdirSync(wtRoot)) dirs.push(path.join(wtRoot, d))
   } catch {}
+
   const found: Registry.AgentRecord[] = []
   for (const dir of dirs) {
     try {
-      const res = await fetch(`${base}/session?directory=${encodeURIComponent(dir)}`)
-      if (!res.ok) continue
-      const sessions = (await res.json()) as Array<{ id: string; title?: string }>
+      // Official SDK — never raw fetch to /session
+      const client = connectClient(url, dir)
+      const sessions = await sessionList(client, dir)
       for (const s of sessions) {
-        if (!s.title?.includes(rec.id)) continue
-        const m = s.title.match(/(planner|auditor|worker-\d+)$/)
+        const title = String(s.title ?? "")
+        if (!title.includes(rec.id)) continue
+        const m = title.match(/(planner|auditor|worker-\d+)$/)
         if (!m) continue
         const name = m[1]
         found.push({
@@ -38,7 +41,7 @@ async function resolveAgents(rec: Registry.RunRecord): Promise<Registry.AgentRec
   return found.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** Attach the real opencode TUI to one agent's session of a run (picks run + agent interactively when omitted). */
+/** Attach the real opencode TUI to one agent's session of a run. */
 export async function attachFlow(id?: string, agentFlag?: string): Promise<void> {
   if (!id) {
     const active = Registry.list().filter((r) => r.status === "running" && Registry.alive(r.pid))
@@ -89,10 +92,6 @@ export async function attachFlow(id?: string, agentFlag?: string): Promise<void>
 
   const url = `http://127.0.0.1:${rec.port}`
   console.log(`attaching opencode TUI to ${agent.name} (session ${agent.sessionID}) on ${url} ...`)
-  const attachArgs = ["attach", url, "--dir", agent.directory, "--session", agent.sessionID]
-  const proc =
-    process.platform === "win32"
-      ? spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "opencode", ...attachArgs], { stdio: "inherit" })
-      : spawn("opencode", attachArgs, { stdio: "inherit" })
-  await new Promise<void>((resolve) => proc.on("exit", () => resolve()))
+  // Official CLI attach (same binary the SDK's createOpencodeServer launches)
+  await attachTuiAndWait({ url, directory: agent.directory, sessionID: agent.sessionID })
 }

@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url"
  */
 export function spawnDetachedRun(cliArgs: string[]): number {
   const cliPath = fileURLToPath(new URL("./cli.ts", import.meta.url))
-  const child = spawn(process.execPath, [cliPath, ...cliArgs], {
+  // Match bin/swarm.cmd: enable TypeScript strip-types for Node 22+.
+  const child = spawn(process.execPath, ["--experimental-strip-types", cliPath, ...cliArgs], {
     detached: true,
     windowsHide: true,
     stdio: "ignore",

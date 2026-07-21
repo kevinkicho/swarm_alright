@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { Run } from "./run.ts"
 import { spawnDetachedRun } from "./detach.ts"
-import { killServerByPort, Api } from "./opencode.ts"
+import { killServerByPort } from "./opencode.ts"
 import { PROVIDER_ID, bareModel } from "./config.ts"
 import { watch } from "./watch.ts"
 import { pick } from "./pick.ts"
@@ -23,7 +23,6 @@ Usage:
   swarm ls                       List all runs
   swarm watch [run-id]           Live terminal dashboard: todo-board + activity (all runs, or one run)
   swarm tui [run-id]             Attach the full opencode TUI to an agent's session in a run
-  swarm interject [run-id]       Abort the current turn and send a new prompt to an agent
   swarm logs [run-id]            Tail a run's event log
   swarm stop [run-id]            Stop a running run gracefully
   swarm clean                    Prune finished/errored runs from the registry
@@ -98,6 +97,21 @@ async function cmdRun(args: Args): Promise<void> {
   }
   const maxCycles = args.flags["max-cycles"] ? Number(args.flags["max-cycles"]) : undefined
   if (args.flags.detach === "true") {
+    // Single-flight check before detach so we fail fast in the parent shell
+    const { loadProjectConfig } = await import("./project-config.ts")
+    const project = path.resolve(folder)
+    const cfg = loadProjectConfig(project)
+    if (cfg.singleFlight) {
+      const clash = Registry.list().find(
+        (r) => r.status === "running" && Registry.alive(r.pid) && path.resolve(r.project) === project,
+      )
+      if (clash) {
+        console.error(
+          `error: another run is already alive on this project (${clash.id}). Stop it first, or set "singleFlight": false in .swarm/config.json`,
+        )
+        process.exit(1)
+      }
+    }
     const childArgs = ["run", folder, ...Object.entries(args.flags).flatMap(([k, v]) => (k === "detach" ? [] : [ `--${k}`, v ]))]
     const pid = spawnDetachedRun(childArgs)
     console.log(`run starting in background (pid ${pid}) — it will appear in \`swarm ls\` shortly. Watch with \`swarm watch\`, stop with \`swarm stop\`.`)
@@ -133,15 +147,19 @@ async function pickRunId(filter?: (r: Registry.RunRecord) => boolean): Promise<s
   return pick("select a run  (↑/↓ move, enter select, esc cancel)", items)
 }
 
-function cmdLs(): void {  const runs = Registry.list()
+function cmdLs(): void {
+  Registry.reconcileCrashed()
+  const runs = Registry.list()
   if (!runs.length) {
     console.log("no runs found")
     return
   }
   for (const r of runs) {
     const status = Registry.effectiveStatus(r)
+    const hb = r.lastHeartbeat ? `  hb ${r.lastHeartbeat.slice(11, 19)}` : ""
+    const phase = r.phase ? `  [${r.phase}]` : ""
     console.log(
-      `${r.id}  ${status.padEnd(8)} cycle ${String(r.cycle).padEnd(5)} ${r.project}${r.directive ? `  — ${r.directive}` : ""}`,
+      `${r.id}  ${status.padEnd(8)} cycle ${String(r.cycle).padEnd(5)} ${r.project}${phase}${hb}${r.directive ? `  — ${r.directive.slice(0, 60)}` : ""}`,
     )
   }
 }
@@ -158,9 +176,9 @@ async function cmdStop(args: Args): Promise<void> {
     return
   }
   fs.writeFileSync(path.join(rec.runDir, "STOP"), new Date().toISOString())
-  console.log(`stop requested for run ${id} (graceful, finishes current agent turn)...`)
-  const deadline = Date.now() + 120_000
-  while (Date.now() < deadline) {
+  console.log(`stop requested for run ${id} — waiting for it to finish the current turn...`)
+  console.log("(Ctrl+C here to stop waiting — the run will keep shutting down)")
+  while (true) {
     await new Promise((r) => setTimeout(r, 2000))
     const cur = Registry.load(id)
     if (!cur || cur.status !== "running" || !Registry.alive(cur.pid)) {
@@ -168,10 +186,6 @@ async function cmdStop(args: Args): Promise<void> {
       return
     }
   }
-  console.error(`run ${id} did not stop in time; killing pid ${rec.pid}`)
-  try {
-    process.kill(rec.pid)
-  } catch {}
 }
 
 async function cmdLogs(args: Args): Promise<void> {
@@ -214,45 +228,6 @@ function cmdClean(): void {
   if (crashed.length) console.log(`also killed ${crashed.length} orphaned opencode server(s) from crashed run(s)`)
 }
 
-async function cmdInterject(args: Args): Promise<void> {
-  const id = args.positional[0] ?? (await pickRunId((r) => r.status === "running" && Registry.alive(r.pid)))
-  const rec = id ? Registry.load(id) : undefined
-  if (!rec) {
-    console.error(id === undefined ? "error: no run selected (no active runs?)" : `error: unknown run id "${id}"`)
-    process.exit(1)
-  }
-  const agents = rec.agents ?? []
-  if (!agents.length) {
-    console.error(`error: no agent sessions found for run ${id}`)
-    process.exit(1)
-  }
-  let agentName = args.flags.agent
-  if (!agentName) {
-    agentName = await pick(
-      `interject into which agent?  (↑/↓, enter, esc)`,
-      agents.map((a) => ({ label: a.name, hint: a.model, value: a.name })),
-    )
-  }
-  const agent = agents.find((a) => a.name === agentName || a.role === agentName)
-  if (!agent) {
-    console.error(`error: no agent "${agentName}" in run ${id}`)
-    process.exit(1)
-  }
-  const message = args.flags.message ?? args.positional.slice(1).join(" ")
-  if (!message) {
-    console.error("error: --message is required (or pass the message as the last argument)")
-    process.exit(1)
-  }
-  const api = new Api(`http://127.0.0.1:${rec.port}`)
-  console.log(`aborting ${agent.name}'s current turn and sending: "${message.slice(0, 80)}..."`)
-  await api.abort(agent.directory, agent.sessionID)
-  await api.promptAsync(agent.directory, agent.sessionID, {
-    model: { providerID: PROVIDER_ID, modelID: bareModel(agent.model) },
-    parts: [{ type: "text", text: message }],
-  })
-  console.log("interjection sent — the agent will process it now")
-}
-
 async function cmdModels(args: Args): Promise<void> {
   const key = loadApiKey(args.flags["api-key"])
   const res = await fetch("https://ollama.com/api/tags", {
@@ -293,9 +268,6 @@ async function main(): Promise<void> {
       break
     case "tui":
       await cmdTui(args)
-      break
-    case "interject":
-      await cmdInterject(args)
       break
     case "models":
       await cmdModels(args)

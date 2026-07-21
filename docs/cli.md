@@ -1,7 +1,24 @@
 # CLI reference
 
-All commands run from the repo root as `node src/cli.ts <command>` (shown here
-as `swarm <command>`).
+All commands run as `node src/cli.ts <command>` (shown here as `swarm <command>`).
+
+## Global install (any directory)
+
+From the repo root, once:
+
+```powershell
+.\scripts\install-path.ps1
+```
+
+Sets user `SWARM_HOME` to the repo and prepends `bin\` to your user `Path`:
+
+| Command | Equivalent |
+| --- | --- |
+| `swarm …` | `node %SWARM_HOME%\src\cli.ts …` |
+| `swarm-tui …` | `node %SWARM_HOME%\src\cli.ts tui …` |
+
+Works in PowerShell and Command Prompt. Remove with
+`.\scripts\install-path.ps1 -Uninstall`.
 
 ## swarm
 

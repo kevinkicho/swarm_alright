@@ -13,11 +13,11 @@ and SDK, powered by [Ollama Cloud](https://ollama.com/cloud) models.
 
 - **Autonomous & infinite**: runs cycle forever on their own — planning, building,
   testing, merging — with retries and backoff when things fail
-- **Blackboard swarm**: agents coordinate through a shared `BLACKBOARD.md`
-  (goal, contracts, todos, ambitions, feedback, audit log)
+- **Blackboard team**: planner, workers, and auditor coordinate like teammates
+  through `BLACKBOARD.md` (goal, contracts, todos, feedback, **TEAM CHAT**, audit)
 - **Safe by construction**: each worker edits in its own git worktree; only the
-  auditor can merge, and only into the run's integration branch — your branch is
-  never touched
+  host merges on auditor ACCEPT into the run's integration branch — your branch
+  is never touched. REJECT is soft (commits kept for fix-forward, no hard reset)
 - **Concurrent**: start as many runs as you like, on the same or different
   projects; every run gets its own opencode server
 - **Inspectable**: live terminal dashboard, full opencode TUI attach into any
@@ -59,6 +59,31 @@ Put your Ollama Cloud key in `.env` (gitignored, never committed):
 ```
 OLLAMA_API_KEY=your_key_here
 ```
+
+Optional — install global commands so they work from **any** folder (PowerShell or CMD):
+
+```powershell
+.\scripts\install-path.ps1
+```
+
+That sets user env vars:
+
+| Variable | Purpose |
+| --- | --- |
+| `SWARM_HOME` | Absolute path to this repo |
+| `Path` | Prepends `<repo>\bin` |
+
+Then from anywhere:
+
+```powershell
+swarm                 # same as: node src/cli.ts
+swarm run C:\proj     # start a run
+swarm-tui             # same as: node src/cli.ts tui
+swarm help
+```
+
+Undo with `.\scripts\install-path.ps1 -Uninstall`. Open a new terminal if an
+already-open window still cannot find `swarm`.
 
 That's it — the app has zero runtime dependencies.
 
@@ -121,12 +146,16 @@ Each **run** spawns its own `opencode serve` and a team of agent sessions:
    directive — and maintains the blackboard: GOAL, TODOS, AMBITIONS, and one
    CONTRACT with testable acceptance criteria per worker.
 2. **Workers** (default `deepseek-v4-flash`, N of them, each in its own git
-   worktree on its own branch) implement their contracts in parallel, verify
-   with the project's own tests/builds, and commit.
-3. **Auditor** (default `gemma4:31b`) reviews each worker's diff against the
-   acceptance criteria, then **ACCEPT** (merge into the run's integration branch
-   `swarm/<id>/base`) or **REJECT** (reset the branch + written feedback the
-   worker must fix next cycle).
+   worktree on its own branch) implement their contracts in parallel and verify
+   with the project's own tests/builds. The host auto-commits any leftover
+   dirty files so work cannot vanish before audit.
+3. **Auditor** (default `gemma4:31b`) judges each worker's diff against the
+   acceptance criteria and writes **ACCEPT** or **REJECT** + feedback. It does
+   **not** run git merges or resets.
+4. **Host** (this app) owns git: syncs workers from the integration branch,
+   auto-commits any dirty worktree after the worker turn, merges on ACCEPT into
+   `swarm/<id>/base`, and on REJECT **keeps** worker commits for fix-forward
+   (no hard reset).
 
 Then the next cycle begins, more ambitious than the last. Forever, or until you
 stop it. Accepted work accumulates on the integration branch for you to review

@@ -32,18 +32,59 @@ function fromDotenv(file: string): string | undefined {
   return undefined
 }
 
-export function loadApiKey(explicit?: string): string {
-  const key =
-    explicit ??
-    process.env.OLLAMA_API_KEY ??
-    fromDotenv(path.resolve(".env")) ??
-    fromDotenv(path.join(os.homedir(), ".swarm", ".env"))
-  if (!key) {
-    throw new Error(
-      "No Ollama Cloud API key found. Set OLLAMA_API_KEY, pass --api-key, or put it in .env / ~/.swarm/.env",
-    )
+/** Install root when launched via `swarm` / node src/cli.ts (works from any cwd). */
+function installRoots(): string[] {
+  const roots: string[] = []
+  if (process.env.SWARM_HOME) roots.push(path.resolve(process.env.SWARM_HOME))
+  // node .../swarm_alright/src/cli.ts  →  .../swarm_alright
+  try {
+    const argv1 = process.argv[1]
+    if (argv1) {
+      const dir = path.dirname(path.resolve(argv1))
+      // src/ or bin/
+      const parent = path.basename(dir) === "src" || path.basename(dir) === "bin" ? path.dirname(dir) : dir
+      roots.push(parent)
+    }
+  } catch {}
+  return [...new Set(roots)]
+}
+
+/**
+ * Resolve Ollama Cloud API key. Search order (first hit wins):
+ * 1. explicit argument / --api-key
+ * 2. OLLAMA_API_KEY env
+ * 3. .env in cwd
+ * 4. SWARM_HOME/.env and install-root/.env (so `swarm` works from any folder)
+ * 5. ~/.swarm/.env
+ * 6. optional projectDir/.env and projectDir/.swarm/.env
+ */
+export function loadApiKey(explicit?: string, projectDir?: string): string {
+  const candidates: Array<string | undefined> = [
+    explicit,
+    process.env.OLLAMA_API_KEY,
+    fromDotenv(path.resolve(".env")),
+  ]
+  for (const root of installRoots()) {
+    candidates.push(fromDotenv(path.join(root, ".env")))
+    candidates.push(fromDotenv(path.join(root, ".swarm", ".env")))
   }
-  return key
+  candidates.push(fromDotenv(path.join(os.homedir(), ".swarm", ".env")))
+  if (projectDir) {
+    const p = path.resolve(projectDir)
+    candidates.push(fromDotenv(path.join(p, ".env")))
+    candidates.push(fromDotenv(path.join(p, ".swarm", ".env")))
+  }
+
+  for (const key of candidates) {
+    if (key) return key
+  }
+  throw new Error(
+    "No Ollama Cloud API key found. Set OLLAMA_API_KEY, pass --api-key, or put OLLAMA_API_KEY=... in:\n" +
+      "  - .env (current directory)\n" +
+      "  - %SWARM_HOME%\\.env (swarm install)\n" +
+      "  - ~/.swarm/.env\n" +
+      "  - <project>/.env or <project>/.swarm/.env",
+  )
 }
 
 /** Strip an optional "ollama/" prefix; the provider id is always "ollama". */
@@ -74,6 +115,13 @@ export function opencodeConfig(apiKey: string, modelIDs: string[]) {
     small_model: qualifiedModel(modelIDs[0]),
     share: "disabled",
     autoupdate: false,
+    // OpenCode owns compaction (not a host "compact at 45%" loop).
+    // prune frees old tool outputs; auto triggers near usable context limit.
+    compaction: {
+      auto: true,
+      prune: true,
+      tail_turns: 1,
+    },
     permission: {
       edit: "allow",
       bash: "allow",
