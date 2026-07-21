@@ -26,6 +26,7 @@ Usage:
   swarm logs [run-id]            Tail a run's event log
   swarm stop [run-id]            Stop a running run gracefully
   swarm clean                    Prune finished/errored runs from the registry
+  swarm clean --worktrees        Also remove git worktrees for dead runs (optional --project <folder>)
   swarm models                   List available Ollama Cloud models
 
   swarm help                     Show this help
@@ -107,7 +108,11 @@ async function cmdRun(args: Args): Promise<void> {
       )
       if (clash) {
         console.error(
-          `error: another run is already alive on this project (${clash.id}). Stop it first, or set "singleFlight": false in .swarm/config.json`,
+          `error: another run is already alive on this project.\n` +
+            `  run id:  ${clash.id}  (cycle ${clash.cycle}, pid ${clash.pid})\n` +
+            `  project: ${clash.project}\n` +
+            `  stop it: swarm stop ${clash.id}\n` +
+            `  or set "singleFlight": false in <project>/.swarm/config.json to allow concurrent runs`,
         )
         process.exit(1)
       }
@@ -219,13 +224,46 @@ async function cmdTui(args: Args): Promise<void> {
   await attachFlow(args.positional[0], args.flags.agent)
 }
 
-function cmdClean(): void {
+async function cmdClean(args: Args): Promise<void> {
   // Crashed runs (marked running but process is gone) leave their opencode servers orphaned.
   const crashed = Registry.list().filter((r) => r.status === "running" && !Registry.alive(r.pid))
   for (const r of crashed) killServerByPort(r.port)
   const { pruned, kept } = Registry.pruneFinished()
-  console.log(`pruned ${pruned} finished run record(s) (${kept} kept). Run folders on disk are untouched.`)
+  console.log(`pruned ${pruned} finished run record(s) (${kept} kept). Run folders on disk are untouched by default.`)
   if (crashed.length) console.log(`also killed ${crashed.length} orphaned opencode server(s) from crashed run(s)`)
+
+  // Optional: remove git worktrees for dead runs under one or more projects.
+  if (args.flags.worktrees === "true" || args.flags.worktrees) {
+    const { pruneStaleWorktrees } = await import("./git.ts")
+    const keep = new Set(
+      Registry.list()
+        .filter((r) => r.status === "running" && Registry.alive(r.pid))
+        .map((r) => r.id),
+    )
+    const projects = new Set<string>()
+    if (args.flags.project) projects.add(path.resolve(args.flags.project))
+    for (const r of Registry.list()) projects.add(path.resolve(r.project))
+    // Also scan disk run folders for project paths we know about
+    for (const r of Registry.list()) {
+      try {
+        const disk = Registry.loadFromDisk(r.project, r.id)
+        if (disk) projects.add(path.resolve(disk.project))
+      } catch {}
+    }
+    let totalRemoved = 0
+    for (const project of projects) {
+      try {
+        const { removed } = await pruneStaleWorktrees(project, keep)
+        if (removed.length) {
+          console.log(`worktrees pruned under ${project}: ${removed.join(", ")}`)
+          totalRemoved += removed.length
+        }
+      } catch (err) {
+        console.log(`worktree prune skipped for ${project}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    if (!totalRemoved) console.log("no stale worktrees removed (alive run worktrees are kept)")
+  }
 }
 
 async function cmdModels(args: Args): Promise<void> {
@@ -258,7 +296,7 @@ async function main(): Promise<void> {
       await cmdStop(args)
       break
     case "clean":
-      cmdClean()
+      await cmdClean(args)
       break
     case "logs":
       await cmdLogs(args)

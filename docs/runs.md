@@ -57,6 +57,43 @@ History survives `swarm clean`: records are also stored in the project's
 `.swarm/runs/<id>/run.json`, and `swarm restart --project <folder>` lists them
 directly from disk.
 
+## Housekeeping the host does for you
+
+Each cycle the host (not the models) owns:
+
+1. **Sync** integration → each worker worktree  
+2. **Re-home** — if agents edited the project root but the worktree is clean, copy those paths into the worktree (including new dirs)  
+3. **Auto-commit** dirty worktrees  
+4. **Restore** tracked re-homed files on your branch to `HEAD` after a successful commit (so `master` is not left dirty with the same edits)  
+5. **Audit gate** — auditor runs only when `commits_ahead > 0`; otherwise soft REJECT + FEEDBACK  
+6. **ACCEPT** merges via `update-ref` when needed (even if integration is checked out)  
+7. **Bad Request / size errors** — abort, then **rotate the OpenCode session** (fresh context). Compaction is OpenCode-owned (`auto` + `prune`); swarm does **not** compact at a fixed % of the context bar  
+
+Team talk stays on the **blackboard** (TEAM CHAT / FEEDBACK / WORK LOG). API turn prompts stay short; agents open MEMORY.md + the board with tools.
+
+## Long runs & context
+
+| What you see | What it means |
+| --- | --- |
+| Context ~50% then `Bad Request` | Provider often rejects large tool-heavy payloads before the full advertised window; host rotates the session after abort |
+| After compact still ~300–400k tokens | Normal: summary + last turn(s) + tools/system remain |
+| Manual TUI compact helps | Same idea as rotate/compact; host rotation avoids needing that every time |
+
+Prefer **`--detach`**, `swarm stop`, and `swarm restart` over killing terminals. Align `opencode` CLI version with `@opencode-ai/sdk` when possible.
+
+## Cleaning worktrees
+
+`swarm clean` only drops registry records (and orphan servers). Run folders stay on disk.
+
+To also drop **git worktrees for dead runs**:
+
+```text
+swarm clean --worktrees
+swarm clean --worktrees --project C:\path\to\project
+```
+
+Alive runs’ worktrees are kept. Does not delete integration/worker **branches** or run history under `.swarm/runs/`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause & fix |
@@ -67,3 +104,7 @@ directly from disk.
 | 401 Unauthorized in events.log | Bad/missing key: set `OLLAMA_API_KEY` or `.env` (see [configuration.md](configuration.md)) |
 | Orphaned `opencode.exe serve` processes | Leftovers of crashed runs; `swarm clean` kills them |
 | Cycle keeps failing | Read `.swarm/runs/<id>/events.log`; 5 consecutive failures end the run as `errored` |
+| Auditor never runs | No commits on `wN` after the cycle. Check for `re-home` / `commits_ahead=0` in events.log; prefer edits under the worktree |
+| `project_root dirty` but worktree clean | Host re-homes when it can; if still zero commits, open the log for re-home skip reasons |
+| Single-flight error | Another alive run on the same folder — `swarm stop <id>` or set `"singleFlight": false` in `.swarm/config.json` |
+| Disk full of `.swarm/worktrees/*` | `swarm clean --worktrees` (optionally `--project …`) |

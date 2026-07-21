@@ -158,8 +158,22 @@ export async function dirtyPaths(cwd: string): Promise<string[]> {
   return [...new Set(out)]
 }
 
+function copyPathRecursive(src: string, dest: string): void {
+  const st = fs.statSync(src)
+  if (st.isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true })
+    for (const name of fs.readdirSync(src)) {
+      if (name === ".git" || name === "node_modules" || name === ".swarm") continue
+      copyPathRecursive(path.join(src, name), path.join(dest, name))
+    }
+    return
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true })
+  fs.copyFileSync(src, dest)
+}
+
 /**
- * Copy dirty files from project root into a worker worktree (agents sometimes
+ * Copy dirty files/dirs from project root into a worker worktree (agents sometimes
  * write on the project tree while their session is scoped to the worktree).
  * Does not lock down agent permissions — host re-homes after the turn.
  */
@@ -179,26 +193,90 @@ export async function rehomeDirtyIntoWorktree(
     const dest = path.join(worktree, rel)
     try {
       if (!fs.existsSync(src)) {
-        // deleted on project: remove in worktree if present
         if (fs.existsSync(dest)) {
           fs.rmSync(dest, { force: true, recursive: true })
           copied.push(rel + " (deleted)")
         } else skipped.push(rel)
         continue
       }
-      const st = fs.statSync(src)
-      if (st.isDirectory()) {
-        skipped.push(rel + " (dir)")
-        continue
-      }
-      fs.mkdirSync(path.dirname(dest), { recursive: true })
-      fs.copyFileSync(src, dest)
+      copyPathRecursive(src, dest)
       copied.push(rel)
     } catch {
       skipped.push(rel)
     }
   }
   return { copied, skipped }
+}
+
+/**
+ * Restore tracked paths on the project root to HEAD after they were re-homed
+ * and committed on a worker branch. Leaves untracked files alone (safer for user WIP).
+ */
+export async function restoreTrackedPathsToHead(repo: string, paths: string[]): Promise<string[]> {
+  const restored: string[] = []
+  for (const rel of paths) {
+    if (!rel || rel.includes("..") || rel.startsWith(".swarm/")) continue
+    // Only restore if the path is known to git (tracked)
+    const ls = await gitAllowFail(repo, ["ls-files", "--error-unmatch", rel])
+    if (ls.code !== 0) continue
+    const r = await gitAllowFail(repo, ["restore", "--source=HEAD", "--worktree", "--staged", "--", rel])
+    if (r.code === 0) restored.push(rel)
+    else {
+      const co = await gitAllowFail(repo, ["checkout", "HEAD", "--", rel])
+      if (co.code === 0) restored.push(rel)
+    }
+  }
+  return restored
+}
+
+/**
+ * Remove git worktrees for finished runs under project/.swarm/worktrees/.
+ * Keeps worktrees whose run id is still "alive" or in keepIds.
+ */
+export async function pruneStaleWorktrees(
+  project: string,
+  keepIds: Set<string>,
+): Promise<{ removed: string[]; kept: string[] }> {
+  const root = path.join(project, ".swarm", "worktrees")
+  const removed: string[] = []
+  const kept: string[] = []
+  if (!fs.existsSync(root)) return { removed, kept }
+  let dirs: string[] = []
+  try {
+    dirs = fs.readdirSync(root)
+  } catch {
+    return { removed, kept }
+  }
+  for (const id of dirs) {
+    if (keepIds.has(id)) {
+      kept.push(id)
+      continue
+    }
+    const wtPath = path.join(root, id)
+    // Prefer removing registered worker worktrees w1, w2, …
+    let entries: string[] = []
+    try {
+      entries = fs.readdirSync(wtPath)
+    } catch {
+      continue
+    }
+    for (const e of entries) {
+      const full = path.join(wtPath, e)
+      try {
+        if (!fs.statSync(full).isDirectory()) continue
+        await gitAllowFail(project, ["worktree", "remove", "--force", full])
+      } catch {}
+    }
+    try {
+      fs.rmSync(wtPath, { recursive: true, force: true })
+      removed.push(id)
+    } catch {
+      kept.push(id)
+    }
+  }
+  // Prune worktree metadata
+  await gitAllowFail(project, ["worktree", "prune"])
+  return { removed, kept }
 }
 
 /** Fast-forward (or merge) the worker branch onto the integration tip. Host-owned. */

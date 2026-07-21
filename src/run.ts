@@ -18,6 +18,7 @@ import {
   linkSharedDirs,
   dirtyPaths,
   rehomeDirtyIntoWorktree,
+  restoreTrackedPathsToHead,
   isDirty,
 } from "./git.ts"
 import * as Registry from "./registry.ts"
@@ -86,6 +87,10 @@ export class Run {
   private cycle = 0
   private heartbeatTimer?: ReturnType<typeof setInterval>
   private lastAcceptedTask = new Map<string, string>()
+  /** Consecutive cycles with zero commits ahead (for soft planner nudge). */
+  private emptyCommitStreak = 0
+  /** Paths re-homed this cycle (for root restore after commit). */
+  private lastRehomedPaths: string[] = []
 
   constructor(opts: RunOptions) {
     this.opts = opts
@@ -409,7 +414,8 @@ ${feedback}
   }
 
   private async rotateSession(agent: AgentRef): Promise<void> {
-    const title = `swarm ${this.id} ${agent.role}${agent.worker ? ` ${agent.worker.name}` : ""} (rotated)`
+    const who = `${agent.role}${agent.worker ? ` ${agent.worker.name}` : ""}`
+    const title = `swarm ${this.id} ${who} (rotated)`
     const session = await this.api!.createSession(agent.directory, title)
     agent.sessionID = session.id
     if (this.record?.agents) {
@@ -417,7 +423,18 @@ ${feedback}
       if (rec) rec.sessionID = session.id
       this.saveRecord()
     }
-    this.log(`  [host] rotated session for ${agent.role}${agent.worker ? ` ${agent.worker.name}` : ""}`)
+    this.log(`  [host] rotated session for ${who}`)
+    // Thin handoff so the team knows context was reset — board, not a long prompt.
+    this.teamChat(
+      "host",
+      agent.worker?.name ?? agent.role,
+      `rotated ${who} session (fresh context) — re-read MEMORY.md + blackboard before continuing`,
+    )
+    try {
+      this.writeHostMemory(this.record?.phase ?? "rotate", [
+        `Session rotated for ${who}. Prior chat context cleared; board and MEMORY are still authoritative.`,
+      ])
+    } catch {}
   }
 
   private isContextSizeError(msg: string): boolean {
@@ -573,7 +590,13 @@ ${feedback}
       if (openTodos === 0) bits.push("TODOS are empty — pull from AMBITIONS or invent something good")
     }
 
-    return bits.join(". ").slice(0, 240)
+    if (this.emptyCommitStreak >= 3) {
+      bits.push(
+        `last ${this.emptyCommitStreak} cycles shipped nothing on w1 — shrink the contract to one tiny real file change`,
+      )
+    }
+
+    return bits.join(". ").slice(0, 280)
   }
 
   /**
@@ -678,35 +701,41 @@ ${feedback}
    * Re-home project-root dirty files into each worker worktree when the worktree
    * is clean (agents often edit the project tree via external_directory).
    * Does not restrict agents — host recovers shippable commits.
+   * Returns paths successfully copied (for optional root restore after commit).
    */
-  private async hostRehomeOutsideWorktree(): Promise<void> {
+  private async hostRehomeOutsideWorktree(): Promise<string[]> {
+    this.lastRehomedPaths = []
     const ctx = this.ctx!
     let rootDirty: string[] = []
     try {
       rootDirty = await dirtyPaths(ctx.project)
     } catch {
-      return
+      return []
     }
-    // Ignore pure noise on user branch if any
     rootDirty = rootDirty.filter((p) => !p.startsWith(".swarm/"))
-    if (!rootDirty.length) return
+    if (!rootDirty.length) return []
 
+    const allCopied: string[] = []
     for (const w of ctx.workers) {
       try {
         const wtDirty = await isDirty(w.worktree)
         if (wtDirty) {
-          this.log(`  [host:git] ${w.name}: worktree already dirty — skip re-home (${rootDirty.length} root path(s) still dirty)`)
+          this.log(
+            `  [host:git] ${w.name}: worktree already dirty — skip re-home (${rootDirty.length} root path(s) still dirty)`,
+          )
           continue
         }
         const { copied, skipped } = await rehomeDirtyIntoWorktree(ctx.project, w.worktree, rootDirty)
         if (copied.length) {
+          const clean = copied.map((c) => c.replace(/ \(deleted\)$/, ""))
+          allCopied.push(...clean)
           this.log(
             `  [host:git] re-home → ${w.name}: ${copied.length} path(s): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? "…" : ""}`,
           )
           this.teamChat(
             "host",
             w.name,
-            `re-homed ${copied.length} edit(s) from project root into your worktree (prefer editing under worktree next time)`,
+            `re-homed ${copied.length} edit(s) from project root into your worktree (prefer the worktree next time)`,
           )
         } else if (skipped.length) {
           this.log(`  [host:git] re-home ${w.name}: nothing copied (${skipped.length} skipped)`)
@@ -715,13 +744,15 @@ ${feedback}
         this.log(`  [host:git] re-home ${w.name} failed: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
+    this.lastRehomedPaths = [...new Set(allCopied)]
+    return this.lastRehomedPaths
   }
 
   private async hostCommitWorkers(): Promise<void> {
     const ctx = this.ctx!
-    // First: pull project-root agent edits into worktrees so auditor can see them.
-    await this.hostRehomeOutsideWorktree()
+    const rehomed = await this.hostRehomeOutsideWorktree()
 
+    let anyCommitted = false
     for (const w of ctx.workers) {
       try {
         let rootStillDirty = 0
@@ -732,8 +763,12 @@ ${feedback}
           w.worktree,
           `swarm ${ctx.id} ${w.name}: cycle ${this.cycle} (host auto-commit)`,
         )
+        if (result.committed) anyCommitted = true
+        const ahead = await commitsAhead(ctx.project, ctx.integrationBranch, w.branch)
         this.log(
-          `  [host:git] commit ${w.name}: ${result.committed ? "committed" : "clean"} ${result.sha.slice(0, 7)} — ${result.detail}${!result.committed && rootStillDirty ? ` (project_root dirty=${rootStillDirty})` : ""}`,
+          `  [host:git] commit ${w.name}: ${result.committed ? "committed" : "clean"} ${result.sha.slice(0, 7)} — ${result.detail}` +
+            ` [metric] rehomed=${rehomed.length} commits_ahead=${ahead}` +
+            `${!result.committed && rootStillDirty ? ` project_root_dirty=${rootStillDirty}` : ""}`,
         )
         if (this.projectCfg?.verify && result.committed) {
           try {
@@ -742,7 +777,6 @@ ${feedback}
               cwd: w.worktree,
               shell: true,
               encoding: "utf8",
-              // Project verify may take a while; not a turn timeout — only optional post-commit check.
               timeout: 600_000,
             })
             const out = ((v.stdout || "") + (v.stderr || "")).trim().slice(0, 400)
@@ -754,6 +788,21 @@ ${feedback}
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         this.log(`  [host:git] commit ${w.name} FAILED: ${msg.slice(0, 300)}`)
+      }
+    }
+
+    // After a successful ship path, restore tracked re-homed files on user branch to HEAD
+    // so master doesn't stay dirty with the same agent edits.
+    if (anyCommitted && rehomed.length) {
+      try {
+        const restored = await restoreTrackedPathsToHead(ctx.project, rehomed)
+        if (restored.length) {
+          this.log(
+            `  [host:git] restored ${restored.length} tracked path(s) on ${ctx.baseBranch} to HEAD after re-home ship`,
+          )
+        }
+      } catch (err) {
+        this.log(`  [host:git] root restore skipped: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
   }
@@ -994,7 +1043,10 @@ ${feedback}
     // --- AUDIT (skip model if zero commits) ---
     const { sections, anyCommits } = await this.buildReviewPack()
     if (!anyCommits) {
-      this.log(`[cycle ${this.cycle}] host skip auditor (no commits) — soft REJECT`)
+      this.emptyCommitStreak++
+      this.log(
+        `[cycle ${this.cycle}] host skip auditor (no commits) — soft REJECT [metric] empty_commit_streak=${this.emptyCommitStreak}`,
+      )
       let rootDirty = 0
       try {
         rootDirty = (await dirtyPaths(this.ctx!.project)).filter((p) => !p.startsWith(".swarm/")).length
@@ -1015,6 +1067,7 @@ ${feedback}
           : "No commits this cycle. Workers: implement contracts in worktree. Planner: keep contracts small and shippable.",
       )
     } else {
+      this.emptyCommitStreak = 0
       this.writeHostMemory(
         "auditor",
         [
