@@ -13,6 +13,10 @@ export type RunPaths = {
   project: string
   integrationBranch: string
   baseBranch: string
+  workerWorktree?: string
+  standards?: string
+  dialogue?: string
+  mission?: string
 }
 
 export function memoryPath(runDir: string): string {
@@ -83,22 +87,29 @@ export function buildMemoryDoc(input: {
     `- project: ${input.paths.project}`,
     `- integration branch (host-managed): ${input.paths.integrationBranch}`,
     `- user branch (never touch): ${input.paths.baseBranch}`,
+  ]
+  if (input.paths.workerWorktree) lines.push(`- worker worktree: ${input.paths.workerWorktree}`)
+  if (input.paths.mission) lines.push(`- mission: ${input.paths.mission}`)
+  if (input.paths.dialogue) lines.push(`- dialogue: ${input.paths.dialogue}`)
+  if (input.paths.standards) lines.push(`- standards: ${input.paths.standards}`)
+  lines.push(
     "",
-    "## Host notes",
+    "## Host notes (sensors)",
     ...(input.hostNotes.length ? input.hostNotes.map((n) => (n.startsWith("-") ? n : `- ${n}`)) : ["- (none)"]),
     "",
-  ]
+  )
   if (input.reviewSections?.length) {
     lines.push("## Review pack (host)")
-    lines.push("Git summary + worker session trace from the last worker turn.")
+    lines.push("Git summary, optional verify, and worker session trace. Facts only.")
     lines.push("")
     for (const s of input.reviewSections) lines.push(s, "")
   }
   lines.push(
     "## How to use (system lead)",
     "- These are facts, not instructions. Investigate with tools; decide quality and next work yourself.",
-    "- Put the engineer-facing brief under ### TO_WORKER in your reply; put VERDICT under ### HOST.",
+    "- Put the engineer-facing brief under ### TO_WORKER; put VERDICT under ### HOST.",
     "- Worker only receives TO_WORKER — keep analysis and git tokens out of that section.",
+    "- You may edit STANDARDS.md to remember quality bars across cycles.",
     "",
   )
   return lines.join("\n")

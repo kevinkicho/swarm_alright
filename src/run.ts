@@ -50,6 +50,7 @@ export class Run {
   private runDir: string
   private missionFile: string
   private dialogueFile: string
+  private standardsFile: string
   private logFile: string
   private stopFile: string
   private server?: ServerHandle
@@ -64,17 +65,29 @@ export class Run {
   private stopping = false
   private cycle = 0
   private heartbeatTimer?: ReturnType<typeof setInterval>
-  /** Consecutive cycles with zero commits ahead (soft nudge to the system). */
+  /** Consecutive cycles with zero commits ahead (fact for system, not host policy). */
   private emptyCommitStreak = 0
   /** Last review verdict the system emitted (CONTINUE / DONE / STOP). */
   private lastVerdict = ""
-  /** Last full review text from the system (fed back to the worker next cycle). */
+  /** Last full review text from the system. */
   private lastSystemReview = ""
   /** Last worker reply text (fed to the system for context). */
   private lastWorkerReply = ""
   /** Last git sync result — surfaced to the system in the review pack. */
   private lastSyncOk = true
   private lastSyncDetail = ""
+  /** Last OpenCode bus activity (tools/status) — stall detection. */
+  private lastActivityAt = Date.now()
+  /** Last worker ship facts for the next system review pack. */
+  private lastShip: {
+    cycle: number
+    committed: boolean
+    ahead: number
+    rehomed: number
+    verify?: { ok: boolean; exit: number | null; output: string }
+  } | null = null
+  /** Zero-activity stall threshold (ms). Not a turn wall-clock. */
+  private readonly stallMs = 20 * 60_000
 
   constructor(opts: RunOptions) {
     this.id = opts.resumeFrom ?? Registry.newId()
@@ -82,6 +95,7 @@ export class Run {
     this.runDir = path.join(opts.project, ".swarm", "runs", this.id)
     this.missionFile = path.join(this.runDir, "MISSION.md")
     this.dialogueFile = path.join(this.runDir, "DIALOGUE.md")
+    this.standardsFile = path.join(this.runDir, "STANDARDS.md")
     this.logFile = path.join(this.runDir, "events.log")
     this.stopFile = path.join(this.runDir, "STOP")
   }
@@ -96,6 +110,10 @@ export class Run {
     console.log(Style.logLine(line))
   }
 
+  private markActivity(): void {
+    this.lastActivityAt = Date.now()
+  }
+
   private heartbeat(phase?: string): void {
     if (!this.record) return
     this.record.lastHeartbeat = new Date().toISOString()
@@ -105,6 +123,16 @@ export class Run {
 
   private onEvent(evt: SwarmEvent): void {
     const p = evt.properties as any
+    // Any real session signal counts as progress (stall detector).
+    if (
+      evt.type === "message.part.updated" ||
+      evt.type === "message.updated" ||
+      evt.type === "session.status" ||
+      evt.type === "session.idle" ||
+      evt.type === "session.error"
+    ) {
+      this.markActivity()
+    }
     if (evt.type === "message.part.updated" && p?.part?.type === "tool") {
       const part = p.part
       const tool = part.tool ?? "tool"
@@ -162,6 +190,7 @@ export class Run {
     this.runDir = path.join(project, ".swarm", "runs", this.id)
     this.missionFile = path.join(this.runDir, "MISSION.md")
     this.dialogueFile = path.join(this.runDir, "DIALOGUE.md")
+    this.standardsFile = path.join(this.runDir, "STANDARDS.md")
     this.logFile = path.join(this.runDir, "events.log")
     this.stopFile = path.join(this.runDir, "STOP")
     this.projectCfg = loadProjectConfig(project)
@@ -236,7 +265,7 @@ export class Run {
     this.log(`integration branch: ${this.integrationBranch}`)
     this.log(`worker worktree: ${this.workerWorktree} (branch ${this.workerBranch})`)
 
-    // Mission file — persists across restarts. Only written on a fresh run.
+    // Mission file — persists across restarts. Only written when missing.
     if (!fs.existsSync(this.missionFile)) {
       const mission =
         this.opts.directive ??
@@ -246,6 +275,17 @@ export class Run {
 ${mission}
 `
       fs.writeFileSync(this.missionFile, body)
+    }
+    // Optional lead-owned notes — system may edit via tools across cycles.
+    if (!fs.existsSync(this.standardsFile)) {
+      fs.writeFileSync(
+        this.standardsFile,
+        `# Lead standards (optional)
+
+The system (technical lead) may update this file with quality bars, style notes,
+and ongoing priorities for the worker. Host never rewrites judgment here.
+`,
+      )
     }
 
     const apiKey = loadApiKey(this.opts.apiKey, project)
@@ -386,9 +426,8 @@ ${mission}
   }
 
   /**
-   * Run a turn with Bad Request / session-error recovery:
-   * interrupt (Esc×2) → re-prompt; on size/Bad Request rotate session sooner.
-   * No wall-clock timeout. No host compact-at-% — OpenCode compaction + session rotate.
+   * Run a turn with Bad Request / session-error recovery and zero-activity stall recovery.
+   * No wall-clock kill of healthy long tool use — only silence (no bus events) for stallMs.
    */
   private async turn(agent: AgentRef, prompt: string): Promise<{ text: string; secs: number }> {
     const maxAttempts = 3
@@ -397,12 +436,33 @@ ${mission}
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const t0 = Date.now()
       try {
+        this.markActivity()
         const idle = this.bus!.waitIdle(agent.directory, agent.sessionID, () => this.stopping || this.stopRequested())
         await this.api!.promptAsync(agent.directory, agent.sessionID, {
           model: { providerID: PROVIDER_ID, modelID: bareModel(agent.model) },
           parts: [{ type: "text", text: prompt }],
         })
-        await idle
+
+        // Race idle vs zero-activity stall (not a fixed turn budget).
+        let finished = false
+        const work = idle.then(() => {
+          finished = true
+        })
+        const stallWatch = (async () => {
+          while (!finished) {
+            await sleep(15_000)
+            if (finished || this.stopping || this.stopRequested()) return
+            const idleFor = Date.now() - this.lastActivityAt
+            if (idleFor >= this.stallMs) {
+              throw new Error(
+                `stall: no OpenCode activity for ${Math.round(idleFor / 60_000)}m on ${agent.role} (threshold ${Math.round(this.stallMs / 60_000)}m)`,
+              )
+            }
+          }
+        })()
+        await Promise.race([work, stallWatch])
+        if (!finished) await work
+
         const text = await this.lastAssistantText(agent)
         const secs = Math.round((Date.now() - t0) / 1000)
         const oneLine = text.replace(/\s+/g, " ").trim()
@@ -422,8 +482,8 @@ ${mission}
           await this.waitUntilNotBusy(agent.directory, agent.sessionID)
         } catch {}
 
-        if (this.isContextSizeError(msg) && attempt >= 1) {
-          this.log(`  [host] size/Bad Request — rotating session (fresh context)`)
+        if (/stall:/i.test(msg) || this.isContextSizeError(msg)) {
+          this.log(`  [host] rotating session after ${/stall:/i.test(msg) ? "stall" : "size/Bad Request"}`)
           await this.rotateSession(agent)
           await sleep(1_000)
           continue
@@ -536,6 +596,10 @@ ${mission}
         project: this.opts.project,
         integrationBranch: this.integrationBranch,
         baseBranch: this.baseBranch,
+        workerWorktree: this.workerWorktree,
+        mission: this.missionFile,
+        dialogue: this.dialogueFile,
+        standards: this.standardsFile,
       },
       hostNotes,
       reviewSections,
@@ -641,10 +705,17 @@ ${mission}
     return []
   }
 
-  private async hostCommitWorker(): Promise<void> {
+  private async hostCommitWorker(): Promise<{
+    committed: boolean
+    ahead: number
+    rehomed: number
+    verify?: { ok: boolean; exit: number | null; output: string }
+  }> {
     const rehomed = await this.hostRehomeOutsideWorktree()
-
     let committed = false
+    let ahead = 0
+    let verify: { ok: boolean; exit: number | null; output: string } | undefined
+
     try {
       let rootStillDirty = 0
       try {
@@ -655,7 +726,7 @@ ${mission}
         `swarm ${this.id} worker: cycle ${this.cycle} (host auto-commit)`,
       )
       committed = result.committed
-      const ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
+      ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
       this.log(
         `  [host:git] commit worker: ${result.committed ? "committed" : "clean"} ${result.sha.slice(0, 7)} — ${result.detail}` +
           ` [metric] rehomed=${rehomed.length} commits_ahead=${ahead}` +
@@ -670,19 +741,24 @@ ${mission}
             encoding: "utf8",
             timeout: 600_000,
           })
-          const out = ((v.stdout || "") + (v.stderr || "")).trim().slice(0, 400)
-          this.log(`  [host:verify] worker: exit ${v.status}${out ? ` — ${out}` : ""}`)
+          const out = ((v.stdout || "") + (v.stderr || "")).trim().slice(0, 800)
+          const exit = typeof v.status === "number" ? v.status : null
+          verify = { ok: exit === 0, exit, output: out }
+          this.log(`  [host:verify] worker: exit ${exit}${out ? ` — ${out.slice(0, 400)}` : ""}`)
         } catch (err) {
-          this.log(`  [host:verify] worker failed: ${err instanceof Error ? err.message : String(err)}`)
+          const msg = err instanceof Error ? err.message : String(err)
+          verify = { ok: false, exit: null, output: msg.slice(0, 400) }
+          this.log(`  [host:verify] worker failed: ${msg.slice(0, 300)}`)
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.log(`  [host:git] commit worker FAILED: ${msg.slice(0, 300)}`)
+      try {
+        ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
+      } catch {}
     }
 
-    // After a successful ship path, restore tracked re-homed files on user branch to HEAD
-    // so master doesn't stay dirty with the same agent edits.
     if (committed && rehomed.length) {
       try {
         const restored = await restoreTrackedPathsToHead(this.opts.project, rehomed)
@@ -695,6 +771,9 @@ ${mission}
         this.log(`  [host:git] root restore skipped: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
+
+    this.lastShip = { cycle: this.cycle, committed, ahead, rehomed: rehomed.length, verify }
+    return { committed, ahead, rehomed: rehomed.length, verify }
   }
 
   private async buildReviewPack(workerTrace: string): Promise<{ pack: string; sections: string[]; anyCommits: boolean }> {
@@ -702,22 +781,38 @@ ${mission}
     const sections: string[] = []
     const ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
     this.log(`  [metric] worker commits_ahead=${ahead}`)
+
+    // Prior-cycle ship facts (verify, commit) — sensors only for the lead.
+    if (this.lastShip) {
+      const s = this.lastShip
+      let block = `### last ship (cycle ${s.cycle})\ncommitted: ${s.committed}\nahead_after: ${s.ahead}\nrehomed_paths: ${s.rehomed}\n`
+      if (s.verify) {
+        block += `verify: ${s.verify.ok ? "PASS" : "FAIL"} exit=${s.verify.exit ?? "?"}\n`
+        if (s.verify.output) block += `verify_output:\n\`\`\`\n${clip(s.verify.output, 600)}\n\`\`\`\n`
+      } else {
+        block += `verify: (not configured)\n`
+      }
+      parts.push(block)
+      sections.push(block)
+    }
+
     if (ahead === 0) {
-      const s = `### worker\nstatus: NO_COMMITS\nbranch ${this.workerBranch} has 0 commits ahead of ${this.integrationBranch}.`
+      const s = `### worker git\nstatus: NO_COMMITS\nbranch ${this.workerBranch} has 0 commits ahead of ${this.integrationBranch}.\nempty_commit_streak: ${this.emptyCommitStreak}`
       parts.push(s)
       sections.push(s)
+      sections.push(workerTrace)
+      parts.push(workerTrace)
       return { pack: parts.join("\n\n"), sections, anyCommits: false }
     }
     const log = await shortLog(this.opts.project, this.integrationBranch, this.workerBranch)
     const diff = await rangeDiff(this.opts.project, this.integrationBranch, this.workerBranch)
-    let s = `### worker\nstatus: HAS_COMMITS (${ahead} ahead of ${this.integrationBranch})\nlog:\n${log || "(empty)"}\n`
+    let s = `### worker git\nstatus: HAS_COMMITS (${ahead} ahead of ${this.integrationBranch})\nlog:\n${log || "(empty)"}\n`
     if (!this.lastSyncOk) {
       s += `\n### git sync\nstatus: CONFLICT\nCould not sync from ${this.integrationBranch}: ${this.lastSyncDetail}\n`
     }
     s += `\ngit summary:\n\`\`\`\n${clip(diff || "(empty)", 8000)}\n\`\`\``
     parts.push(s)
     sections.push(s)
-    // Worker session trace — what the worker actually did and reasoned about.
     sections.push(workerTrace)
     parts.push(workerTrace)
     this.log(`  [host:git] review worker: ${ahead} commit(s) ahead`)
@@ -774,16 +869,21 @@ ${mission}
     }
 
     this.log(`[cycle ${this.cycle}] system...`)
-    // Facts only — no host policy trees. System decides how to use them.
+    // Facts only — system decides how to use them (no host policy trees).
     const factNotes = [
       `mission: ${this.missionFile}`,
-      `dialogue: ${this.dialogueFile}`,
+      `dialogue: ${this.dialogueFile} (prefer latest entries; file is append-only)`,
+      `standards: ${this.standardsFile} (optional lead notes — you may edit)`,
       `memory: ${memoryPath(this.runDir)}`,
       `project: ${this.opts.project}`,
       `worker_worktree: ${this.workerWorktree}`,
       `integration: ${this.integrationBranch}`,
       `empty_commit_streak: ${this.emptyCommitStreak}`,
+      `last_verdict: ${this.lastVerdict || "(none)"}`,
       `cycle: ${this.cycle}`,
+      this.lastShip
+        ? `last_ship: cycle=${this.lastShip.cycle} committed=${this.lastShip.committed} ahead=${this.lastShip.ahead} verify=${this.lastShip.verify ? (this.lastShip.verify.ok ? "PASS" : "FAIL") : "n/a"}`
+        : `last_ship: (none yet)`,
     ]
     this.writeHostMemory("system", factNotes, reviewSections)
     let systemTurn = await this.turn(system, this.buildSystemPrompt(anyCommits))
@@ -791,7 +891,26 @@ ${mission}
     this.throwIfStopped()
     appendDialogue(this.dialogueFile, "system", this.cycle, systemTurn.text)
 
-    const workerBrief = this.extractWorkerBrief(systemTurn.text)
+    let workerBrief = this.extractWorkerBrief(systemTurn.text)
+    // Soft recovery: if structure missing / brief too thin, one free rewrite (model still decides content).
+    if (workerBrief.trim().length < 40 || !/#{1,3}\s*TO[_\s-]?WORKER/i.test(systemTurn.text)) {
+      this.log(`  [host] TO_WORKER brief missing or thin — one rewrite pass`)
+      const rewrite = await this.turn(
+        system,
+        [
+          `Your last reply did not give a usable ### TO_WORKER engineer brief.`,
+          `Using what you already know (tools OK), write the full response again in the required shape:`,
+          `### TO_WORKER`,
+          `<careful human brief for the engineer>`,
+          `### HOST`,
+          `VERDICT: CONTINUE | DONE | STOP`,
+        ].join("\n"),
+      )
+      appendDialogue(this.dialogueFile, "system", this.cycle, `(brief rewrite) ${rewrite.text}`)
+      systemTurn = { text: rewrite.text, secs: systemTurn.secs + rewrite.secs }
+      this.lastSystemReview = systemTurn.text
+      workerBrief = this.extractWorkerBrief(systemTurn.text)
+    }
     if (workerBrief !== systemTurn.text.trim()) {
       this.log(`  [host] extracted TO_WORKER brief (${workerBrief.length} chars) for engineer`)
     }
@@ -849,11 +968,22 @@ ${mission}
     this.throwIfStopped()
     appendDialogue(this.dialogueFile, "worker", this.cycle, workerTurn.text)
 
-    // --- HOST commits whatever the worker left dirty ---
+    // --- HOST commits + optional verify (facts for next system turn) ---
     this.heartbeat("commit")
     this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktree...`)
-    await this.hostCommitWorker()
+    const ship = await this.hostCommitWorker()
     this.throwIfStopped()
+    // Snapshot ship facts into MEMORY so system can open them even mid-crash next cycle.
+    this.writeHostMemory("post-worker", [
+      `cycle: ${this.cycle}`,
+      `committed: ${ship.committed}`,
+      `commits_ahead: ${ship.ahead}`,
+      `rehomed: ${ship.rehomed}`,
+      ship.verify
+        ? `verify: ${ship.verify.ok ? "PASS" : "FAIL"} exit=${ship.verify.exit ?? "?"} ${ship.verify.output.slice(0, 200)}`
+        : `verify: (not configured)`,
+      `worker_reply_excerpt: ${this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 400)}`,
+    ])
 
     const secs = Math.round((Date.now() - t0) / 1000)
     this.log(`[cycle ${this.cycle}] complete in ${secs}s`)
@@ -868,35 +998,47 @@ ${mission}
   private buildSystemPrompt(hasReviewPack: boolean): string {
     const lines: string[] = [
       `You are the technical lead for this autonomous run (cycle ${this.cycle}).`,
-      `A strong engineer (the worker) will receive ONLY your ### TO_WORKER section as their next prompt — write that section as a careful human manager: clear goal, scope, acceptance checks, and any answers to their questions.`,
+      `Your job is high-quality control of an engineer agent: investigate reality with tools, critique last work, then write a brief that induces good craftsmanship.`,
       ``,
-      `Use tools freely before you decide: open the mission, dialogue, memory pack, and actual project/worktree files. Do not invent the state of the repo — inspect it when unsure.`,
+      `The worker receives ONLY your ### TO_WORKER section. Put all analysis, praise, and criticism either in tools-only thinking or above TO_WORKER — never force the engineer to parse VERDICT or host jargon.`,
+      ``,
+      `Investigate freely before deciding:`,
+      `- Read mission, recent dialogue (tail of the file), MEMORY review pack, and STANDARDS if present.`,
+      `- Open real files in the project and/or worker worktree; compare claimed work to the tree.`,
+      `- If verify failed or empty_commit_streak is high, treat that as a sensor reading and choose the fix yourself (unblock, shrink scope, raise quality bar, or stop).`,
+      `- You may update STANDARDS.md with lasting quality notes for later cycles.`,
       ``,
       `Paths:`,
       `- mission: ${this.missionFile}`,
       `- dialogue: ${this.dialogueFile}`,
-      `- memory (host facts + last-cycle pack): ${memoryPath(this.runDir)}`,
-      `- project root: ${this.opts.project}`,
+      `- standards: ${this.standardsFile}`,
+      `- memory: ${memoryPath(this.runDir)}`,
+      `- project: ${this.opts.project}`,
       `- worker worktree: ${this.workerWorktree}`,
       ``,
     ]
 
     if (this.cycle === 1 && !this.opts.resumeFrom) {
       lines.push(
-        `Kickoff: understand the mission and codebase, then set a sharp first assignment — one coherent unit of work with visible definition of done.`,
+        `Kickoff: learn the mission and codebase, then assign one coherent unit of work with a crisp definition of done.`,
       )
     } else if (this.cycle === 1 && this.opts.resumeFrom) {
       lines.push(
-        `Resume: reconstruct where the project stands from dialogue + files, then assign the best next unit of work.`,
+        `Resume: reconstruct state from dialogue + files + git, then assign the best next unit of work.`,
       )
     } else {
       lines.push(
-        `Review last cycle with care: quality of the worker's approach, whether the change advanced the mission, gaps, and what a good next step is (or whether to stop).`,
+        `Review last cycle deeply: approach quality, mission progress, gaps, risks, and the smartest next step (or stop).`,
       )
       if (hasReviewPack) {
-        lines.push(`Host left a git summary + worker session trace in MEMORY — start there, then open files if you need more.`)
+        lines.push(`MEMORY has git summary + worker session trace (+ verify if configured). Start there, then open files.`)
       } else {
-        lines.push(`Host fact: worker produced no new commits last cycle (streak ${this.emptyCommitStreak}). Decide yourself whether to unblock, shrink scope, or stop.`)
+        lines.push(
+          `Host fact: no new commits last cycle (empty_commit_streak=${this.emptyCommitStreak}). You decide how to respond.`,
+        )
+      }
+      if (this.lastShip?.verify && !this.lastShip.verify.ok) {
+        lines.push(`Host fact: last verify FAILED — inspect output in MEMORY and address it in the next brief if it matters.`)
       }
       if (this.lastWorkerReply) {
         const excerpt = this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 700)
@@ -906,15 +1048,20 @@ ${mission}
 
     lines.push(
       ``,
-      `When finished investigating, reply in this shape (markdown headings):`,
+      `Craft ### TO_WORKER like a careful human lead:`,
+      `- why this unit of work for the mission`,
+      `- what to change (files/areas) and what good looks like`,
+      `- acceptance checks the engineer can self-verify`,
+      `- answers to any questions; constraints (scope, style)`,
+      `- one coherent assignment — not a laundry list of the whole mission`,
+      ``,
+      `Reply shape:`,
       `### TO_WORKER`,
-      `<message the engineer will see — full brief, no VERDICT line, no host jargon>`,
+      `<engineer-facing brief only>`,
       ``,
       `### HOST`,
       `VERDICT: CONTINUE | DONE | STOP`,
-      `(CONTINUE = merge last work + keep going, DONE = merge + end run, STOP = keep unmerged commits + end run.)`,
-      ``,
-      `Your judgment of quality and next steps lives in TO_WORKER; HOST is only the git token.`,
+      `(CONTINUE = merge last work + keep going; DONE = merge + end run; STOP = keep unmerged + end run.)`,
     )
     return lines.join("\n")
   }

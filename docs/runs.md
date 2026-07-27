@@ -15,8 +15,9 @@
 - **On disk with the project** (survives `swarm clean`): `<project>/.swarm/runs/<id>/`
   - `run.json` — same record, dual-written every update
   - `MISSION.md` — the mission (directive, or system-inferred)
-  - `DIALOGUE.md` — durable append-only conversation log (both agents + host)
-  - `MEMORY.md` — host notes + system review pack per cycle
+  - `DIALOGUE.md` — durable append-only conversation log (system + worker)
+  - `STANDARDS.md` — optional lead notes (system may edit across cycles)
+  - `MEMORY.md` — host sensors + review pack / post-worker ship facts
   - `events.log` — every phase, tool call, reply, and error
   - `STOP` — created by `swarm stop` to request graceful shutdown
 - **Git**: integration branch `swarm/<id>/base`, worker branch `swarm/<id>/w1`,
@@ -69,14 +70,15 @@ directly from disk.
 
 Each cycle the host (not the models) owns:
 
-1. **System turn** first — packs last worker session trace + git `--stat` into MEMORY when cycle > 1
-2. **Verdict** — `CONTINUE`/`DONE` merge worker→base; `STOP` keeps commits; one re-ask if no VERDICT line
-3. **Sync** integration → worker worktree
-4. **Worker turn** — prompt is the system's message (+ tiny path footer)
-5. **Re-home + auto-commit** dirty worktree; restore re-homed paths on user branch
-6. **Bad Request / size** — abort, rotate OpenCode session (fresh context)
+1. **Sense** — pack git summary, optional last verify, worker session trace into MEMORY
+2. **System turn** — free tool use; reply `### TO_WORKER` + `### HOST` / `VERDICT`
+3. **Extract brief** — worker gets only TO_WORKER (rewrite pass if missing/thin)
+4. **Verdict** — merge on CONTINUE/DONE when commits exist; one re-ask if no token
+5. **Sync** → **worker turn** (brief + path footer) → **re-home + commit** + optional `verify`
+6. **Post-worker MEMORY** — ship facts for next system review
+7. **Stall / Bad Request** — zero-activity ~20m or size errors → abort, rotate session, retry
 
-Conversation lives in `DIALOGUE.md` + sessions. No team chat file.
+Conversation lives in `DIALOGUE.md` + sessions. Judgment lives with the system agent.
 
 ## Long runs & context
 

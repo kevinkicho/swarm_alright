@@ -8,71 +8,79 @@ Minimal **system ↔ worker** loop. No team chat, no contracts board, no third a
 user directive → MISSION.md (once)
        │
        ▼
-   ┌────────┐   message (human lead)    ┌────────┐
-   │ SYSTEM │ ────────────────────────► │ WORKER │  works until idle
-   └────────┘                           └────────┘
-       ▲                                     │
-       │     host packs: dialogue +          │ reply
-       │     session trace + git summary     ▼
-       └──────────── host commits / merges ──┘
+   ┌────────┐  tools: inspect mission, dialogue, MEMORY,   ┌────────┐
+   │ SYSTEM │  worktree, STANDARDS — then ### TO_WORKER    │ WORKER │
+   │ (lead) │ ───────────────────────────────────────────► │        │
+   └────────┘  (host strips private analysis + VERDICT)    └────────┘
+       ▲                                                         │
+       │   host packs: session trace, git --stat, verify         │
+       └──────────────── commit / merge on VERDICT ──────────────┘
 ```
 
-| Role | Model (default) | Job |
+| Role | Model | Job |
 | --- | --- | --- |
-| **System** | stronger model preferred | Agentic lead: tool-inspect mission/dialogue/memory/files, judge last work, write a careful engineer brief |
-| **Worker** | fast tool-using model | Receives only `### TO_WORKER` brief; implements until done/blocked/asking |
-| **Host** | — | Packs facts (git stat, session trace, metrics); extracts brief; git merge on `VERDICT` only — no quality policy trees |
+| **System** | stronger preferred | Agentic lead: tool-inspect, judge last work, write engineer brief, optional STANDARDS.md |
+| **Worker** | fast tool model | Receives only `### TO_WORKER`; implements until idle |
+| **Host** | — | Sensors (trace, git, verify, metrics), actuators (commit, merge, extract brief, stall rotate) — **not** quality policy trees |
 
-Agents do **not** talk through a special chat protocol. Conversation is:
+## System reply shape
 
-1. System investigates with tools, then replies with `### TO_WORKER` + `### HOST` / `VERDICT`  
-2. Host sends **only TO_WORKER** to the worker (not private analysis or VERDICT lines)  
-3. Worker reply + host pack (trace, git summary) feed the next system turn  
+```markdown
+### TO_WORKER
+<human brief only — goals, scope, acceptance, answers>
 
-If the worker asks a question, the **system answers inside TO_WORKER** next cycle — host does not branch on keywords.
+### HOST
+VERDICT: CONTINUE | DONE | STOP
+```
+
+Host sends **TO_WORKER** to the worker. Host parses **VERDICT** for git.
 
 ## Run folder
 
 ```
 .swarm/runs/<id>/
-  MISSION.md     user directive
-  DIALOGUE.md    append-only system + worker messages
-  MEMORY.md      host rewrite: paths + review pack
-  events.log     host log
-  run.json       registry mirror
-  STOP           graceful stop request
+  MISSION.md      user directive
+  DIALOGUE.md     append-only system + worker messages
+  STANDARDS.md    optional lead-owned quality notes (system may edit)
+  MEMORY.md       host rewrite: paths + review pack / post-worker facts
+  events.log
+  run.json
+  STOP
 ```
 
-## Cycle (host)
+## Cycle
 
-1. **System turn** — short prompt pointing at mission/dialogue/memory; model decides next step.  
-2. **Verdict** (cycle > 1, if worker had commits): parse `VERDICT: …`; one re-ask if missing; then merge or soft-stop.  
-3. **Sync** integration → worker worktree.  
-4. **Worker turn** — prompt ≈ system's message + tiny path footer; wait until idle (no turn timeout).  
-5. **Commit** — re-home dirty root if needed, auto-commit worktree.  
-6. Sleep briefly; loop until DONE/STOP/`swarm stop`.
+1. **Sense** — host builds review pack (git summary, last verify, worker session trace).  
+2. **System turn** — free tool use; investigate; emit TO_WORKER + VERDICT.  
+3. **Brief hygiene** — if TO_WORKER missing/thin, one rewrite pass (still model-written).  
+4. **Apply VERDICT** — merge on CONTINUE/DONE when commits exist; one re-ask if no token.  
+5. **Sync** → **Worker turn** (brief only) → **commit** + optional project `verify`.  
+6. **Post-worker MEMORY** — ship facts for next cycle.  
+7. Loop until DONE/STOP / `swarm stop`.
 
-## OpenCode
+## Host reliability (not judgment)
 
-- Official `@opencode-ai/sdk` only (`createOpencodeServer`, `session.create`, `promptAsync`, `event.subscribe`, attach TUI).  
-- Compaction is OpenCode-owned; host rotates session on Bad Request / size errors.  
-- System session: project root. Worker session: worktree only.
+| Sensor / actuator | Behavior |
+| --- | --- |
+| Zero-activity stall (~20m no bus events) | abort + rotate session + retry turn |
+| Bad Request / size | abort + rotate + retry |
+| `verify` in `.swarm/config.json` | run after commit; pass/fail in MEMORY for system |
+| empty_commit_streak | fact only — system decides response |
+| Full unified git diffs | never loaded; `--stat` / name-status only |
 
 ## Git
 
 ```
-user branch (never moved by host)
-  └── swarm/<id>/base     integration (accepted work)
-        └── swarm/<id>/w1 worker tip (worktree)
+user branch (never moved)
+  └── swarm/<id>/base
+        └── swarm/<id>/w1  (worktree)
 ```
 
-- `CONTINUE` / `DONE` → merge worker → base  
-- `STOP` → keep worker commits, end run  
-- Restart **reuses the same run id**, worktrees, and run folder  
+Restart **reuses the same run id**, worktrees, and run folder.
 
-## What we deliberately do not have
+## What we deliberately avoid
 
-- Team chat / multi-agent blackboard / contracts  
-- Planner + auditor + N workers  
-- Host-side second LLM or conductor agent (the system *is* the lead)  
-- Long role scripts stuffed into every prompt  
+- Team chat / multi-agent blackboards / contracts  
+- Host if-trees for “what the worker should do next”  
+- Third “auditor” or “conductor” agent (system **is** the lead)  
+- Stuffing VERDICT and private review into the worker prompt  
