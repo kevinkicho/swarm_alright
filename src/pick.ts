@@ -1,7 +1,5 @@
 import readline from "node:readline"
-
-const ESC = "\x1b["
-const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g
+import { ESC, Style, cutVisible, padVisible, visibleWidth } from "./style.ts"
 
 export type PickItem<T> = {
   label: string
@@ -9,15 +7,6 @@ export type PickItem<T> = {
   value: T
   /** Optional detail panel content, given the panel's inner text width. */
   detail?: (width: number) => string[]
-}
-
-function visible(s: string): number {
-  return s.replace(ANSI_RE, "").length
-}
-
-function padVisible(s: string, n: number): string {
-  const v = visible(s)
-  return v >= n ? s : s + " ".repeat(n - v)
 }
 
 export function wrapText(text: string, width: number): string[] {
@@ -36,16 +25,18 @@ export function wrapText(text: string, width: number): string[] {
   return lines.length ? lines : [""]
 }
 
-/** Boxed frame (┌─┐│└─┘) around content lines; lines are padded/cut to fit. */
+/** Boxed frame (┌─┐│└─┘) around content lines; ANSI-safe pad/cut. */
 export function frameBox(title: string, content: string[], width: number): string[] {
   const inner = width - 4 // "│ " + content + " │"
-  const top = `┌─ ${title} ${"─".repeat(Math.max(0, width - visible(title) - 5))}┐`
-  const body = content.map((l) => `│ ${padVisible(cut(l.replace(ANSI_RE, ""), inner), inner)} │`)
-  return [top, ...body, `└${"─".repeat(width - 2)}┘`]
-}
-
-function cut(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + "…" : s
+  const titleText = Style.highlight(title)
+  const titleVis = visibleWidth(title)
+  const top = Style.muted("┌─ ") + titleText + Style.muted(` ${"─".repeat(Math.max(0, width - titleVis - 5))}┐`)
+  const body = content.map((l) => {
+    const cut = cutVisible(l, Math.max(0, inner))
+    return Style.muted("│ ") + padVisible(cut, Math.max(0, inner)) + Style.muted(" │")
+  })
+  const bottom = Style.muted(`└${"─".repeat(Math.max(0, width - 2))}┘`)
+  return [top, ...body, bottom]
 }
 
 /**
@@ -66,10 +57,13 @@ export function pick<T>(title: string, items: PickItem<T>[]): Promise<T | undefi
     const render = () => {
       const leftWidth = twoPane() ? Math.min(48, Math.floor(width() * 0.42)) : width()
       const left = items.map((item, i) => {
-        const room = leftWidth - 3 - (item.hint && !twoPane() ? item.hint.length + 1 : 0)
-        const label = cut(item.label, Math.max(12, room))
-        const hint = twoPane() || !item.hint ? "" : ` ${ESC}90m${item.hint}${ESC}0m`
-        if (i === index) return `${ESC}36m❯${ESC}0m ${ESC}7m${padVisible(label, Math.max(12, room))}${ESC}0m${hint}`
+        const hintVis = item.hint && !twoPane() ? visibleWidth(item.hint) + 1 : 0
+        const room = leftWidth - 3 - hintVis
+        const label = cutVisible(item.label, Math.max(12, room))
+        const hint = twoPane() || !item.hint ? "" : ` ${Style.muted(item.hint)}`
+        if (i === index) {
+          return `${Style.cyan("❯")} ${Style.inverse(padVisible(label, Math.max(12, room)))}${hint}`
+        }
         return `  ${padVisible(label, Math.max(12, room))}${hint}`
       })
 
@@ -81,7 +75,7 @@ export function pick<T>(title: string, items: PickItem<T>[]): Promise<T | undefi
       }
 
       const rows = Math.max(left.length, right.length)
-      const lines = [title]
+      const lines = [Style.highlight(title)]
       for (let r = 0; r < rows; r++) {
         const l = left[r] ?? ""
         lines.push(twoPane() ? `${padVisible(l, leftWidth)}  ${right[r] ?? ""}` : l)
