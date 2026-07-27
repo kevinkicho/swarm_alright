@@ -544,27 +544,29 @@ ${mission}
     this.log(`  [host:memory] wrote ${memoryPath(this.runDir)} (${phase})`)
   }
 
-  /** Tiny host nudge only — never bulk context (that lives in files). */
-  private buildSystemNudge(): string {
-    const bits: string[] = []
-    if (this.emptyCommitStreak >= 3) {
-      bits.push(`worker shipped nothing for ${this.emptyCommitStreak} cycles — push for one tiny real change or DONE`)
-    }
-    if (this.workerSeemsToAsk(this.lastWorkerReply)) {
-      bits.push("worker asked a question or is blocked — answer them first, then give the next step")
-    }
-    return bits.join(". ").slice(0, 280)
-  }
+  /**
+   * Worker-facing brief extracted from the system reply.
+   * System may think/analyze freely; only the TO_WORKER section is the engineer's prompt.
+   * Avoids shipping VERDICT lines and private analysis into the worker context.
+   */
+  private extractWorkerBrief(systemText: string): string {
+    const text = systemText.trim()
+    if (!text) return text
 
-  /** Soft detect questions / blocked (natural language — no special protocol). */
-  private workerSeemsToAsk(text: string): boolean {
-    if (!text) return false
-    const t = text.toLowerCase()
-    if (/\b(blocked|need clarification|need you to|which should|what should i|can you (decide|confirm|pick))\b/.test(t)) {
-      return true
-    }
-    // question mark in last 400 chars often means a real ask
-    return /\?/.test(text.slice(-400))
+    // Preferred: ### TO_WORKER ... (until ### HOST / ## HOST / end)
+    const section = text.match(
+      /(?:^|\n)#{1,3}\s*TO[_\s-]?WORKER\s*\n([\s\S]*?)(?=\n#{1,3}\s*HOST\b|\n#{1,3}\s*VERDICT\b|\nVERDICT\s*:|$)/i,
+    )
+    if (section?.[1]?.trim()) return section[1].trim()
+
+    // Fallback: strip host-only lines so worker still gets a clean message
+    const cleaned = text
+      .split(/\r?\n/)
+      .filter((l) => !/^\s*VERDICT\s*:/i.test(l))
+      .filter((l) => !/^\s*#{1,3}\s*HOST\b/i.test(l))
+      .join("\n")
+      .trim()
+    return cleaned || text
   }
 
   /**
@@ -772,20 +774,27 @@ ${mission}
     }
 
     this.log(`[cycle ${this.cycle}] system...`)
-    this.writeHostMemory(
-      "system",
-      [
-        `Mission: ${this.missionFile}`,
-        `Dialogue: ${this.dialogueFile}`,
-        "Your reply is given to the worker as their next message (speak like a human lead).",
-        "When deciding about last cycle's shipped work, end with: VERDICT: CONTINUE | DONE | STOP",
-      ],
-      reviewSections,
-    )
+    // Facts only — no host policy trees. System decides how to use them.
+    const factNotes = [
+      `mission: ${this.missionFile}`,
+      `dialogue: ${this.dialogueFile}`,
+      `memory: ${memoryPath(this.runDir)}`,
+      `project: ${this.opts.project}`,
+      `worker_worktree: ${this.workerWorktree}`,
+      `integration: ${this.integrationBranch}`,
+      `empty_commit_streak: ${this.emptyCommitStreak}`,
+      `cycle: ${this.cycle}`,
+    ]
+    this.writeHostMemory("system", factNotes, reviewSections)
     let systemTurn = await this.turn(system, this.buildSystemPrompt(anyCommits))
     this.lastSystemReview = systemTurn.text
     this.throwIfStopped()
     appendDialogue(this.dialogueFile, "system", this.cycle, systemTurn.text)
+
+    const workerBrief = this.extractWorkerBrief(systemTurn.text)
+    if (workerBrief !== systemTurn.text.trim()) {
+      this.log(`  [host] extracted TO_WORKER brief (${workerBrief.length} chars) for engineer`)
+    }
 
     // Git merge decision about last cycle (if there were commits).
     if (this.cycle > 1) {
@@ -794,11 +803,11 @@ ${mission}
         this.heartbeat("verdict")
         let verdict = this.parseSystemVerdict(systemTurn.text)
         if (!verdict) {
-          // One short re-ask — don't invent host policy beyond CONTINUE fallback.
+          // Minimal host protocol only — git needs a token, not a policy engine.
           this.log(`  [host] no VERDICT line — one re-ask`)
           const reask = await this.turn(
             system,
-            `For host git only, reply with exactly one line (nothing else required):\nVERDICT: CONTINUE\nor VERDICT: DONE\nor VERDICT: STOP`,
+            `Host needs a git token only. Reply with exactly one line:\nVERDICT: CONTINUE\nor VERDICT: DONE\nor VERDICT: STOP`,
           )
           appendDialogue(this.dialogueFile, "system", this.cycle, `(verdict re-ask) ${reask.text}`)
           verdict = this.parseSystemVerdict(reask.text) || "CONTINUE"
@@ -828,14 +837,14 @@ ${mission}
       return
     }
 
-    // --- WORKER (engineer) — prompt is almost entirely the system's message ---
+    // --- WORKER — only the human brief, not system private analysis ---
     this.heartbeat("worker")
     this.log(`[cycle ${this.cycle}] host sync worker from integration...`)
     await this.hostSyncWorker()
     this.throwIfStopped()
 
     this.log(`[cycle ${this.cycle}] worker...`)
-    const workerTurn = await this.turn(worker, this.buildWorkerPrompt(systemTurn.text))
+    const workerTurn = await this.turn(worker, this.buildWorkerPrompt(workerBrief))
     this.lastWorkerReply = workerTurn.text
     this.throwIfStopped()
     appendDialogue(this.dialogueFile, "worker", this.cycle, workerTurn.text)
@@ -852,65 +861,73 @@ ${mission}
     await sleep(1500)
   }
 
-  /** System: speak as the human lead. Host only points at files. */
+  /**
+   * System turn: agentic lead — investigate with tools, then brief the worker.
+   * Host does not encode judgment trees; only role + paths + output shape for git.
+   */
   private buildSystemPrompt(hasReviewPack: boolean): string {
-    const lines: string[] = []
+    const lines: string[] = [
+      `You are the technical lead for this autonomous run (cycle ${this.cycle}).`,
+      `A strong engineer (the worker) will receive ONLY your ### TO_WORKER section as their next prompt — write that section as a careful human manager: clear goal, scope, acceptance checks, and any answers to their questions.`,
+      ``,
+      `Use tools freely before you decide: open the mission, dialogue, memory pack, and actual project/worktree files. Do not invent the state of the repo — inspect it when unsure.`,
+      ``,
+      `Paths:`,
+      `- mission: ${this.missionFile}`,
+      `- dialogue: ${this.dialogueFile}`,
+      `- memory (host facts + last-cycle pack): ${memoryPath(this.runDir)}`,
+      `- project root: ${this.opts.project}`,
+      `- worker worktree: ${this.workerWorktree}`,
+      ``,
+    ]
+
     if (this.cycle === 1 && !this.opts.resumeFrom) {
       lines.push(
-        `You're the lead on this run (cycle 1).`,
-        `Read the mission: ${this.missionFile}`,
-        `Skim the project at ${this.opts.project} if you need orientation.`,
-        `Write the first message you'd give a strong engineer: concrete next work, what "done" looks like.`,
-        `They will receive your words as their prompt and go work until they stop.`,
+        `Kickoff: understand the mission and codebase, then set a sharp first assignment — one coherent unit of work with visible definition of done.`,
       )
     } else if (this.cycle === 1 && this.opts.resumeFrom) {
       lines.push(
-        `Resuming run ${this.id} (cycle 1 of this process).`,
-        `Mission: ${this.missionFile}`,
-        `Prior conversation: ${this.dialogueFile}`,
-        `Tell the engineer what to do next, as a human lead would.`,
+        `Resume: reconstruct where the project stands from dialogue + files, then assign the best next unit of work.`,
       )
     } else {
       lines.push(
-        `Cycle ${this.cycle}. You're still the lead.`,
-        `Mission: ${this.missionFile}`,
-        `Full conversation: ${this.dialogueFile}`,
+        `Review last cycle with care: quality of the worker's approach, whether the change advanced the mission, gaps, and what a good next step is (or whether to stop).`,
       )
       if (hasReviewPack) {
-        lines.push(
-          `Host packed last cycle for you in ${memoryPath(this.runDir)}: git summary + worker session trace (tools/thinking). Read it like a colleague's screen.`,
-        )
+        lines.push(`Host left a git summary + worker session trace in MEMORY — start there, then open files if you need more.`)
       } else {
-        lines.push(`Worker shipped no commits last cycle (streak ${this.emptyCommitStreak}).`)
+        lines.push(`Host fact: worker produced no new commits last cycle (streak ${this.emptyCommitStreak}). Decide yourself whether to unblock, shrink scope, or stop.`)
       }
       if (this.lastWorkerReply) {
-        const excerpt = this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 600)
-        lines.push(`Worker's last message:\n"""${excerpt}"""`)
+        const excerpt = this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 700)
+        lines.push(``, `Worker last message:`, `"""${excerpt}"""`)
       }
-      lines.push(
-        `Answer any questions, then tell them the next concrete step (or that the mission is complete).`,
-        `For host git on last cycle's commits, include one line: VERDICT: CONTINUE | DONE | STOP`,
-        `(CONTINUE = merge + keep going, DONE = merge + end run, STOP = keep commits unmerged + end run.)`,
-      )
     }
-    const nudge = this.buildSystemNudge()
-    if (nudge) lines.push(`(Host: ${nudge})`)
+
+    lines.push(
+      ``,
+      `When finished investigating, reply in this shape (markdown headings):`,
+      `### TO_WORKER`,
+      `<message the engineer will see — full brief, no VERDICT line, no host jargon>`,
+      ``,
+      `### HOST`,
+      `VERDICT: CONTINUE | DONE | STOP`,
+      `(CONTINUE = merge last work + keep going, DONE = merge + end run, STOP = keep unmerged commits + end run.)`,
+      ``,
+      `Your judgment of quality and next steps lives in TO_WORKER; HOST is only the git token.`,
+    )
     return lines.join("\n")
   }
 
-  /**
-   * Worker prompt = system's message (human lead), plus a minimal footer.
-   * No team chat, no host essay.
-   */
-  private buildWorkerPrompt(systemMessage: string): string {
+  /** Worker sees only the lead's brief + tiny path footer. */
+  private buildWorkerPrompt(brief: string): string {
     return [
-      systemMessage.trim(),
+      brief.trim(),
       "",
       "—",
-      `Worktree: ${this.workerWorktree} (stay on this tree; do not move ${this.baseBranch} or ${this.integrationBranch}).`,
-      `Mission file: ${this.missionFile}`,
-      `Conversation log: ${this.dialogueFile}`,
-      `When you're done, blocked, or need a decision — say so clearly in your reply and stop.`,
+      `Worktree: ${this.workerWorktree} (do not move branches ${this.baseBranch} or ${this.integrationBranch}).`,
+      `Mission: ${this.missionFile}`,
+      `When done, blocked, or needing a decision — say so clearly and stop.`,
     ].join("\n")
   }
 

@@ -19,18 +19,17 @@ user directive → MISSION.md (once)
 
 | Role | Model (default) | Job |
 | --- | --- | --- |
-| **System** | `deepseek-v4-flash` | Digest mission + dialogue + last worker work; speak to the worker like a human lead; emit `VERDICT: CONTINUE\|DONE\|STOP` for host git |
-| **Worker** | `deepseek-v4-flash` | Receive the system's message as the prompt; implement until done/blocked/asking; reply in plain language |
-| **Host** | — | OpenCode SDK sessions, worktree git, re-home/commit/merge, append dialogue, write memory pack |
+| **System** | stronger model preferred | Agentic lead: tool-inspect mission/dialogue/memory/files, judge last work, write a careful engineer brief |
+| **Worker** | fast tool-using model | Receives only `### TO_WORKER` brief; implements until done/blocked/asking |
+| **Host** | — | Packs facts (git stat, session trace, metrics); extracts brief; git merge on `VERDICT` only — no quality policy trees |
 
 Agents do **not** talk through a special chat protocol. Conversation is:
 
-1. System text → becomes worker prompt  
-2. Worker text → appended to `DIALOGUE.md`  
-3. Host copies worker OpenCode session trace + git `--stat` into `MEMORY.md`  
-4. System reads those files next cycle (and sees the worker's last message excerpt in the prompt)
+1. System investigates with tools, then replies with `### TO_WORKER` + `### HOST` / `VERDICT`  
+2. Host sends **only TO_WORKER** to the worker (not private analysis or VERDICT lines)  
+3. Worker reply + host pack (trace, git summary) feed the next system turn  
 
-If the worker asks a question, the **next system turn answers** — no extra agent.
+If the worker asks a question, the **system answers inside TO_WORKER** next cycle — host does not branch on keywords.
 
 ## Run folder
 

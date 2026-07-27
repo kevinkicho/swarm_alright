@@ -95,10 +95,10 @@ export function buildMemoryDoc(input: {
     for (const s of input.reviewSections) lines.push(s, "")
   }
   lines.push(
-    "## How to use",
-    "- System: read this pack + DIALOGUE.md, then message the worker like a human lead.",
-    "- Worker: follow the system message; open MISSION.md / DIALOGUE.md if needed.",
-    "- No team chat or contracts — only mission, dialogue, and this memory.",
+    "## How to use (system lead)",
+    "- These are facts, not instructions. Investigate with tools; decide quality and next work yourself.",
+    "- Put the engineer-facing brief under ### TO_WORKER in your reply; put VERDICT under ### HOST.",
+    "- Worker only receives TO_WORKER — keep analysis and git tokens out of that section.",
     "",
   )
   return lines.join("\n")
