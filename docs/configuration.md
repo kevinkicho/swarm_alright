@@ -35,7 +35,6 @@ changing swarm itself. Missing file = defaults (works on any project).
 ```json
 {
   "verify": "npm test",
-  "maxFilesPerContract": 2,
   "linkDirs": ["node_modules"],
   "singleFlight": true
 }
@@ -43,9 +42,8 @@ changing swarm itself. Missing file = defaults (works on any project).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `verify` | _(none)_ | Shell command the **host** runs in the worktree after auto-commit when there are new commits. Result is logged and shown to the auditor. Fail-soft (never aborts the run). |
-| `maxFilesPerContract` | `3` | Host asks planner to shrink contracts that name more files than this. |
-| `linkDirs` | `["node_modules"]` if `package.json` + `node_modules` exist, else `[]` | Dirs junction/symlink from project root into each worker worktree (skips reinstall). |
+| `verify` | _(none)_ | Shell command the **host** runs in the worker worktree after auto-commit when there are new commits. Result is logged and shown to the system reviewer. Fail-soft (never aborts the run). |
+| `linkDirs` | `["node_modules"]` if `package.json` + `node_modules` exist, else `[]` | Dirs junction/symlink from project root into the worker worktree (skips reinstall). |
 | `singleFlight` | `true` | Refuse a second concurrent alive run on the same project folder. |
 
 Keep `verify` as **your** project's normal check (unit tests, `go test ./...`, etc.). Prefer a focused command over an entire CI matrix so cycles stay cheap.
@@ -56,14 +54,13 @@ Models are [Ollama Cloud](https://ollama.com/search?c=cloud) ids. Defaults:
 
 | Role | Default | Why |
 | --- | --- | --- |
-| planner | `deepseek-v4-flash` | strong reasoning, 1M context |
+| system | `deepseek-v4-flash` | strong reasoning, 1M context |
 | worker | `deepseek-v4-flash` | strong agentic coding |
-| auditor | `gemma4:31b` | different family = independent review |
 
-Override per role (`--planner-model`, `--worker-model`, `--auditor-model`) or
-all at once (`--model`). Other good cloud choices: `qwen3.5:397b`,
-`kimi-k2.7-code`, `glm-5.2`, `nemotron-3-nano:30b` (cheapest).
-`swarm models` lists what your account can use.
+Override per role (`--system-model`, `--worker-model`) or both at once
+(`--model`). Other good cloud choices: `qwen3.5:397b`, `kimi-k2.7-code`,
+`glm-5.2`, `nemotron-3-nano:30b` (cheapest). `swarm models` lists what your
+account can use.
 
 Any model you pass is registered in the run's opencode config with tool calling
 enabled and conservative context limits (known limits for the defaults; safe
@@ -76,8 +73,8 @@ Every run's server gets this via `OPENCODE_CONFIG_CONTENT`:
 ```json
 {
   "enabled_providers": ["ollama"],
-  "model": "ollama/<planner-model>",
-  "small_model": "ollama/<planner-model>",
+  "model": "ollama/<system-model>",
+  "small_model": "ollama/<system-model>",
   "share": "disabled",
   "autoupdate": false,
   "permission": {
@@ -103,7 +100,7 @@ your global opencode config is untouched.
 
 | Path | Contents |
 | --- | --- |
-| `<project>/.swarm/` | Per-project: `runs/<id>/` (blackboard, events.log, run.json, STOP), `worktrees/<id>/` |
+| `<project>/.swarm/` | Per-project: `runs/<id>/` (MISSION.md, MEMORY.md, events.log, run.json, STOP), `worktrees/<id>/` |
 | `~/.swarm/runs/<id>.json` | Registry records for `ls`/`watch`/pickers |
 | `~/.swarm/.env` | Optional global API key fallback |
 | `<project>/.git/info/exclude` | `.swarm/` appended (keeps run artifacts out of git status) |

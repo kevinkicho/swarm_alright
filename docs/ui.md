@@ -14,9 +14,9 @@ the menu; run/restart/watch/attach take over the terminal.
 - Repaints only when content actually changed — no flicker, no scrolling spam
 - Overview: active runs get multi-line activity tails; finished runs are
   compact one-liners
-- Single run: **todo-board** parsed live from the blackboard — GOAL, TODOS
-  (☑/☐), CONTRACTS per worker, AUDIT verdicts — above the activity feed
-- Color code: yellow = tool calls, green = ACCEPT, magenta = REJECT,
+- Single run: **mission line** parsed live from `MISSION.md` above the
+  activity feed
+- Color code: yellow = tool calls, green = ACCEPT/CONTINUE, magenta = DONE/STOP,
   red = errors, cyan = cycle markers
 - `q` quits (never stops the run)
 
@@ -24,7 +24,7 @@ the menu; run/restart/watch/attach take over the terminal.
 
 Used everywhere a run or agent must be chosen (`stop`, `logs`, `tui`,
 `restart`, the wizard). Compact list on the left; boxed detail frame on the
-right with the full picture: status, cycle, start time, all three models,
+right with the full picture: status, cycle, start time, both models,
 project path, and the complete word-wrapped directive. `↑/↓` move, `enter`
 selects, `esc`/`q` cancels. Single-match lists auto-select. Falls back to
 one column below 90 chars wide.
@@ -36,7 +36,7 @@ run (`opencode attach <run-server> --session <agent>`):
 
 - The agent's full message stream live: reasoning, tool calls, file edits,
   shell commands, diffs
-- Works per agent: planner, auditor, or any worker
+- Works per agent: system or worker
 - Read-only in practice — the swarm drives the session; `q`/Ctrl+C detaches
   without affecting the run
 - Requires an active run (the TUI is a client of the run's server)
