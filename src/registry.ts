@@ -3,7 +3,7 @@ import path from "node:path"
 import { registryDir } from "./config.ts"
 
 export type AgentRecord = {
-  role: "planner" | "worker" | "auditor"
+  role: "system" | "worker"
   name: string
   directory: string
   sessionID: string
@@ -22,9 +22,8 @@ export type RunRecord = {
   lastHeartbeat?: string
   phase?: string
   runDir: string
-  models: { planner: string; worker: string; auditor: string }
+  models: { system: string; worker: string }
   directive?: string
-  workers?: number
   agents?: AgentRecord[]
 }
 

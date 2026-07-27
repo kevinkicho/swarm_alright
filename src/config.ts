@@ -4,12 +4,11 @@ import os from "node:os"
 
 export const PROVIDER_ID = "ollama"
 
-export type Models = { planner: string; worker: string; auditor: string }
+export type Models = { system: string; worker: string }
 
 export const DEFAULT_MODELS: Models = {
-  planner: "deepseek-v4-flash",
+  system: "deepseek-v4-flash",
   worker: "deepseek-v4-flash",
-  auditor: "gemma4:31b",
 }
 
 // Context/output token limits for known Ollama Cloud models (used by opencode for compaction).

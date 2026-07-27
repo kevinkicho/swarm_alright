@@ -2,13 +2,14 @@ import fs from "node:fs"
 import path from "node:path"
 
 /**
- * Host-owned shared memory for a run. Agents read this file with tools as needed
- * instead of receiving bulk host briefs / diffs inside every API prompt.
+ * Run files the host maintains (not a multi-agent blackboard):
+ * - MISSION.md  — user directive (once)
+ * - DIALOGUE.md — append-only system↔worker conversation
+ * - MEMORY.md   — host rewrite each phase: paths + optional review pack (trace/diff)
  */
 
-export type MemoryPaths = {
+export type RunPaths = {
   memory: string
-  blackboard: string
   project: string
   integrationBranch: string
   baseBranch: string
@@ -18,9 +19,43 @@ export function memoryPath(runDir: string): string {
   return path.join(runDir, "MEMORY.md")
 }
 
+export function dialoguePath(runDir: string): string {
+  return path.join(runDir, "DIALOGUE.md")
+}
+
+export function missionPath(runDir: string): string {
+  return path.join(runDir, "MISSION.md")
+}
+
 export function writeMemory(file: string, body: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, body.endsWith("\n") ? body : body + "\n")
+}
+
+/**
+ * Append an entry to the durable DIALOGUE.md — the chronologically-appended
+ * conversation between worker and system. Both agents read this for context;
+ * the host appends on their behalf after each turn. Survives session rotation
+ * and restarts. Never overwritten — only appended.
+ */
+export function appendDialogue(file: string, who: string, cycle: number, text: string): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const stamp = new Date().toISOString()
+    const block = `\n## [cycle ${cycle}] ${who} — ${stamp}\n\n${text.trim() || "(no text)"}\n`
+    fs.appendFileSync(file, block)
+  } catch {}
+}
+
+/** Read the last N entries from DIALOGUE.md (for prompt context). */
+export function recentDialogue(file: string, maxEntries = 6): string {
+  try {
+    const text = fs.readFileSync(file, "utf8")
+    const entries = text.split(/\n## \[cycle /).filter((e) => e.trim())
+    return entries.slice(-maxEntries).map((e) => "## [cycle " + e).join("\n").trim()
+  } catch {
+    return ""
+  }
 }
 
 /** Cap large blobs so agents can open the file without a multi-MB read. */
@@ -33,7 +68,7 @@ export function buildMemoryDoc(input: {
   runId: string
   cycle: number
   phase: string
-  paths: MemoryPaths
+  paths: RunPaths
   hostNotes: string[]
   reviewSections?: string[]
 }): string {
@@ -45,26 +80,25 @@ export function buildMemoryDoc(input: {
     "",
     "## Paths",
     `- memory: ${input.paths.memory}`,
-    `- blackboard: ${input.paths.blackboard}`,
     `- project: ${input.paths.project}`,
     `- integration branch (host-managed): ${input.paths.integrationBranch}`,
     `- user branch (never touch): ${input.paths.baseBranch}`,
     "",
-    "## Host notes (authoritative)",
+    "## Host notes",
     ...(input.hostNotes.length ? input.hostNotes.map((n) => (n.startsWith("-") ? n : `- ${n}`)) : ["- (none)"]),
     "",
   ]
   if (input.reviewSections?.length) {
-    lines.push("## Review pack (for auditor)")
-    lines.push("Host-computed git status. Prefer this over re-diffing everything yourself.")
+    lines.push("## Review pack (host)")
+    lines.push("Git summary + worker session trace from the last worker turn.")
     lines.push("")
     for (const s of input.reviewSections) lines.push(s, "")
   }
   lines.push(
     "## How to use",
-    "- Read this file and the blackboard with tools when you need context.",
-    "- Do not paste the whole memory into commits or into the blackboard.",
-    "- Blackboard = team board (contracts, feedback, chat). Memory = host facts for this cycle.",
+    "- System: read this pack + DIALOGUE.md, then message the worker like a human lead.",
+    "- Worker: follow the system message; open MISSION.md / DIALOGUE.md if needed.",
+    "- No team chat or contracts — only mission, dialogue, and this memory.",
     "",
   )
   return lines.join("\n")

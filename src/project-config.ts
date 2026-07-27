@@ -8,7 +8,6 @@ import path from "node:path"
  * Example:
  * {
  *   "verify": "npm test",
- *   "maxFilesPerContract": 2,
  *   "linkDirs": ["node_modules"],
  *   "singleFlight": true
  * }
@@ -16,8 +15,6 @@ import path from "node:path"
 export type ProjectConfig = {
   /** Shell command run in the worker worktree after auto-commit (host-owned). Omit to skip. */
   verify?: string
-  /** Max distinct source-file paths named in one contract task (default 3). */
-  maxFilesPerContract?: number
   /**
    * Directories to link from the project root into each worktree when present.
    * Default: ["node_modules"] only if the project has package.json + node_modules.
@@ -29,12 +26,9 @@ export type ProjectConfig = {
 
 export type ResolvedProjectConfig = {
   verify?: string
-  maxFilesPerContract: number
   linkDirs: string[]
   singleFlight: boolean
 }
-
-const DEFAULT_MAX_FILES = 3
 
 export function loadProjectConfig(project: string): ResolvedProjectConfig {
   const file = path.join(project, ".swarm", "config.json")
@@ -46,11 +40,6 @@ export function loadProjectConfig(project: string): ResolvedProjectConfig {
   } catch {
     raw = {}
   }
-
-  const maxFiles =
-    typeof raw.maxFilesPerContract === "number" && raw.maxFilesPerContract >= 1
-      ? Math.min(20, Math.floor(raw.maxFilesPerContract))
-      : DEFAULT_MAX_FILES
 
   let linkDirs: string[]
   if (Array.isArray(raw.linkDirs)) {
@@ -65,5 +54,5 @@ export function loadProjectConfig(project: string): ResolvedProjectConfig {
   const verify = typeof raw.verify === "string" && raw.verify.trim() ? raw.verify.trim() : undefined
   const singleFlight = raw.singleFlight !== false
 
-  return { verify, maxFilesPerContract: maxFiles, linkDirs, singleFlight }
+  return { verify, linkDirs, singleFlight }
 }

@@ -2,7 +2,6 @@ import fs from "node:fs"
 import path from "node:path"
 import { loadApiKey, opencodeConfig, bareModel, PROVIDER_ID, type Models } from "./config.ts"
 import { startServer, Api, EventBus, type ServerHandle, type SwarmEvent } from "./opencode.ts"
-// All OpenCode traffic goes through @opencode-ai/sdk (Api/EventBus are thin SDK wrappers).
 import {
   ensureRepo,
   addWorktree,
@@ -22,79 +21,67 @@ import {
   isDirty,
 } from "./git.ts"
 import * as Registry from "./registry.ts"
-import {
-  plannerSystem,
-  workerSystem,
-  auditorSystem,
-  plannerPrompt,
-  workerPrompt,
-  auditorPrompt,
-  parseVerdicts,
-  type RunContext,
-  type WorkerSlot,
-} from "./prompts.ts"
-import {
-  parseContracts,
-  assessContractSize,
-  parseWorkerSignals,
-  openFeedbackWorkers,
-  looksIncomplete,
-  ensureTeamChatSection,
-  appendTeamChat,
-  markTodoNeedsRework,
-  normalizeTaskKey,
-  looksLikeMockSpamContract,
-  normalizeResumedBoard,
-} from "./team.ts"
-import { memoryPath, writeMemory, buildMemoryDoc, clip } from "./memory.ts"
+import { Style } from "./style.ts"
+import { memoryPath, writeMemory, buildMemoryDoc, appendDialogue, clip } from "./memory.ts"
 import { loadProjectConfig, type ResolvedProjectConfig } from "./project-config.ts"
 
 export type RunOptions = {
   project: string
   directive?: string
-  workers: number
   models: Models
   maxCycles?: number
   apiKey?: string
-  /** Continue from a previous run: adopt its blackboard and its accepted-work branch. */
+  /** Continue a previous run by reusing its id, worktrees, and run folder. */
   resumeFrom?: string
 }
 
 type AgentRef = {
-  role: "planner" | "worker" | "auditor"
+  role: "system" | "worker"
   directory: string
   sessionID: string
   model: string
-  system: string
-  worker?: WorkerSlot
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export class Run {
   private opts: RunOptions
-  private id = Registry.newId()
+  private id: string
   private runDir: string
+  private missionFile: string
+  private dialogueFile: string
   private logFile: string
   private stopFile: string
   private server?: ServerHandle
   private api?: Api
   private bus?: EventBus
   private record?: Registry.RunRecord
-  private ctx?: RunContext
   private projectCfg?: ResolvedProjectConfig
+  private baseBranch = ""
+  private integrationBranch = ""
+  private workerBranch = ""
+  private workerWorktree = ""
   private stopping = false
   private cycle = 0
   private heartbeatTimer?: ReturnType<typeof setInterval>
-  private lastAcceptedTask = new Map<string, string>()
-  /** Consecutive cycles with zero commits ahead (for soft planner nudge). */
+  /** Consecutive cycles with zero commits ahead (soft nudge to the system). */
   private emptyCommitStreak = 0
-  /** Paths re-homed this cycle (for root restore after commit). */
-  private lastRehomedPaths: string[] = []
+  /** Last review verdict the system emitted (CONTINUE / DONE / STOP). */
+  private lastVerdict = ""
+  /** Last full review text from the system (fed back to the worker next cycle). */
+  private lastSystemReview = ""
+  /** Last worker reply text (fed to the system for context). */
+  private lastWorkerReply = ""
+  /** Last git sync result — surfaced to the system in the review pack. */
+  private lastSyncOk = true
+  private lastSyncDetail = ""
 
   constructor(opts: RunOptions) {
+    this.id = opts.resumeFrom ?? Registry.newId()
     this.opts = opts
     this.runDir = path.join(opts.project, ".swarm", "runs", this.id)
+    this.missionFile = path.join(this.runDir, "MISSION.md")
+    this.dialogueFile = path.join(this.runDir, "DIALOGUE.md")
     this.logFile = path.join(this.runDir, "events.log")
     this.stopFile = path.join(this.runDir, "STOP")
   }
@@ -105,7 +92,8 @@ export class Run {
       fs.mkdirSync(this.runDir, { recursive: true })
       fs.appendFileSync(this.logFile, line + "\n")
     } catch {}
-    console.log(line)
+    // Color only the console; keep events.log plain for tools/tails that recolor
+    console.log(Style.logLine(line))
   }
 
   private heartbeat(phase?: string): void {
@@ -142,50 +130,8 @@ export class Run {
     }
   }
 
-  private blackboardTemplate(): string {
-    const contracts = this.ctx!.workers
-      .map(
-        (w) => `### ${w.name}
-status: none
-task: (planner fills this in)
-acceptance: (planner fills this in)`,
-      )
-      .join("\n")
-    const feedback = this.ctx!.workers.map((w) => `### ${w.name}\n(none)`).join("\n")
-    return `# SWARM BLACKBOARD — run ${this.id}
-Project: ${this.opts.project}
-Started: ${new Date().toISOString()}
-Cycle: 0
-
-## GOAL
-${this.opts.directive ?? "(no directive given — the planner infers the mission from the project itself)"}
-
-## CONTRACTS
-${contracts}
-
-## TODOS
-(planner maintains a prioritized list here)
-
-## AMBITIONS
-(planner maintains big, long-term ideas here)
-
-## FEEDBACK
-${feedback}
-
-## TEAM CHAT
-(teammates leave notes for each other here — status checks, tips, ideas)
-
-## WORK LOG
-(workers append one line per cycle)
-
-## AUDIT LOG
-(auditor appends verdicts here)
-`
-  }
-
   async start(): Promise<void> {
     // Fatal handlers: only mark crashed when the process is actually dying.
-    // unhandledRejection alone must NOT flip status (Node often continues running).
     process.on("unhandledRejection", (reason) => {
       const msg = reason instanceof Error ? reason.message : String(reason)
       this.log(`[FATAL] unhandled rejection: ${msg}`)
@@ -214,6 +160,8 @@ ${feedback}
     this.opts.project = project
     // Rebind paths after resolve so relative project folders still write absolute run dirs.
     this.runDir = path.join(project, ".swarm", "runs", this.id)
+    this.missionFile = path.join(this.runDir, "MISSION.md")
+    this.dialogueFile = path.join(this.runDir, "DIALOGUE.md")
     this.logFile = path.join(this.runDir, "events.log")
     this.stopFile = path.join(this.runDir, "STOP")
     this.projectCfg = loadProjectConfig(project)
@@ -227,78 +175,81 @@ ${feedback}
       const clash = Registry.list().find(
         (r) => r.status === "running" && Registry.alive(r.pid) && path.resolve(r.project) === project,
       )
-      if (clash) {
+      if (clash && clash.id !== this.id) {
         throw new Error(
           `another run is already alive on this project (${clash.id}). Stop it first, or set "singleFlight": false in .swarm/config.json`,
         )
       }
     }
 
-    this.log(`run ${this.id} starting on ${project}`)
+    const resuming = !!this.opts.resumeFrom
+    this.log(`run ${this.id} ${resuming ? "resuming" : "starting"} on ${project}`)
     this.log(`preparing git repo...`)
-    const baseBranch = await ensureRepo(project)
-    this.log(`git ready (base branch: ${baseBranch})`)
+    this.baseBranch = await ensureRepo(project)
+    this.log(`git ready (base branch: ${this.baseBranch})`)
     // Keep project root on the user's branch so integration is never checked out there.
-    await ensureOnBranch(project, baseBranch)
+    await ensureOnBranch(project, this.baseBranch)
 
-    fs.mkdirSync(path.join(project, ".swarm", "worktrees", this.id), { recursive: true })
+    this.integrationBranch = `swarm/${this.id}/base`
+    this.workerBranch = `swarm/${this.id}/w1`
+    this.workerWorktree = path.join(project, ".swarm", "worktrees", this.id, "w1")
 
-    const workers: WorkerSlot[] = []
-    for (let i = 1; i <= this.opts.workers; i++) {
-      workers.push({
-        name: `worker-${i}`,
-        branch: `swarm/${this.id}/w${i}`,
-        worktree: path.join(project, ".swarm", "worktrees", this.id, `w${i}`),
-      })
-    }
-
-    const mem = memoryPath(this.runDir)
-    this.ctx = {
-      id: this.id,
-      project,
-      blackboard: path.join(this.runDir, "BLACKBOARD.md"),
-      memory: mem,
-      baseBranch,
-      integrationBranch: `swarm/${this.id}/base`,
-      workers,
-      directive: this.opts.directive,
-    }
-
-    let baseRef = "HEAD"
-    let blackboardContent = this.blackboardTemplate()
-    if (this.opts.resumeFrom) {
-      const oldBase = `swarm/${this.opts.resumeFrom}/base`
-      if (await branchExists(project, oldBase)) {
-        baseRef = oldBase
-        this.log(`continuing from ${oldBase} (accepted work of run ${this.opts.resumeFrom})`)
+    if (resuming) {
+      // Reuse everything: same id, same worktrees, same branches, same run folder.
+      // Only fail if the prior run left no swarm base branch at all.
+      const hasBase = await branchExists(project, this.integrationBranch)
+      if (!hasBase) {
+        this.log(`resume: no ${this.integrationBranch} — starting base from HEAD`)
+        await git(project, ["branch", this.integrationBranch, "HEAD"])
       }
-      const oldBoard = path.join(project, ".swarm", "runs", this.opts.resumeFrom, "BLACKBOARD.md")
-      if (fs.existsSync(oldBoard)) {
-        const raw = fs.readFileSync(oldBoard, "utf8")
-        blackboardContent = normalizeResumedBoard(raw, {
-          runId: this.id,
-          project,
-          liveWorkers: workers.map((w) => w.name),
-          maxLogLines: 12,
-        })
-        this.log(`adopted blackboard from run ${this.opts.resumeFrom} (normalized for new run)`)
+      const hasW1 = await branchExists(project, this.workerBranch)
+      if (!hasW1) {
+        this.log(`resume: no ${this.workerBranch} — starting from integration tip`)
+        await addWorktree(project, this.workerWorktree, this.workerBranch, this.integrationBranch)
+        if (this.projectCfg.linkDirs.length) {
+          linkSharedDirs(project, this.workerWorktree, this.projectCfg.linkDirs)
+        }
+      } else {
+        // Worktree may already exist on disk (registry keeps it). Reattach only if missing.
+        if (!fs.existsSync(this.workerWorktree)) {
+          await addWorktree(project, this.workerWorktree, this.workerBranch, this.workerBranch)
+          if (this.projectCfg.linkDirs.length) {
+            linkSharedDirs(project, this.workerWorktree, this.projectCfg.linkDirs)
+          }
+        }
       }
-    }
-
-    await git(project, ["branch", this.ctx.integrationBranch, baseRef])
-    for (const w of workers) {
-      await addWorktree(project, w.worktree, w.branch, this.ctx.integrationBranch)
+      // Continue cycle numbering from prior run's record if present.
+      const priorRec = Registry.load(this.id) ?? Registry.loadFromDisk(project, this.id)
+      if (priorRec && Number.isFinite(priorRec.cycle)) {
+        this.cycle = Math.max(0, priorRec.cycle)
+        this.log(`cycle counter continues from ${this.cycle} (next cycle will be ${this.cycle + 1})`)
+      }
+    } else {
+      // Fresh run: create integration branch + worker worktree.
+      fs.mkdirSync(path.dirname(this.workerWorktree), { recursive: true })
+      await git(project, ["branch", this.integrationBranch, "HEAD"])
+      await addWorktree(project, this.workerWorktree, this.workerBranch, this.integrationBranch)
       if (this.projectCfg.linkDirs.length) {
-        linkSharedDirs(project, w.worktree, this.projectCfg.linkDirs)
+        linkSharedDirs(project, this.workerWorktree, this.projectCfg.linkDirs)
       }
     }
-    this.log(`created ${workers.length} worktree(s) on integration branch ${this.ctx.integrationBranch}`)
-    this.log(`live workers only: ${workers.map((w) => w.name).join(", ")}`)
+    this.log(`integration branch: ${this.integrationBranch}`)
+    this.log(`worker worktree: ${this.workerWorktree} (branch ${this.workerBranch})`)
 
-    fs.writeFileSync(this.ctx.blackboard, ensureTeamChatSection(blackboardContent))
+    // Mission file — persists across restarts. Only written on a fresh run.
+    if (!fs.existsSync(this.missionFile)) {
+      const mission =
+        this.opts.directive ??
+        "(no directive given — the system infers the mission from the project itself)"
+      const body = `# MISSION — run ${this.id}
+
+${mission}
+`
+      fs.writeFileSync(this.missionFile, body)
+    }
 
     const apiKey = loadApiKey(this.opts.apiKey, project)
-    const modelIDs = [...new Set([this.opts.models.planner, this.opts.models.worker, this.opts.models.auditor])]
+    const modelIDs = [...new Set([this.opts.models.system, this.opts.models.worker])]
     this.log(`starting opencode server (models: ${modelIDs.map(bareModel).join(", ")})...`)
     this.server = await startServer({
       config: opencodeConfig(apiKey, modelIDs),
@@ -319,13 +270,12 @@ ${feedback}
       port: Number(new URL(this.server.url).port),
       status: "running",
       startedAt: new Date().toISOString(),
-      cycle: 0,
+      cycle: this.cycle,
       lastHeartbeat: new Date().toISOString(),
       phase: "boot",
       runDir: this.runDir,
       models: this.opts.models,
       directive: this.opts.directive,
-      workers: this.opts.workers,
     }
     this.saveRecord()
 
@@ -335,15 +285,20 @@ ${feedback}
     const agents = await this.createAgents()
     this.record.agents = agents.map((a) => ({
       role: a.role,
-      name: a.worker?.name ?? a.role,
+      name: a.role,
       directory: a.directory,
       sessionID: a.sessionID,
       model: a.model,
     }))
     this.saveRecord()
-    this.log(`agents ready: planner + auditor + ${workers.length} worker(s) — entering autonomous loop`)
-    this.log(`host owns git: auto-sync, auto-commit, ACCEPT merge, soft REJECT (no hard reset)`)
-    this.log(`no turn timeouts; agents use TEAM CHAT; contracts only for live workers`)
+    this.log(`agents ready: system (lead) + worker (engineer) — dialogue loop`)
+    this.log(`pattern: system message → worker works → host commits → system reads trace/diff → repeat`)
+    this.log(`host owns git only; no team-chat / contracts / third agent`)
+    if (this.opts.models.system === this.opts.models.worker) {
+      this.log(
+        `note: system and worker share model ${this.opts.models.system} — consider --system-model <other> for a stronger second opinion`,
+      )
+    }
     if (this.opts.maxCycles) this.log(`(test mode: will stop after ${this.opts.maxCycles} cycle(s))`)
 
     process.on("SIGINT", () => {
@@ -370,8 +325,6 @@ ${feedback}
           failures++
           const msg = err instanceof Error ? err.message : String(err)
           this.log(`cycle ${this.cycle} failed (${failures} in a row): ${msg.slice(0, 500)}`)
-          // Keep the loop alive: chat the failure, back off, continue unless catastrophic.
-          this.teamChat("host", "all", `cycle ${this.cycle} failed: ${msg.slice(0, 180)} — retrying`)
           if (failures >= 5) throw new Error(`too many consecutive failures, giving up`)
           await sleep(15_000)
         }
@@ -394,47 +347,38 @@ ${feedback}
   }
 
   private async createAgents(): Promise<AgentRef[]> {
-    const ctx = this.ctx!
     const agents: AgentRef[] = []
 
-    const mk = async (role: AgentRef["role"], directory: string, model: string, system: string, worker?: WorkerSlot) => {
-      const session = await this.api!.createSession(
-        directory,
-        `swarm ${this.id} ${role}${worker ? ` ${worker.name}` : ""}`,
-      )
-      agents.push({ role, directory, sessionID: session.id, model, system, worker })
-    }
+    // System: scoped to project root so it can read everything (including worker worktree).
+    const sysSession = await this.api!.createSession(this.opts.project, `swarm ${this.id} system`)
+    agents.push({
+      role: "system",
+      directory: this.opts.project,
+      sessionID: sysSession.id,
+      model: this.opts.models.system,
+    })
 
-    await mk("planner", ctx.project, this.opts.models.planner, plannerSystem(ctx))
-    await mk("auditor", ctx.project, this.opts.models.auditor, auditorSystem(ctx))
-    for (const w of ctx.workers) {
-      await mk("worker", w.worktree, this.opts.models.worker, workerSystem(ctx, w), w)
-    }
+    // Worker: scoped to its own worktree.
+    const wSession = await this.api!.createSession(this.workerWorktree, `swarm ${this.id} worker`)
+    agents.push({
+      role: "worker",
+      directory: this.workerWorktree,
+      sessionID: wSession.id,
+      model: this.opts.models.worker,
+    })
+
     return agents
   }
 
   private async rotateSession(agent: AgentRef): Promise<void> {
-    const who = `${agent.role}${agent.worker ? ` ${agent.worker.name}` : ""}`
-    const title = `swarm ${this.id} ${who} (rotated)`
-    const session = await this.api!.createSession(agent.directory, title)
+    const session = await this.api!.createSession(agent.directory, `swarm ${this.id} ${agent.role} (rotated)`)
     agent.sessionID = session.id
     if (this.record?.agents) {
-      const rec = this.record.agents.find((a) => a.role === agent.role && a.name === (agent.worker?.name ?? agent.role))
+      const rec = this.record.agents.find((a) => a.role === agent.role)
       if (rec) rec.sessionID = session.id
       this.saveRecord()
     }
-    this.log(`  [host] rotated session for ${who}`)
-    // Thin handoff so the team knows context was reset — board, not a long prompt.
-    this.teamChat(
-      "host",
-      agent.worker?.name ?? agent.role,
-      `rotated ${who} session (fresh context) — re-read MEMORY.md + blackboard before continuing`,
-    )
-    try {
-      this.writeHostMemory(this.record?.phase ?? "rotate", [
-        `Session rotated for ${who}. Prior chat context cleared; board and MEMORY are still authoritative.`,
-      ])
-    } catch {}
+    this.log(`  [host] rotated session for ${agent.role} (fresh context)`)
   }
 
   private isContextSizeError(msg: string): boolean {
@@ -453,11 +397,9 @@ ${feedback}
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const t0 = Date.now()
       try {
-        // Register idle wait BEFORE prompt so we never miss busy→idle.
         const idle = this.bus!.waitIdle(agent.directory, agent.sessionID, () => this.stopping || this.stopRequested())
         await this.api!.promptAsync(agent.directory, agent.sessionID, {
           model: { providerID: PROVIDER_ID, modelID: bareModel(agent.model) },
-          system: agent.system,
           parts: [{ type: "text", text: prompt }],
         })
         await idle
@@ -465,14 +407,9 @@ ${feedback}
         const secs = Math.round((Date.now() - t0) / 1000)
         const oneLine = text.replace(/\s+/g, " ").trim()
         if (oneLine) {
-          this.log(
-            `  [reply:${agent.role}${agent.worker ? ` ${agent.worker.name}` : ""}] ${oneLine.slice(0, 300)}`,
-          )
+          this.log(`  [reply:${agent.role}] ${oneLine.slice(0, 300)}`)
         }
-        this.log(`  [metric] ${agent.role}${agent.worker ? ` ${agent.worker.name}` : ""} turn ${secs}s`)
-        if (looksIncomplete(text)) {
-          this.log(`  [host] ${agent.role} reply looks incomplete (idle ended mid-thought) — logged only`)
-        }
+        this.log(`  [metric] ${agent.role} turn ${secs}s`)
         return { text, secs }
       } catch (err) {
         lastErr = err instanceof Error ? err : new Error(String(err))
@@ -485,8 +422,6 @@ ${feedback}
           await this.waitUntilNotBusy(agent.directory, agent.sessionID)
         } catch {}
 
-        // Bad Request / size failures: rotate session after first abort (fresh context).
-        // Not a host compact-at-45% policy — OpenCode prune/auto still owns compaction.
         if (this.isContextSizeError(msg) && attempt >= 1) {
           this.log(`  [host] size/Bad Request — rotating session (fresh context)`)
           await this.rotateSession(agent)
@@ -518,6 +453,64 @@ ${feedback}
     }
   }
 
+  /**
+   * Capture a full trace of the worker's latest turn: every tool call (with
+   * tool name + input) and every reasoning/text part, in order. This is what
+   * the system probes to understand what the worker did and why — like a
+   * human reading a colleague's screen.
+   * Returns a compact markdown string suitable for the review pack.
+   */
+  private async captureWorkerTrace(worker: AgentRef, maxChars = 8000): Promise<string> {
+    try {
+      const messages = await this.api!.sessionMessages(worker.directory, worker.sessionID)
+      if (!messages.length) return "(no messages in worker session)"
+      // Take the last assistant message (this turn) and walk its parts in order.
+      const last = [...messages].reverse().find((m: any) => m?.info?.role === "assistant")
+      if (!last) return "(no assistant reply found)"
+      const parts = last.parts ?? []
+      const lines: string[] = []
+      let toolCount = 0
+      let reasoningCount = 0
+      let textChars = 0
+      for (const p of parts) {
+        if (!p || typeof p !== "object") continue
+        if (p.type === "tool" || p.tool) {
+          toolCount++
+          const tool = String(p.tool ?? "tool")
+          const input = p.state?.input ?? p.input
+          let detail = ""
+          if (tool === "bash" || /bash|shell|cmd/i.test(tool)) {
+            const cmd =
+              (typeof input === "string" ? input : null) ??
+              input?.command ??
+              input?.cmd ??
+              input?.script ??
+              (input ? JSON.stringify(input) : "")
+            detail = String(cmd).replace(/\s+/g, " ").trim().slice(0, 300)
+          } else if (input && typeof input === "object") {
+            const pathHint = input.path ?? input.filePath ?? input.file ?? input.target
+            detail = pathHint ? String(pathHint) : JSON.stringify(input).slice(0, 200)
+          } else if (typeof input === "string") {
+            detail = input.slice(0, 200)
+          }
+          lines.push(`- tool: ${tool}${detail ? ` — ${detail}` : ""}`)
+        } else if (p.type === "reasoning" && p.text) {
+          reasoningCount++
+          const r = String(p.text).replace(/\s+/g, " ").trim()
+          if (r) lines.push(`- reasoning: ${r.slice(0, 400)}`)
+        } else if (p.type === "text" && p.text) {
+          textChars += String(p.text).length
+          lines.push(String(p.text))
+        }
+      }
+      const summary = `(${toolCount} tool calls, ${reasoningCount} reasoning blocks, ${textChars} chars of text)`
+      const body = lines.join("\n").trim()
+      return clip(`### Worker session trace ${summary}\n\n${body}`, maxChars)
+    } catch (err) {
+      return `(failed to capture worker trace: ${err instanceof Error ? err.message : String(err)})`
+    }
+  }
+
   /** After abort: OpenCode may already be idle (absent from status map). Poll until not busy. */
   private async waitUntilNotBusy(directory: string, sessionID: string): Promise<void> {
     for (let i = 0; i < 40; i++) {
@@ -534,271 +527,166 @@ ${feedback}
   }
 
   private writeHostMemory(phase: string, hostNotes: string[], reviewSections?: string[]): void {
-    const ctx = this.ctx!
     const body = buildMemoryDoc({
-      runId: ctx.id,
+      runId: this.id,
       cycle: this.cycle,
       phase,
       paths: {
-        memory: ctx.memory,
-        blackboard: ctx.blackboard,
-        project: ctx.project,
-        integrationBranch: ctx.integrationBranch,
-        baseBranch: ctx.baseBranch,
+        memory: memoryPath(this.runDir),
+        project: this.opts.project,
+        integrationBranch: this.integrationBranch,
+        baseBranch: this.baseBranch,
       },
       hostNotes,
       reviewSections,
     })
-    writeMemory(ctx.memory, body)
-    this.log(`  [host:memory] wrote ${ctx.memory} (${phase})`)
+    writeMemory(memoryPath(this.runDir), body)
+    this.log(`  [host:memory] wrote ${memoryPath(this.runDir)} (${phase})`)
   }
 
-  private teamChat(from: string, to: string, text: string): void {
-    try {
-      let board = this.readBoard()
-      board = appendTeamChat(board, this.cycle, from, to, text)
-      this.writeBoard(board)
-    } catch {}
-  }
-
-  /**
-   * One short host aside for the planner turn (or empty).
-   * Human-ish phrasing; never paste TEAM CHAT / FEEDBACK bodies into the API prompt.
-   */
-  private buildPlannerNudge(): string {
-    const board = this.readBoard()
-    const live = this.ctx!.workers.map((w) => w.name)
-    const bits: string[] = [`only ${live.join(" and ")} on the team this run`]
-
-    const feedback = openFeedbackWorkers(board, live)
-    if (feedback.length) {
-      bits.push(`${feedback.map((f) => f.worker).join(" and ")} still have open FEEDBACK — deal with that first`)
-    }
-
-    const signals = parseWorkerSignals(board, this.cycle - 1)
-    if (signals.length) {
-      bits.push(
-        "last cycle: " + signals.map((s) => `${s.worker} said ${s.kind}`).join(", "),
-      )
-    }
-
-    if (/\bproject complete\b|\ball features (done|shipped)\b|\bnothing left\b/i.test(board)) {
-      bits.push("board looks 'done' — invent the next ambitious shippable thing")
-    } else if (this.cycle > 1) {
-      const todos = board.match(/## TODOS\n([\s\S]*?)(?=\n## |$)/i)?.[1] ?? ""
-      const openTodos = (todos.match(/\[\s\]/g) || []).length
-      if (openTodos === 0) bits.push("TODOS are empty — pull from AMBITIONS or invent something good")
-    }
-
+  /** Tiny host nudge only — never bulk context (that lives in files). */
+  private buildSystemNudge(): string {
+    const bits: string[] = []
     if (this.emptyCommitStreak >= 3) {
-      bits.push(
-        `last ${this.emptyCommitStreak} cycles shipped nothing on w1 — shrink the contract to one tiny real file change`,
-      )
+      bits.push(`worker shipped nothing for ${this.emptyCommitStreak} cycles — push for one tiny real change or DONE`)
     }
-
+    if (this.workerSeemsToAsk(this.lastWorkerReply)) {
+      bits.push("worker asked a question or is blocked — answer them first, then give the next step")
+    }
     return bits.join(". ").slice(0, 280)
   }
 
+  /** Soft detect questions / blocked (natural language — no special protocol). */
+  private workerSeemsToAsk(text: string): boolean {
+    if (!text) return false
+    const t = text.toLowerCase()
+    if (/\b(blocked|need clarification|need you to|which should|what should i|can you (decide|confirm|pick))\b/.test(t)) {
+      return true
+    }
+    // question mark in last 400 chars often means a real ask
+    return /\?/.test(text.slice(-400))
+  }
+
   /**
-   * Validate contracts: only live workers, size limits, no pure-ghost work.
-   * Returns issues; host may re-prompt planner once.
+   * Parse host git instruction from system reply.
+   * Prefer explicit `VERDICT: CONTINUE|DONE|STOP`. Weak keyword fallbacks only.
    */
-  private validateContracts(): { ok: boolean; liveCount: number; issues: string[] } {
-    const board = this.readBoard()
-    const contracts = parseContracts(board)
-    const live = new Set(this.ctx!.workers.map((w) => w.name))
-    const issues: string[] = []
-    let liveCount = 0
-    const maxFiles = this.projectCfg?.maxFilesPerContract ?? 3
-
-    for (const c of contracts) {
-      if (!c.worker || c.worker === "?") continue
-      // Skip non-worker headers (planner sometimes adds ### planner)
-      if (!/^worker-\d+$/i.test(c.worker)) {
-        if (/^worker-/i.test(c.worker)) {
-          issues.push(`unknown worker label "${c.worker}" — only ${[...live].join(", ")}`)
-        }
-        continue
-      }
-      if (!live.has(c.worker)) {
-        issues.push(`ghost contract for ${c.worker} (not live — only ${[...live].join(", ")})`)
-        continue
-      }
-      liveCount++
-      const size = assessContractSize(c, maxFiles)
-      if (size) {
-        issues.push(`${c.worker} too large: ${size.reasons.join("; ")}`)
-      }
-      if (looksLikeMockSpamContract(c.task) && this.cycle > 2) {
-        issues.push(
-          `${c.worker} contract looks like mass mock/RTDB enrichment — prefer a product root-cause fix first`,
-        )
-      }
-      const key = normalizeTaskKey(c.task)
-      const prev = this.lastAcceptedTask.get(c.worker)
-      if (prev && key && prev === key) {
-        issues.push(`${c.worker} task duplicates last ACCEPT — assign new work or expand scope`)
-      }
+  private parseSystemVerdict(text: string): "CONTINUE" | "DONE" | "STOP" | "" {
+    const lines = text.split(/\r?\n/)
+    for (const line of lines) {
+      const m = line.match(/^\s*(?:\*\*|__|[-*]\s+)?VERDICT\s*:\s*(CONTINUE|DONE|STOP)\b/i)
+      if (m) return m[1].toUpperCase() as "CONTINUE" | "DONE" | "STOP"
     }
-
-    // Missing / already-done contracts leave a live worker with nothing to build.
-    for (const w of live) {
-      const c = contracts.find((x) => x.worker === w)
-      const taskOk = !!(c?.task && !/planner fills|^\(none\)/i.test(c.task))
-      const statusDone = !!(c && /^(done|accepted|complete|none)$/i.test(c.status))
-      if ((!taskOk || statusDone) && this.cycle > 1) {
-        issues.push(
-          statusDone
-            ? `${w} contract status is "${c?.status}" — assign new pending work (expand scope)`
-            : `no usable contract for live ${w}`,
-        )
-      }
+    const nonEmpty = lines.map((l) => l.trim()).filter(Boolean)
+    const last = (nonEmpty[nonEmpty.length - 1] ?? "").toLowerCase()
+    if (/^(verdict[:\s]+)?(continue|done|stop)\b/i.test(last)) {
+      const m = last.match(/(continue|done|stop)\b/i)
+      if (m) return m[1].toUpperCase() as "CONTINUE" | "DONE" | "STOP"
     }
-
-    // Unique live workers that actually have a pending-style contract
-    const uniqueLive = new Set(
-      contracts.filter((c) => live.has(c.worker) && c.task && !/planner fills|^\(none\)/i.test(c.task)).map((c) => c.worker),
-    )
-    return { ok: issues.length === 0, liveCount: uniqueLive.size || liveCount, issues }
+    const t = text.replace(/\s+/g, " ").trim().toLowerCase()
+    if (/\bmission complete\b/.test(t) && /\bstop\b/.test(t)) return "STOP"
+    if (/\bmission complete\b/.test(t)) return "DONE"
+    if (/\b(stop the run|end the run)\b/.test(t)) return "STOP"
+    return ""
   }
 
-  /** Strip ghost worker contract sections from the board (keep live only). */
-  private stripGhostContracts(): void {
-    const live = new Set(this.ctx!.workers.map((w) => w.name))
-    let board = this.readBoard()
-    const body = board.match(/(## CONTRACTS\n)([\s\S]*?)(?=\n## |$)/i)
-    if (!body) return
-    const chunks = body[2].split(/(?=^###\s+)/m)
-    const kept: string[] = []
-    for (const chunk of chunks) {
-      if (!chunk.trim()) continue
-      const name = chunk.match(/^###\s+(\S+)/m)?.[1]?.trim()
-      if (!name) {
-        kept.push(chunk)
-        continue
-      }
-      if (/^worker-\d+$/i.test(name) && !live.has(name)) {
-        this.log(`  [host:team] stripping ghost contract section ### ${name}`)
-        continue
-      }
-      kept.push(chunk)
-    }
-    board = board.replace(/(## CONTRACTS\n)([\s\S]*?)(?=\n## |$)/i, `$1${kept.join("").trimEnd()}\n`)
-    this.writeBoard(board)
-  }
-
-  private async hostSyncWorkers(): Promise<void> {
-    const ctx = this.ctx!
+  private async hostSyncWorker(): Promise<void> {
     // Ensure project root stays on user branch (agents sometimes checkout integration).
-    await ensureOnBranch(ctx.project, ctx.baseBranch)
-    for (const w of ctx.workers) {
-      const result = await syncWorkerFromIntegration(w.worktree, ctx.integrationBranch)
-      this.log(`  [host:git] sync ${w.name}: ${result.ok ? "ok" : "conflict"} — ${result.detail.slice(0, 200)}`)
-    }
+    await ensureOnBranch(this.opts.project, this.baseBranch)
+    const result = await syncWorkerFromIntegration(this.workerWorktree, this.integrationBranch)
+    this.lastSyncOk = result.ok
+    this.lastSyncDetail = result.detail.slice(0, 300)
+    this.log(`  [host:git] sync worker: ${result.ok ? "ok" : "conflict"} — ${result.detail.slice(0, 200)}`)
   }
 
   /**
-   * Re-home project-root dirty files into each worker worktree when the worktree
+   * Re-home project-root dirty files into the worker worktree when the worktree
    * is clean (agents often edit the project tree via external_directory).
    * Does not restrict agents — host recovers shippable commits.
    * Returns paths successfully copied (for optional root restore after commit).
    */
   private async hostRehomeOutsideWorktree(): Promise<string[]> {
-    this.lastRehomedPaths = []
-    const ctx = this.ctx!
     let rootDirty: string[] = []
     try {
-      rootDirty = await dirtyPaths(ctx.project)
+      rootDirty = await dirtyPaths(this.opts.project)
     } catch {
       return []
     }
     rootDirty = rootDirty.filter((p) => !p.startsWith(".swarm/"))
     if (!rootDirty.length) return []
 
-    const allCopied: string[] = []
-    for (const w of ctx.workers) {
-      try {
-        const wtDirty = await isDirty(w.worktree)
-        if (wtDirty) {
-          this.log(
-            `  [host:git] ${w.name}: worktree already dirty — skip re-home (${rootDirty.length} root path(s) still dirty)`,
-          )
-          continue
-        }
-        const { copied, skipped } = await rehomeDirtyIntoWorktree(ctx.project, w.worktree, rootDirty)
-        if (copied.length) {
-          const clean = copied.map((c) => c.replace(/ \(deleted\)$/, ""))
-          allCopied.push(...clean)
-          this.log(
-            `  [host:git] re-home → ${w.name}: ${copied.length} path(s): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? "…" : ""}`,
-          )
-          this.teamChat(
-            "host",
-            w.name,
-            `re-homed ${copied.length} edit(s) from project root into your worktree (prefer the worktree next time)`,
-          )
-        } else if (skipped.length) {
-          this.log(`  [host:git] re-home ${w.name}: nothing copied (${skipped.length} skipped)`)
-        }
-      } catch (err) {
-        this.log(`  [host:git] re-home ${w.name} failed: ${err instanceof Error ? err.message : String(err)}`)
+    try {
+      const wtDirty = await isDirty(this.workerWorktree)
+      if (wtDirty) {
+        this.log(
+          `  [host:git] worker: worktree already dirty — skip re-home (${rootDirty.length} root path(s) still dirty)`,
+        )
+        return []
       }
+      const { copied, skipped } = await rehomeDirtyIntoWorktree(this.opts.project, this.workerWorktree, rootDirty)
+      if (copied.length) {
+        const clean = copied.map((c) => c.replace(/ \(deleted\)$/, ""))
+        this.log(
+          `  [host:git] re-home → worker: ${copied.length} path(s): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? "…" : ""}`,
+        )
+        return clean
+      } else if (skipped.length) {
+        this.log(`  [host:git] re-home worker: nothing copied (${skipped.length} skipped)`)
+      }
+    } catch (err) {
+      this.log(`  [host:git] re-home worker failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-    this.lastRehomedPaths = [...new Set(allCopied)]
-    return this.lastRehomedPaths
+    return []
   }
 
-  private async hostCommitWorkers(): Promise<void> {
-    const ctx = this.ctx!
+  private async hostCommitWorker(): Promise<void> {
     const rehomed = await this.hostRehomeOutsideWorktree()
 
-    let anyCommitted = false
-    for (const w of ctx.workers) {
+    let committed = false
+    try {
+      let rootStillDirty = 0
       try {
-        let rootStillDirty = 0
+        rootStillDirty = (await dirtyPaths(this.opts.project)).filter((p) => !p.startsWith(".swarm/")).length
+      } catch {}
+      const result = await commitWorktree(
+        this.workerWorktree,
+        `swarm ${this.id} worker: cycle ${this.cycle} (host auto-commit)`,
+      )
+      committed = result.committed
+      const ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
+      this.log(
+        `  [host:git] commit worker: ${result.committed ? "committed" : "clean"} ${result.sha.slice(0, 7)} — ${result.detail}` +
+          ` [metric] rehomed=${rehomed.length} commits_ahead=${ahead}` +
+          `${!result.committed && rootStillDirty ? ` project_root_dirty=${rootStillDirty}` : ""}`,
+      )
+      if (this.projectCfg?.verify && result.committed) {
         try {
-          rootStillDirty = (await dirtyPaths(ctx.project)).filter((p) => !p.startsWith(".swarm/")).length
-        } catch {}
-        const result = await commitWorktree(
-          w.worktree,
-          `swarm ${ctx.id} ${w.name}: cycle ${this.cycle} (host auto-commit)`,
-        )
-        if (result.committed) anyCommitted = true
-        const ahead = await commitsAhead(ctx.project, ctx.integrationBranch, w.branch)
-        this.log(
-          `  [host:git] commit ${w.name}: ${result.committed ? "committed" : "clean"} ${result.sha.slice(0, 7)} — ${result.detail}` +
-            ` [metric] rehomed=${rehomed.length} commits_ahead=${ahead}` +
-            `${!result.committed && rootStillDirty ? ` project_root_dirty=${rootStillDirty}` : ""}`,
-        )
-        if (this.projectCfg?.verify && result.committed) {
-          try {
-            const { spawnSync } = await import("node:child_process")
-            const v = spawnSync(this.projectCfg.verify, {
-              cwd: w.worktree,
-              shell: true,
-              encoding: "utf8",
-              timeout: 600_000,
-            })
-            const out = ((v.stdout || "") + (v.stderr || "")).trim().slice(0, 400)
-            this.log(`  [host:verify] ${w.name}: exit ${v.status}${out ? ` — ${out}` : ""}`)
-          } catch (err) {
-            this.log(`  [host:verify] ${w.name} failed: ${err instanceof Error ? err.message : String(err)}`)
-          }
+          const { spawnSync } = await import("node:child_process")
+          const v = spawnSync(this.projectCfg.verify, {
+            cwd: this.workerWorktree,
+            shell: true,
+            encoding: "utf8",
+            timeout: 600_000,
+          })
+          const out = ((v.stdout || "") + (v.stderr || "")).trim().slice(0, 400)
+          this.log(`  [host:verify] worker: exit ${v.status}${out ? ` — ${out}` : ""}`)
+        } catch (err) {
+          this.log(`  [host:verify] worker failed: ${err instanceof Error ? err.message : String(err)}`)
         }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        this.log(`  [host:git] commit ${w.name} FAILED: ${msg.slice(0, 300)}`)
       }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.log(`  [host:git] commit worker FAILED: ${msg.slice(0, 300)}`)
     }
 
     // After a successful ship path, restore tracked re-homed files on user branch to HEAD
     // so master doesn't stay dirty with the same agent edits.
-    if (anyCommitted && rehomed.length) {
+    if (committed && rehomed.length) {
       try {
-        const restored = await restoreTrackedPathsToHead(ctx.project, rehomed)
+        const restored = await restoreTrackedPathsToHead(this.opts.project, rehomed)
         if (restored.length) {
           this.log(
-            `  [host:git] restored ${restored.length} tracked path(s) on ${ctx.baseBranch} to HEAD after re-home ship`,
+            `  [host:git] restored ${restored.length} tracked path(s) on ${this.baseBranch} to HEAD after re-home ship`,
           )
         }
       } catch (err) {
@@ -807,305 +695,223 @@ ${feedback}
     }
   }
 
-  private async buildReviewPack(): Promise<{ pack: string; sections: string[]; anyCommits: boolean }> {
-    const ctx = this.ctx!
+  private async buildReviewPack(workerTrace: string): Promise<{ pack: string; sections: string[]; anyCommits: boolean }> {
     const parts: string[] = []
     const sections: string[] = []
-    let anyCommits = false
-    for (const w of ctx.workers) {
-      const ahead = await commitsAhead(ctx.project, ctx.integrationBranch, w.branch)
-      this.log(`  [metric] ${w.name} commits_ahead=${ahead}`)
-      if (ahead === 0) {
-        const s = `### ${w.name}\nstatus: NO_COMMITS\nbranch ${w.branch} has 0 commits ahead of ${ctx.integrationBranch}.\nYou must VERDICT ${w.name}: REJECT no commits`
-        parts.push(s)
-        sections.push(s)
-        continue
-      }
-      anyCommits = true
-      const log = await shortLog(ctx.project, ctx.integrationBranch, w.branch)
-      const diff = await rangeDiff(ctx.project, ctx.integrationBranch, w.branch)
-      const s = `### ${w.name}\nstatus: HAS_COMMITS (${ahead} ahead of ${ctx.integrationBranch})\nlog:\n${log || "(empty)"}\ndiff:\n\`\`\`\n${clip(diff || "(empty)", 10_000)}\n\`\`\``
+    const ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
+    this.log(`  [metric] worker commits_ahead=${ahead}`)
+    if (ahead === 0) {
+      const s = `### worker\nstatus: NO_COMMITS\nbranch ${this.workerBranch} has 0 commits ahead of ${this.integrationBranch}.`
       parts.push(s)
       sections.push(s)
-      this.log(`  [host:git] review ${w.name}: ${ahead} commit(s) ahead`)
+      return { pack: parts.join("\n\n"), sections, anyCommits: false }
     }
-    return { pack: parts.join("\n\n"), sections, anyCommits }
-  }
-
-  private async hostApplyVerdicts(auditorText: string): Promise<void> {
-    const ctx = this.ctx!
-    const names = ctx.workers.map((w) => w.name)
-    const parsed = parseVerdicts(auditorText, names)
-
-    for (const w of ctx.workers) {
-      const ahead = await commitsAhead(ctx.project, ctx.integrationBranch, w.branch)
-      let decision = parsed.get(w.name)
-
-      if (!decision) {
-        if (ahead === 0) {
-          decision = { verdict: "REJECT", reason: "no commits (host)" }
-        } else {
-          decision = {
-            verdict: "REJECT",
-            reason: "auditor omitted VERDICT line (host soft-reject; commits kept)",
-          }
-          this.log(`  [host:git] ${w.name}: no VERDICT parsed — defaulting to soft REJECT`)
-        }
-      }
-
-      if (decision.verdict === "ACCEPT") {
-        if (ahead === 0) {
-          this.log(`  [host:git] ${w.name}: ACCEPT ignored — no commits ahead`)
-          this.appendAuditLog(w.name, "REJECT", "ACCEPT claimed but no commits ahead")
-          continue
-        }
-        const result = await acceptWorkerBranch(ctx.project, ctx.integrationBranch, w.branch, ctx.id)
-        if (result.ok) {
-          this.log(`  [host:git] ACCEPT ${w.name}: ${result.detail}`)
-          this.appendAuditLog(w.name, "ACCEPT", decision.reason)
-          this.clearFeedback(w.name)
-          // AUDIT LOG is enough — do not spam TEAM CHAT with ACCEPT (pollutes next planner prompt)
-          const contracts = parseContracts(this.readBoard())
-          const c = contracts.find((x) => x.worker === w.name)
-          if (c?.task) this.lastAcceptedTask.set(w.name, normalizeTaskKey(c.task))
-        } else {
-          this.log(`  [host:git] ACCEPT ${w.name} failed → soft REJECT: ${result.detail}`)
-          this.appendAuditLog(w.name, "REJECT", result.detail)
-          this.writeFeedback(w.name, `Host could not merge: ${result.detail}`)
-          this.teamChat("host", w.name, `merge failed — fix-forward: ${result.detail.slice(0, 120)}`)
-        }
-      } else {
-        this.log(`  [host:git] REJECT ${w.name} (soft, commits kept): ${decision.reason}`)
-        this.appendAuditLog(w.name, "REJECT", decision.reason)
-        this.ensureFeedback(w.name, decision.reason)
-        // One short note only on REJECT (actionable); agents own most TEAM CHAT
-        this.teamChat("host", w.name, `REJECT: ${decision.reason.slice(0, 120)}`)
-        try {
-          this.writeBoard(markTodoNeedsRework(this.readBoard(), decision.reason))
-        } catch {}
-      }
+    const log = await shortLog(this.opts.project, this.integrationBranch, this.workerBranch)
+    const diff = await rangeDiff(this.opts.project, this.integrationBranch, this.workerBranch)
+    let s = `### worker\nstatus: HAS_COMMITS (${ahead} ahead of ${this.integrationBranch})\nlog:\n${log || "(empty)"}\n`
+    if (!this.lastSyncOk) {
+      s += `\n### git sync\nstatus: CONFLICT\nCould not sync from ${this.integrationBranch}: ${this.lastSyncDetail}\n`
     }
-    // Stay on user branch after accept
-    await ensureOnBranch(ctx.project, ctx.baseBranch)
+    s += `\ngit summary:\n\`\`\`\n${clip(diff || "(empty)", 8000)}\n\`\`\``
+    parts.push(s)
+    sections.push(s)
+    // Worker session trace — what the worker actually did and reasoned about.
+    sections.push(workerTrace)
+    parts.push(workerTrace)
+    this.log(`  [host:git] review worker: ${ahead} commit(s) ahead`)
+    return { pack: parts.join("\n\n"), sections, anyCommits: true }
   }
 
-  private readBoard(): string {
-    try {
-      return fs.readFileSync(this.ctx!.blackboard, "utf8")
-    } catch {
-      return ""
-    }
-  }
+  /**
+   * Apply the system's verdict. CONTINUE → merge worker branch into integration
+   * and continue the loop. DONE → merge and stop. STOP → keep commits, stop.
+   */
+  private async hostApplyVerdict(verdict: "CONTINUE" | "DONE" | "STOP", reason: string): Promise<void> {
+    this.lastVerdict = verdict
+    const ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
 
-  private writeBoard(text: string): void {
-    fs.writeFileSync(this.ctx!.blackboard, text)
-  }
-
-  private appendAuditLog(worker: string, verdict: "ACCEPT" | "REJECT", reason: string): void {
-    let board = this.readBoard()
-    const line = `- cycle ${this.cycle} ${worker}: ${verdict} ${reason}`.replace(/\s+/g, " ").trim()
-    if (board.includes(line)) return
-    if (/## AUDIT LOG/i.test(board)) {
-      board = board.replace(/(## AUDIT LOG[^\n]*\n)/i, `$1${line}\n`)
-    } else {
-      board += `\n## AUDIT LOG\n${line}\n`
-    }
-    this.writeBoard(board)
-  }
-
-  private clearFeedback(worker: string): void {
-    this.replaceWorkerFeedback(worker, "(none)")
-  }
-
-  private writeFeedback(worker: string, text: string): void {
-    this.replaceWorkerFeedback(worker, text)
-  }
-
-  private ensureFeedback(worker: string, reason: string): void {
-    const board = this.readBoard()
-    const section = this.workerFeedbackBody(board, worker)
-    if (section && section !== "(none)" && section.length > 8) return
-    this.replaceWorkerFeedback(
-      worker,
-      `- cycle ${this.cycle}: ${reason}\n- Fix forward on your existing commits (host did not reset your branch).`,
-    )
-  }
-
-  private workerFeedbackBody(board: string, worker: string): string {
-    const feedback = board.match(/## FEEDBACK\n([\s\S]*?)(?=\n## |$)/i)?.[1] ?? ""
-    const m = feedback.match(new RegExp(`###\\s*${worker}\\s*\\n([\\s\\S]*?)(?=\\n### |$)`, "i"))
-    return (m?.[1] ?? "").trim()
-  }
-
-  private replaceWorkerFeedback(worker: string, body: string): void {
-    let board = this.readBoard()
-    if (!/## FEEDBACK/i.test(board)) {
-      board += `\n## FEEDBACK\n### ${worker}\n${body}\n`
-      this.writeBoard(board)
+    if (verdict === "STOP") {
+      this.log(`  [host:git] STOP — keeping worker commits (no merge): ${reason.slice(0, 200)}`)
       return
     }
-    const re = new RegExp(`(###\\s*${worker}\\s*\\n)([\\s\\S]*?)(?=\\n### |\\n## |$)`, "i")
-    if (re.test(board)) {
-      board = board.replace(re, `$1${body}\n`)
-    } else {
-      board = board.replace(/(## FEEDBACK\n)/i, `$1### ${worker}\n${body}\n`)
+
+    // CONTINUE / DONE → merge worker into integration (accept the work).
+    if (ahead === 0) {
+      this.log(`  [host:git] ${verdict} ignored — no commits ahead`)
+      return
     }
-    this.writeBoard(board)
+
+    const result = await acceptWorkerBranch(this.opts.project, this.integrationBranch, this.workerBranch, this.id)
+    if (result.ok) {
+      this.log(`  [host:git] ACCEPT worker: ${result.detail}`)
+    } else {
+      this.log(`  [host:git] ACCEPT worker failed: ${result.detail}`)
+    }
+    // Stay on user branch after accept
+    await ensureOnBranch(this.opts.project, this.baseBranch)
   }
 
+  /**
+   * One cycle = system speaks (as a human lead) → host may merge → worker works until idle → host commits.
+   * No team chat, no contracts, no third agent — just dialogue + git.
+   */
   private async runCycle(agents: AgentRef[]): Promise<void> {
-    const planner = agents.find((a) => a.role === "planner")!
-    const auditor = agents.find((a) => a.role === "auditor")!
-    const workers = agents.filter((a) => a.role === "worker")
+    const system = agents.find((a) => a.role === "system")!
+    const worker = agents.find((a) => a.role === "worker")!
     const t0 = Date.now()
 
-    // --- PLANNER ---
-    this.heartbeat("planner")
-    const nudge = this.buildPlannerNudge()
-    this.writeHostMemory("planner", [
-      "Phase: planner",
-      `Live workers: ${workers.map((w) => w.worker!.name).join(", ")}`,
-      "Write contracts only for live workers. Read blackboard for FEEDBACK/TEAM CHAT/TODOS (not pasted into the API prompt).",
-      nudge ? `Host nudge: ${nudge}` : "No special host gates this cycle.",
-    ])
-    this.log(`[cycle ${this.cycle}] planner...`)
-    await this.turn(planner, plannerPrompt(this.cycle, nudge))
-    this.throwIfStopped()
-
-    // --- CONTRACT GATE ---
-    this.heartbeat("contracts")
-    this.log(`[cycle ${this.cycle}] host validate contracts...`)
-    let gate = this.validateContracts()
-    if (!gate.ok) {
-      this.log(`  [host:team] contract issues: ${gate.issues.join(" | ")}`)
-      this.stripGhostContracts()
-      this.teamChat("host", "planner", `contract issues: ${gate.issues.slice(0, 3).join("; ")}`)
-      // One soft re-plan — short prompt only
-      this.writeHostMemory("planner-retry", [
-        "Re-plan: fix contracts.",
-        ...gate.issues.map((i) => `- ${i}`),
-        `Live workers only: ${this.ctx!.workers.map((w) => w.name).join(", ")}`,
-      ])
-      await this.turn(
-        planner,
-        `Cycle ${this.cycle} — quick re-plan, something's off with the contracts: ${gate.issues.slice(0, 3).join("; ")}. Stick to live workers, keep the work small, and ping the team in TEAM CHAT.`,
-      )
-      gate = this.validateContracts()
-      this.stripGhostContracts()
+    // --- SYSTEM (manager) ---
+    this.heartbeat("system")
+    let anyCommits = false
+    let reviewSections: string[] = []
+    if (this.cycle > 1) {
+      const workerTrace = await this.captureWorkerTrace(worker)
+      const pack = await this.buildReviewPack(workerTrace)
+      anyCommits = pack.anyCommits
+      reviewSections = pack.sections
     }
-    this.log(`  [host:team] contracts ok (${gate.liveCount})`)
-    this.throwIfStopped()
 
-    // --- SYNC + WORKERS ---
-    this.heartbeat("sync")
-    this.log(`[cycle ${this.cycle}] host sync workers from integration...`)
-    await this.hostSyncWorkers()
-    this.throwIfStopped()
-
-    this.writeHostMemory("worker", [
-      "Phase: worker",
-      `Worktree path is authoritative for product edits. Integration: ${this.ctx!.integrationBranch}; leave ${this.ctx!.baseBranch} alone.`,
-      "Host already synced integration into your worktree.",
-      openFeedbackWorkers(this.readBoard(), this.ctx!.workers.map((w) => w.name)).length
-        ? "Open feedback exists — fix it first."
-        : "No open feedback.",
-      "Leave a TEAM CHAT note when done (status + tips).",
-    ])
-
-    this.heartbeat("workers")
-    this.log(`[cycle ${this.cycle}] ${workers.length} worker(s)...`)
-    const workerResults = await Promise.all(
-      workers.map(async (w) => {
-        const r = await this.turn(w, workerPrompt(this.cycle, w.worker!.name))
-        return { agent: w, ...r }
-      }),
+    this.log(`[cycle ${this.cycle}] system...`)
+    this.writeHostMemory(
+      "system",
+      [
+        `Mission: ${this.missionFile}`,
+        `Dialogue: ${this.dialogueFile}`,
+        "Your reply is given to the worker as their next message (speak like a human lead).",
+        "When deciding about last cycle's shipped work, end with: VERDICT: CONTINUE | DONE | STOP",
+      ],
+      reviewSections,
     )
+    let systemTurn = await this.turn(system, this.buildSystemPrompt(anyCommits))
+    this.lastSystemReview = systemTurn.text
+    this.throwIfStopped()
+    appendDialogue(this.dialogueFile, "system", this.cycle, systemTurn.text)
+
+    // Git merge decision about last cycle (if there were commits).
+    if (this.cycle > 1) {
+      if (anyCommits) {
+        this.emptyCommitStreak = 0
+        this.heartbeat("verdict")
+        let verdict = this.parseSystemVerdict(systemTurn.text)
+        if (!verdict) {
+          // One short re-ask — don't invent host policy beyond CONTINUE fallback.
+          this.log(`  [host] no VERDICT line — one re-ask`)
+          const reask = await this.turn(
+            system,
+            `For host git only, reply with exactly one line (nothing else required):\nVERDICT: CONTINUE\nor VERDICT: DONE\nor VERDICT: STOP`,
+          )
+          appendDialogue(this.dialogueFile, "system", this.cycle, `(verdict re-ask) ${reask.text}`)
+          verdict = this.parseSystemVerdict(reask.text) || "CONTINUE"
+          if (!this.parseSystemVerdict(reask.text)) {
+            this.log(`  [host] still no VERDICT — defaulting to CONTINUE`)
+          }
+        }
+        const reason = systemTurn.text.replace(/\s+/g, " ").slice(0, 200)
+        this.log(`  [host] system verdict: ${verdict} — ${reason}`)
+        await this.hostApplyVerdict(verdict, reason)
+        if (verdict === "DONE" || verdict === "STOP") {
+          this.log(`[cycle ${this.cycle}] system said ${verdict} — stopping after this cycle`)
+          this.stopping = true
+        }
+      } else {
+        this.emptyCommitStreak++
+        this.log(`[cycle ${this.cycle}] no commits last cycle [metric] empty_commit_streak=${this.emptyCommitStreak}`)
+      }
+    }
+
+    this.throwIfStopped()
+    if (this.stopping) {
+      // DONE/STOP: do not start another worker turn
+      const secs = Math.round((Date.now() - t0) / 1000)
+      this.log(`[cycle ${this.cycle}] complete in ${secs}s (no worker — system ended run)`)
+      this.heartbeat("idle")
+      return
+    }
+
+    // --- WORKER (engineer) — prompt is almost entirely the system's message ---
+    this.heartbeat("worker")
+    this.log(`[cycle ${this.cycle}] host sync worker from integration...`)
+    await this.hostSyncWorker()
     this.throwIfStopped()
 
+    this.log(`[cycle ${this.cycle}] worker...`)
+    const workerTurn = await this.turn(worker, this.buildWorkerPrompt(systemTurn.text))
+    this.lastWorkerReply = workerTurn.text
+    this.throwIfStopped()
+    appendDialogue(this.dialogueFile, "worker", this.cycle, workerTurn.text)
+
+    // --- HOST commits whatever the worker left dirty ---
     this.heartbeat("commit")
-    this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktrees...`)
-    await this.hostCommitWorkers()
+    this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktree...`)
+    await this.hostCommitWorker()
     this.throwIfStopped()
-
-    // Soft signal: very short incomplete worker turn with still no commits after re-home
-    for (const wr of workerResults) {
-      const name = wr.agent.worker!.name
-      const ahead = await commitsAhead(this.ctx!.project, this.ctx!.integrationBranch, wr.agent.worker!.branch)
-      if (ahead === 0 && wr.secs < 20 && looksIncomplete(wr.text)) {
-        this.log(`  [host] ${name}: short incomplete turn, still no commits — soft FEEDBACK`)
-        this.ensureFeedback(
-          name,
-          "Turn ended quickly with no commits on your branch. Finish the contract in the worktree or log BLOCKED.",
-        )
-      }
-    }
-
-    // --- AUDIT (skip model if zero commits) ---
-    const { sections, anyCommits } = await this.buildReviewPack()
-    if (!anyCommits) {
-      this.emptyCommitStreak++
-      this.log(
-        `[cycle ${this.cycle}] host skip auditor (no commits) — soft REJECT [metric] empty_commit_streak=${this.emptyCommitStreak}`,
-      )
-      let rootDirty = 0
-      try {
-        rootDirty = (await dirtyPaths(this.ctx!.project)).filter((p) => !p.startsWith(".swarm/")).length
-      } catch {}
-      for (const w of this.ctx!.workers) {
-        const reason =
-          rootDirty > 0
-            ? `no commits on worker branch (host); project root still has ${rootDirty} dirty path(s) — host tried re-home; edit under worktree`
-            : "no commits this cycle (host) — implement the contract in the worktree so host can commit"
-        this.appendAuditLog(w.name, "REJECT", reason)
-        this.ensureFeedback(w.name, reason)
-      }
-      this.teamChat(
-        "host",
-        "all",
-        rootDirty > 0
-          ? `No commits on w1; project root dirty=${rootDirty}. Prefer worktree edits; host re-homes when it can.`
-          : "No commits this cycle. Workers: implement contracts in worktree. Planner: keep contracts small and shippable.",
-      )
-    } else {
-      this.emptyCommitStreak = 0
-      this.writeHostMemory(
-        "auditor",
-        [
-          "Phase: auditor",
-          "Host-computed review pack below. Emit VERDICT lines. Soft REJECT keeps commits. Short TEAM CHAT note.",
-        ],
-        sections,
-      )
-      this.heartbeat("auditor")
-      this.log(`[cycle ${this.cycle}] auditor...`)
-      const auditorTurn = await this.turn(auditor, auditorPrompt(this.cycle))
-      this.throwIfStopped()
-
-      this.heartbeat("verdicts")
-      this.log(`[cycle ${this.cycle}] host apply verdicts...`)
-      await this.hostApplyVerdicts(auditorTurn.text)
-    }
 
     const secs = Math.round((Date.now() - t0) / 1000)
-    // Host TEAM CHAT only when something needs attention (not every cycle — that polluted planner prompts).
-    try {
-      const board = this.readBoard()
-      const signals = parseWorkerSignals(board, this.cycle)
-      const openFb = openFeedbackWorkers(
-        board,
-        this.ctx!.workers.map((w) => w.name),
-      )
-      if (signals.length || openFb.length) {
-        const bits = [
-          ...signals.map((s) => `${s.worker} ${s.kind}`),
-          ...openFb.map((f) => `${f.worker} has FEEDBACK`),
-        ]
-        this.teamChat("host", "all", `cycle ${this.cycle}: ${bits.join("; ")}`)
-      }
-    } catch {}
     this.log(`[cycle ${this.cycle}] complete in ${secs}s`)
     this.heartbeat("idle")
-    await sleep(2000)
+    await sleep(1500)
+  }
+
+  /** System: speak as the human lead. Host only points at files. */
+  private buildSystemPrompt(hasReviewPack: boolean): string {
+    const lines: string[] = []
+    if (this.cycle === 1 && !this.opts.resumeFrom) {
+      lines.push(
+        `You're the lead on this run (cycle 1).`,
+        `Read the mission: ${this.missionFile}`,
+        `Skim the project at ${this.opts.project} if you need orientation.`,
+        `Write the first message you'd give a strong engineer: concrete next work, what "done" looks like.`,
+        `They will receive your words as their prompt and go work until they stop.`,
+      )
+    } else if (this.cycle === 1 && this.opts.resumeFrom) {
+      lines.push(
+        `Resuming run ${this.id} (cycle 1 of this process).`,
+        `Mission: ${this.missionFile}`,
+        `Prior conversation: ${this.dialogueFile}`,
+        `Tell the engineer what to do next, as a human lead would.`,
+      )
+    } else {
+      lines.push(
+        `Cycle ${this.cycle}. You're still the lead.`,
+        `Mission: ${this.missionFile}`,
+        `Full conversation: ${this.dialogueFile}`,
+      )
+      if (hasReviewPack) {
+        lines.push(
+          `Host packed last cycle for you in ${memoryPath(this.runDir)}: git summary + worker session trace (tools/thinking). Read it like a colleague's screen.`,
+        )
+      } else {
+        lines.push(`Worker shipped no commits last cycle (streak ${this.emptyCommitStreak}).`)
+      }
+      if (this.lastWorkerReply) {
+        const excerpt = this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 600)
+        lines.push(`Worker's last message:\n"""${excerpt}"""`)
+      }
+      lines.push(
+        `Answer any questions, then tell them the next concrete step (or that the mission is complete).`,
+        `For host git on last cycle's commits, include one line: VERDICT: CONTINUE | DONE | STOP`,
+        `(CONTINUE = merge + keep going, DONE = merge + end run, STOP = keep commits unmerged + end run.)`,
+      )
+    }
+    const nudge = this.buildSystemNudge()
+    if (nudge) lines.push(`(Host: ${nudge})`)
+    return lines.join("\n")
+  }
+
+  /**
+   * Worker prompt = system's message (human lead), plus a minimal footer.
+   * No team chat, no host essay.
+   */
+  private buildWorkerPrompt(systemMessage: string): string {
+    return [
+      systemMessage.trim(),
+      "",
+      "—",
+      `Worktree: ${this.workerWorktree} (stay on this tree; do not move ${this.baseBranch} or ${this.integrationBranch}).`,
+      `Mission file: ${this.missionFile}`,
+      `Conversation log: ${this.dialogueFile}`,
+      `When you're done, blocked, or need a decision — say so clearly in your reply and stop.`,
+    ].join("\n")
   }
 
   private stopRequested(): boolean {

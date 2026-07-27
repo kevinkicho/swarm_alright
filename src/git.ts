@@ -390,15 +390,36 @@ export async function shortLog(repo: string, integrationBranch: string, workerBr
   return git(repo, ["log", "--oneline", `${integrationBranch}..${workerBranch}`])
 }
 
+/**
+ * Review-friendly range summary for the system agent.
+ * Uses only --stat and --name-status so large trees never flood Node's buffer.
+ * (Full unified diffs are available in the worktree if the system wants them via tools.)
+ */
 export async function rangeDiff(
   repo: string,
   integrationBranch: string,
   workerBranch: string,
   maxChars = 12_000,
 ): Promise<string> {
-  const diff = await git(repo, ["diff", `${integrationBranch}...${workerBranch}`])
-  if (diff.length <= maxChars) return diff
-  return diff.slice(0, maxChars) + `\n… (diff truncated, ${diff.length} chars total)`
+  const range = `${integrationBranch}...${workerBranch}`
+  const parts: string[] = []
+  try {
+    const stat = await git(repo, ["diff", "--stat", range])
+    if (stat) parts.push(stat)
+  } catch (err) {
+    return `(diff --stat failed: ${err instanceof Error ? err.message : String(err)})`
+  }
+  try {
+    const names = await git(repo, ["diff", "--name-status", range])
+    if (names) parts.push("", "name-status:", names)
+  } catch {}
+  parts.push(
+    "",
+    "(Host omitted the unified patch to stay reliable. Open the worktree or run git diff yourself if you need line-level detail.)",
+  )
+  const out = parts.join("\n").trim() || "(empty)"
+  if (out.length <= maxChars) return out
+  return out.slice(0, maxChars) + `\n… (truncated, ${out.length} chars total)`
 }
 
 export async function revParse(repo: string, ref: string): Promise<string> {
