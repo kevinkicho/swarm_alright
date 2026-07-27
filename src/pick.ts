@@ -1,5 +1,6 @@
 import readline from "node:readline"
-import { ESC, Style, cutVisible, padVisible, visibleWidth } from "./style.ts"
+import { Style, cutVisible, padVisible, visibleWidth } from "./style.ts"
+import { enterScreen, leaveScreen, paintScreen, installScreenCleanup } from "./screen.ts"
 
 export type PickItem<T> = {
   label: string
@@ -40,8 +41,8 @@ export function frameBox(title: string, content: string[], width: number): strin
 }
 
 /**
- * Arrow-key master/detail selector. Resolves undefined on Esc/q/Ctrl+C or when stdin is not a TTY.
- * Renders with full-screen redraws — immune to cursor-math and line-wrap drift.
+ * Arrow-key master/detail selector. Uses the terminal alternate screen buffer
+ * so redraws never stack into scrollback (no "repeated screens" when scrolling).
  */
 export function pick<T>(title: string, items: PickItem<T>[]): Promise<T | undefined> {
   return new Promise((resolve) => {
@@ -53,6 +54,9 @@ export function pick<T>(title: string, items: PickItem<T>[]): Promise<T | undefi
     const width = () => process.stdout.columns ?? 100
     const height = () => process.stdout.rows ?? 30
     const twoPane = () => width() >= 90 && items.some((i) => i.detail)
+
+    installScreenCleanup()
+    enterScreen()
 
     const render = () => {
       const leftWidth = twoPane() ? Math.min(48, Math.floor(width() * 0.42)) : width()
@@ -80,14 +84,20 @@ export function pick<T>(title: string, items: PickItem<T>[]): Promise<T | undefi
         const l = left[r] ?? ""
         lines.push(twoPane() ? `${padVisible(l, leftWidth)}  ${right[r] ?? ""}` : l)
       }
-      process.stdout.write(`${ESC}2J${ESC}H${ESC}?25l` + lines.slice(0, height() - 1).join("\r\n"))
+      // footer hint (doesn't pollute main scrollback — alt buffer only)
+      lines.push("")
+      lines.push(Style.muted("↑/↓ move  ·  enter select  ·  esc cancel"))
+      paintScreen(lines.slice(0, height() - 1).join("\n"))
     }
 
     const finish = (value: T | undefined) => {
       process.stdin.removeListener("keypress", onKey)
-      process.stdin.setRawMode(false)
+      process.stdout.removeListener("resize", onResize)
+      try {
+        process.stdin.setRawMode(false)
+      } catch {}
       process.stdin.pause()
-      process.stdout.write(`${ESC}2J${ESC}H${ESC}?25h`)
+      leaveScreen()
       resolve(value)
     }
 
@@ -99,6 +109,9 @@ export function pick<T>(title: string, items: PickItem<T>[]): Promise<T | undefi
       else return
       render()
     }
+
+    const onResize = () => render()
+    process.stdout.on("resize", onResize)
 
     readline.emitKeypressEvents(process.stdin)
     process.stdin.setRawMode(true)

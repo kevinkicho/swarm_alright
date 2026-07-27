@@ -1,7 +1,8 @@
 import fs from "node:fs"
 import path from "node:path"
 import * as Registry from "./registry.ts"
-import { ESC, Style, cutVisible } from "./style.ts"
+import { Style, cutVisible } from "./style.ts"
+import { enterScreen, leaveScreen, paintScreen, installScreenCleanup } from "./screen.ts"
 
 const width = () => process.stdout.columns ?? 100
 const height = () => process.stdout.rows ?? 30
@@ -41,7 +42,7 @@ function readDialogueTail(runDir: string, maxEntries = 4): string[] {
     const entries = text.split(/\n## \[cycle /).filter((e) => e.trim())
     return entries.slice(-maxEntries).map((e) => {
       const lines = e.split(/\r?\n/).filter((l) => l.trim())
-      const header = lines[0]?.replace(/^## \[/, "## [") ?? ""
+      const header = lines[0] ?? ""
       const body = lines.slice(1, 8).join(" ").replace(/\s+/g, " ").trim()
       return `${header}\n  ${cut(body, width() - 4)}`
     })
@@ -56,7 +57,7 @@ function frameOverview(): string {
   const finished = runs.filter((r) => !active.includes(r))
   const lines: string[] = []
   lines.push(
-    `${Style.brand("swarm watch")} — ${Style.success(String(active.length))} active, ${Style.muted(String(finished.length))} finished   ${Style.muted("(q to quit)")}`,
+    `${Style.brand("swarm watch")} — ${Style.success(String(active.length))} active, ${Style.muted(String(finished.length))} finished   ${Style.muted("(q quit)")}`,
   )
   lines.push("")
 
@@ -79,16 +80,16 @@ function frameOverview(): string {
   }
   if (finished.length > 10) lines.push(Style.muted(`… ${finished.length - 10} more`))
   if (finished.length) {
-    lines.push(Style.muted("(`swarm clean` prunes finished runs, `swarm logs <id>` shows their history)"))
+    lines.push(Style.muted("(`swarm clean` prunes finished runs, `swarm logs <id>` shows history)"))
   }
 
-  return lines.slice(0, height() - 1).join("\r\n")
+  return lines.join("\n")
 }
 
 function frameSingle(id: string): string {
   const rec = Registry.load(id)
   if (!rec) return Style.danger(`unknown run id "${id}"`)
-  const header = `${Style.brand("swarm watch")} ${badge(rec)} ${Style.bold(rec.id)}  cycle ${Style.cyan(String(rec.cycle))}  ${rec.project}   ${Style.muted("(q to quit)")}`
+  const header = `${Style.brand("swarm watch")} ${badge(rec)} ${Style.bold(rec.id)}  cycle ${Style.cyan(String(rec.cycle))}  ${cut(rec.project, 40)}   ${Style.muted("(q quit)")}`
   const mission = readMission(rec.runDir)
   const dialogue = readDialogueTail(rec.runDir)
   const topLines: string[] = []
@@ -104,28 +105,43 @@ function frameSingle(id: string): string {
   const activity = tailLines(path.join(rec.runDir, "events.log"), Math.max(3, budget)).map((l) =>
     Style.logLine(cut(l, width() - 2)),
   )
-  return [header, "", ...topLines, ...activity].slice(0, height() - 1).join("\r\n")
+  return [header, "", ...topLines, ...activity].join("\n")
 }
 
 export function watch(id?: string): void {
+  installScreenCleanup()
+  enterScreen()
+
   let last = ""
   const paint = () => {
     const frame = id ? frameSingle(id) : frameOverview()
     if (frame === last) return
     last = frame
-    process.stdout.write(`${ESC}2J${ESC}H${ESC}?25l` + frame)
+    paintScreen(frame)
   }
+
+  const exit = () => {
+    clearInterval(timer)
+    process.stdout.removeListener("resize", onResize)
+    leaveScreen()
+    process.exit(0)
+  }
+
+  const onResize = () => {
+    last = "" // force repaint at new size
+    paint()
+  }
+  process.stdout.on("resize", onResize)
+
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true)
     process.stdin.resume()
     process.stdin.on("data", (key) => {
       const k = key.toString()
-      if (k === "q" || k === "\u0003") {
-        process.stdout.write(`${ESC}?25h${ESC}2J${ESC}H`)
-        process.exit(0)
-      }
+      if (k === "q" || k === "\u0003") exit()
     })
   }
+
   paint()
-  setInterval(paint, 1000)
+  const timer = setInterval(paint, 1000)
 }
