@@ -8,6 +8,7 @@ import * as Registry from "./registry.ts"
 import { dirtyPaths, findLatestSwarmBase, listSwarmRunIds, commitsAhead, branchExists } from "./git.ts"
 import { connectClient, sessionStatus } from "./opencode.ts"
 import { frameBox } from "./pick.ts"
+import { Style } from "./style.ts"
 
 function lastLogLines(runDir: string, n = 8): string[] {
   try {
@@ -38,22 +39,33 @@ export async function printStatus(runId?: string): Promise<void> {
     : Registry.list()
 
   if (!runs.length) {
-    console.log(frameBox("swarm status", ["no runs in registry — try swarm restart --project <folder>"], width).join("\n"))
+    console.log(
+      frameBox(
+        "swarm status",
+        [Style.muted("no runs in registry — try"), Style.cyan("  swarm restart --project <folder>")],
+        width,
+      ).join("\n"),
+    )
     return
   }
 
   for (const r of runs.slice(0, runId ? 1 : 12)) {
     const eff = Registry.effectiveStatus(r)
     const lines: string[] = [
-      `id:        ${r.id}`,
-      `status:    ${eff}${r.phase ? `  phase=${r.phase}` : ""}`,
-      `cycle:     ${r.cycle}${r.lastHeartbeat ? `  hb ${r.lastHeartbeat.slice(11, 19)}` : ""}`,
-      `project:   ${r.project}`,
-      `models:    p=${r.models.planner} w=${r.models.worker} a=${r.models.auditor}`,
-      `branches:  swarm/${r.id}/base  +  w1…w${r.workers ?? 1}`,
+      Style.kv("id:", Style.bold(r.id)),
+      Style.kv("status:", `${Style.status(eff)}${r.phase ? Style.muted(`  phase=${r.phase}`) : ""}`),
+      Style.kv(
+        "cycle:",
+        `${Style.cyan(String(r.cycle))}${r.lastHeartbeat ? Style.muted(`  hb ${r.lastHeartbeat.slice(11, 19)}`) : ""}`,
+      ),
+      Style.kv("project:", r.project),
+      Style.kv(
+        "models:",
+        Style.muted(`s=${r.models.system} w=${r.models.worker}`),
+      ),
+      Style.kv("branches:", Style.muted(`swarm/${r.id}/base  +  w1`)),
     ]
 
-    // Git facilitation metrics
     try {
       const base = `swarm/${r.id}/base`
       const w1 = `swarm/${r.id}/w1`
@@ -61,16 +73,21 @@ export async function printStatus(runId?: string): Promise<void> {
         const ahead = (await branchExists(r.project, w1))
           ? await commitsAhead(r.project, base, w1)
           : 0
-        lines.push(`git:       w1 ahead of base: ${ahead}`)
+        const aheadStr =
+          ahead > 0 ? Style.success(String(ahead)) : ahead === 0 ? Style.muted("0") : Style.warning(String(ahead))
+        lines.push(Style.kv("git:", `w1 ahead of base: ${aheadStr}`))
       }
       const dirty = await dirtyPaths(r.project)
-      if (dirty.length) lines.push(`root dirty: ${dirty.length} path(s) — host re-homes into worktree each cycle`)
+      if (dirty.length) {
+        lines.push(
+          Style.kv("root dirty:", Style.warning(`${dirty.length} path(s)`) + Style.muted(" — host re-homes into worktree each cycle")),
+        )
+      }
     } catch {}
 
-    const rehome = metricFromLog(r.runDir, /re-home|rehomed=\d+|commits_ahead=\d+|skip auditor|ACCEPT|empty_commit_streak/)
-    if (rehome) lines.push(`log:       ${rehome.replace(/\s+/g, " ").slice(0, 100)}`)
+    const rehome = metricFromLog(r.runDir, /re-home|rehomed=\d+|commits_ahead=\d+|skip system|ACCEPT|empty_commit_streak|VERDICT/)
+    if (rehome) lines.push(Style.kv("log:", Style.logLine(rehome.replace(/\s+/g, " ").slice(0, 100))))
 
-    // Live OpenCode session status via SDK (same as TUI would poll)
     if (eff === "alive" && r.port) {
       try {
         const client = connectClient(`http://127.0.0.1:${r.port}`, r.project)
@@ -78,16 +95,20 @@ export async function printStatus(runId?: string): Promise<void> {
         const busy = Object.entries(st)
           .filter(([, v]) => v?.type && v.type !== "idle")
           .map(([id, v]) => `${id.slice(0, 12)}…=${v.type}`)
-        lines.push(busy.length ? `opencode:  busy ${busy.join(" ")}` : `opencode:  all sessions idle (or between turns)`)
+        lines.push(
+          busy.length
+            ? Style.kv("opencode:", Style.warning(`busy ${busy.join(" ")}`))
+            : Style.kv("opencode:", Style.muted("all sessions idle (or between turns)")),
+        )
       } catch {
-        lines.push(`opencode:  server not reachable on :${r.port}`)
+        lines.push(Style.kv("opencode:", Style.danger(`server not reachable on :${r.port}`)))
       }
     }
 
     const last = lastLogLines(r.runDir, 3)
     if (last.length) {
-      lines.push("", "recent:")
-      for (const l of last) lines.push(`  ${l.replace(/\s+/g, " ").slice(0, width - 4)}`)
+      lines.push("", Style.bold("recent:"))
+      for (const l of last) lines.push(`  ${Style.logLine(l.replace(/\s+/g, " ").slice(0, width - 4))}`)
     }
 
     console.log(frameBox(`run ${r.id}`, lines, width).join("\n"))
@@ -99,65 +120,89 @@ export async function printDoctor(projectArg?: string): Promise<void> {
   Registry.reconcileCrashed()
   const width = Math.min((process.stdout.columns ?? 100) - 2, 110)
   const project = path.resolve(projectArg || process.cwd())
-  const lines: string[] = [`project: ${project}`]
+  const lines: string[] = [Style.kv("project:", project)]
 
   if (!fs.existsSync(project)) {
-    console.log(frameBox("swarm doctor", [`folder does not exist: ${project}`], width).join("\n"))
+    console.log(frameBox("swarm doctor", [Style.danger(`folder does not exist: ${project}`)], width).join("\n"))
     return
   }
 
-  // Alive runs on this project
   const onProj = Registry.list().filter((r) => path.resolve(r.project) === project)
   const alive = onProj.filter((r) => r.status === "running" && Registry.alive(r.pid))
   const deadRunning = onProj.filter((r) => r.status === "running" && !Registry.alive(r.pid))
-  lines.push(`registry: ${onProj.length} record(s), ${alive.length} alive, ${deadRunning.length} dead-but-running`)
+  lines.push(
+    Style.kv(
+      "registry:",
+      `${onProj.length} record(s), ${Style.success(String(alive.length))} alive, ${
+        deadRunning.length ? Style.danger(String(deadRunning.length)) : Style.muted("0")
+      } dead-but-running`,
+    ),
+  )
   if (alive.length) {
-    for (const a of alive) lines.push(`  ALIVE  ${a.id}  cycle ${a.cycle}  phase ${a.phase ?? "?"}  port ${a.port}`)
+    for (const a of alive) {
+      lines.push(
+        `  ${Style.success("ALIVE")}  ${Style.bold(a.id)}  cycle ${Style.cyan(String(a.cycle))}  phase ${a.phase ?? "?"}  port ${a.port}`,
+      )
+    }
   }
   if (deadRunning.length) {
-    lines.push(`  tip: swarm clean  (reconciles crashed + kills orphan servers)`)
+    lines.push(`  ${Style.tip(`swarm clean  (reconciles crashed + kills orphan servers)`)}`)
   }
 
-  // Branch mess diagnosis
   try {
     const ids = await listSwarmRunIds(project)
-    lines.push(`swarm branches: ${ids.length} run id(s) with swarm/<id>/* refs`)
+    lines.push(Style.kv("swarm branches:", `${ids.length} run id(s) with swarm/<id>/* refs`))
     if (ids.length > 5) {
-      lines.push(`  ⚠ many branch lineages — prefer: swarm restart / swarm run --continue`)
-      lines.push(`  prune dead: swarm clean --branches --project "${project}"`)
+      lines.push(`  ${Style.warning("⚠ many branch lineages — prefer:")} ${Style.cyan("swarm restart <id>")}`)
+      lines.push(`  ${Style.muted(`prune dead: swarm clean --branches --project "${project}"`)}`)
     }
     const latest = await findLatestSwarmBase(project)
     if (latest) {
-      lines.push(`latest base: ${latest.branch} @ ${latest.sha} (run ${latest.runId})`)
-      lines.push(`  continue: swarm run "${project}" --continue …   or   swarm restart ${latest.runId}`)
+      lines.push(Style.kv("latest base:", `${Style.cyan(latest.branch)} @ ${latest.sha} (run ${Style.bold(latest.runId)})`))
+      lines.push(
+        `  ${Style.muted("resume:")} ${Style.cyan(`swarm restart ${latest.runId}`)}`,
+      )
     } else {
-      lines.push(`latest base: (none yet — first run will create swarm/<id>/base)`)
+      lines.push(Style.kv("latest base:", Style.muted("(none yet — first run will create swarm/<id>/base)")))
     }
   } catch (err) {
-    lines.push(`git: ${err instanceof Error ? err.message : String(err)}`)
+    lines.push(Style.kv("git:", Style.danger(err instanceof Error ? err.message : String(err))))
   }
 
   try {
     const dirty = await dirtyPaths(project)
-    lines.push(`project dirty paths: ${dirty.length}${dirty.length ? ` (e.g. ${dirty.slice(0, 5).join(", ")})` : ""}`)
+    lines.push(
+      Style.kv(
+        "dirty paths:",
+        dirty.length
+          ? Style.warning(String(dirty.length)) + Style.muted(` (e.g. ${dirty.slice(0, 5).join(", ")})`)
+          : Style.success("0"),
+      ),
+    )
   } catch {}
 
   const wtRoot = path.join(project, ".swarm", "worktrees")
   if (fs.existsSync(wtRoot)) {
     const wts = fs.readdirSync(wtRoot)
-    lines.push(`worktree dirs: ${wts.length} — prune dead with: swarm clean --worktrees --project "${project}"`)
+    lines.push(
+      Style.kv(
+        "worktrees:",
+        `${wts.length} — ${Style.muted(`prune dead with: swarm clean --worktrees --project "${project}"`)}`,
+      ),
+    )
   }
 
-  // Facilitation tips from last alive/dead log
   const sample = alive[0] ?? onProj[0]
   if (sample) {
     const skip = metricHint(sample.runDir)
-    if (skip) lines.push(`last facilitation signal: ${skip}`)
+    if (skip) lines.push(Style.kv("signal:", Style.logLine(skip)))
   }
 
   lines.push("")
-  lines.push("OpenCode: attach with swarm tui <run-id> (uses same serve URL + opencode attach)")
-  lines.push("Reliability: one project → one alive run (singleFlight). Continue lineage, don't fork endlessly.")
+  lines.push(`${Style.bold("OpenCode:")} attach with ${Style.cyan("swarm tui <run-id>")} (same serve URL + opencode attach)`)
+  lines.push(
+    `${Style.bold("Reliability:")} one project → one alive run (singleFlight). Continue lineage, don't fork endlessly.`,
+  )
 
   console.log(frameBox("swarm doctor", lines, width).join("\n"))
 }
@@ -166,7 +211,7 @@ function metricHint(runDir: string): string | undefined {
   const lines = lastLogLines(runDir, 100)
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]
-    if (/skip auditor|re-home|empty_commit_streak|ACCEPT|Bad Request|rotated session/i.test(l)) {
+    if (/skip system|re-home|empty_commit_streak|ACCEPT|Bad Request|rotated session/i.test(l)) {
       return l.replace(/\s+/g, " ").slice(0, 120)
     }
   }

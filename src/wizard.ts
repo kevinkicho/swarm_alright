@@ -10,6 +10,7 @@ import * as Registry from "./registry.ts"
 import { watch } from "./watch.ts"
 import { restartInteractive } from "./restart.ts"
 import { attachFlow } from "./attach.ts"
+import { Style } from "./style.ts"
 
 function question(query: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -30,17 +31,8 @@ async function askFolder(): Promise<string | undefined> {
   for (;;) {
     const resolved = path.resolve(await askText("project folder", process.cwd()))
     if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) return resolved
-    console.log(`  not a folder: ${resolved} — try again (or Ctrl+C to quit)`)
+    console.log(Style.warning(`  not a folder: ${resolved}`) + Style.muted(" — try again (or Ctrl+C to quit)"))
   }
-}
-
-async function askWorkers(): Promise<number> {
-  const n = Number(await askText("how many worker agents (planner + auditor are added automatically)", "1"))
-  if (!Number.isInteger(n) || n < 1 || n > 8) {
-    console.log("  must be an integer 1-8")
-    return askWorkers()
-  }
-  return n
 }
 
 async function fetchModels(apiKey?: string): Promise<string[]> {
@@ -82,49 +74,32 @@ function statusPanel(): void {
   const crashed = runs.filter((r) => Registry.effectiveStatus(r) === "crashed")
   if (!active.length) {
     const hints = [
-      `${runs.length} run(s) in history — restart or continue a lineage`,
-      crashed.length ? `${crashed.length} crashed — swarm clean, then swarm restart` : "",
-      "prefer: swarm run <folder> --continue  (one branch lineage, not a fork mess)",
-      "diagnose: swarm doctor <folder>",
+      Style.muted(`${runs.length} run(s) in history — restart to resume one`),
+      crashed.length ? Style.danger(`${crashed.length} crashed`) + Style.muted(" — swarm clean, then swarm restart") : "",
+      Style.muted("diagnose: swarm doctor <folder>"),
     ].filter(Boolean)
-    console.log(frameBox("swarm command center", ["no active runs", ...hints], width).join("\n"), "\n")
+    console.log(frameBox("swarm command center", [Style.muted("no active runs"), ...hints], width).join("\n"), "\n")
     return
   }
   const lines: string[] = []
   for (const r of active) {
     lines.push(
-      `${r.id}  cycle ${r.cycle}  ${r.phase ?? "?"}  ${path.basename(r.project)}  (p+a+${r.workers ?? "?"}w)`,
+      `${Style.success("●")} ${Style.bold(r.id)}  cycle ${Style.cyan(String(r.cycle))}  ${Style.warning(r.phase ?? "?")}  ${path.basename(r.project)}  ${Style.muted(`(s+w)`)}`,
     )
     const last = lastActivity(r)
-    if (last) lines.push(`  ${last}`)
+    if (last) lines.push(`  ${Style.logLine(last)}`)
   }
-  console.log(frameBox(`command center — ${active.length} alive`, lines, width).join("\n"), "\n")
+  console.log(
+    frameBox(`command center — ${active.length} alive`, lines, width).join("\n"),
+    "\n",
+  )
 }
 
 async function newRunFlow(): Promise<void> {
   const folder = await askFolder()
   if (!folder) return
 
-  // Prefer continuing one lineage (avoids swarm/<id> branch sprawl)
-  let resumeFrom: string | undefined
-  try {
-    const { findLatestSwarmBase, listSwarmRunIds } = await import("./git.ts")
-    const ids = await listSwarmRunIds(folder)
-    const latest = await findLatestSwarmBase(folder)
-    if (latest && ids.length) {
-      console.log(`\n  found ${ids.length} prior swarm lineage(s); latest accepted base: ${latest.branch} @ ${latest.sha}`)
-      const cont = await question("continue that lineage? (recommended) [Y/n]: ")
-      if (!cont || /^y/i.test(cont)) {
-        resumeFrom = latest.runId
-        console.log(`  → will resume from run ${resumeFrom}`)
-      } else {
-        console.log("  → fresh base (new swarm/<id> branches). Clean old ones later: swarm clean --branches --project …")
-      }
-    }
-  } catch {}
-
-  const directive = await askText("directive (empty = planner infers the mission from the project)")
-  const workers = await askWorkers()
+  const directive = await askText("directive (empty = system infers the mission from the project)")
 
   let apiKey: string | undefined
   try {
@@ -132,23 +107,23 @@ async function newRunFlow(): Promise<void> {
   } catch {}
   const available = await fetchModels(apiKey)
   const modelList = available.length ? available : [...new Set(Object.values(DEFAULT_MODELS))]
-  if (!available.length) console.log("  (could not reach ollama.com — offering default models only)")
+  if (!available.length) console.log(Style.warning("  (could not reach ollama.com — offering default models only)"))
 
   const models: Models = {
-    planner: await askModel("planner", modelList, DEFAULT_MODELS.planner),
-    worker: await askModel("workers", modelList, DEFAULT_MODELS.worker),
-    auditor: await askModel("auditor", modelList, DEFAULT_MODELS.auditor),
+    system: await askModel("system", modelList, DEFAULT_MODELS.system),
+    worker: await askModel("worker", modelList, DEFAULT_MODELS.worker),
   }
 
-  console.log("\nabout to start:\n")
-  console.log(`  project:   ${folder}`)
-  console.log(`  lineage:   ${resumeFrom ? `continue ${resumeFrom}` : "fresh swarm/<new-id> base"}`)
-  console.log(`  directive: ${directive || "(planner infers from project)"}`)
-  console.log(`  agents:    planner + auditor + ${workers} worker(s)`)
-  console.log(`  models:    planner=${models.planner}  worker=${models.worker}  auditor=${models.auditor}\n`)
+  console.log(`\n${Style.bold("about to start:")}\n`)
+  console.log(`  ${Style.kv("project:", folder)}`)
+  console.log(`  ${Style.kv("directive:", directive || Style.muted("(system infers from project)"))}`)
+  console.log(`  ${Style.kv("agents:", `system + worker`)}`)
+  console.log(
+    `  ${Style.kv("models:", Style.muted(`system=${models.system}  worker=${models.worker}`))}\n`,
+  )
   const answer = await question("start the run? [Y/n]: ")
   if (answer && !/^y(es)?$/i.test(answer)) {
-    console.log("cancelled")
+    console.log(Style.muted("cancelled"))
     return
   }
   const background = await question("run in background? it survives closing this terminal [y/N]: ")
@@ -156,27 +131,22 @@ async function newRunFlow(): Promise<void> {
     const args = [
       "run",
       folder,
-      "--workers",
-      String(workers),
-      "--planner-model",
-      models.planner,
+      "--system-model",
+      models.system,
       "--worker-model",
       models.worker,
-      "--auditor-model",
-      models.auditor,
       ...(directive ? ["--directive", directive] : []),
-      ...(resumeFrom ? ["--continue"] : []),
     ]
     const pid = spawnDetachedRun(args)
-    console.log(`run starting in background (pid ${pid}) — swarm status / watch / stop`)
+    console.log(
+      `${Style.ok("run starting in background")} ${Style.muted(`(pid ${pid})`)} — ${Style.cyan("swarm status")} / watch / stop`,
+    )
     return
   }
   const run = new Run({
     project: folder,
     directive: directive || undefined,
-    workers,
     models,
-    resumeFrom,
   })
   await run.start()
   process.exit(0)
@@ -185,7 +155,7 @@ async function newRunFlow(): Promise<void> {
 async function stopFlow(): Promise<void> {
   const active = Registry.list().filter((r) => r.status === "running" && Registry.alive(r.pid))
   if (!active.length) {
-    console.log("no active runs")
+    console.log(Style.muted("no active runs"))
     return
   }
   const id = await pick(
@@ -196,11 +166,16 @@ async function stopFlow(): Promise<void> {
       detail: (w: number) => runDetail(r, w),
     })),
   )
-  if (!id) return
+  if (!id) {
+    console.log(Style.muted("cancelled"))
+    return
+  }
   const rec = Registry.load(id)
   if (!rec) return
   fs.writeFileSync(path.join(rec.runDir, "STOP"), new Date().toISOString())
-  console.log(`stop requested for ${id} — graceful shutdown after the current agent turn`)
+  console.log(
+    `${Style.warning("stop requested")} for ${Style.bold(id)} — graceful shutdown after the current agent turn`,
+  )
 }
 
 async function modelsFlow(): Promise<void> {
@@ -209,13 +184,17 @@ async function modelsFlow(): Promise<void> {
     key = loadApiKey()
   } catch {}
   const models = await fetchModels(key)
-  console.log(models.length ? `\n${models.join("\n")}\n` : "\n(could not fetch models)\n")
+  console.log(
+    models.length
+      ? `\n${models.map((m) => Style.cyan(m)).join("\n")}\n`
+      : `\n${Style.warning("(could not fetch models)")}\n`,
+  )
   await question("press enter to go back")
 }
 
 export async function wizard(): Promise<void> {
   if (!process.stdin.isTTY) {
-    console.log("non-interactive terminal — use `swarm help` for the command list")
+    console.log(Style.muted("non-interactive terminal — use `swarm help` for the command list"))
     return
   }
   for (;;) {
@@ -226,15 +205,18 @@ export async function wizard(): Promise<void> {
     const action = await pick(
       "command center  (↑/↓, enter, esc to exit)",
       [
-        { label: "start / continue a run", hint: "prefers continuing latest swarm base (less branch mess)", value: "new" },
+        { label: "start a new run", hint: "system + worker on a project folder", value: "new" },
         ...(runs.length
-          ? [{ label: "restart a run from history", hint: "blackboard + accepted base", value: "restart" }]
+          ? [{ label: "restart a run from history", hint: "reuses same run id, worktrees, run folder", value: "restart" }]
           : []),
-        { label: "status", hint: "phase, git ahead, opencode busy (facilitation snapshot)", value: "status" },
+        { label: "status", hint: "phase, git ahead, opencode busy", value: "status" },
         { label: "doctor", hint: "branch sprawl, dirty root, worktrees, tips", value: "doctor" },
+        ...(runs.length
+          ? [{ label: "tally recent logs", hint: "situation counts from events.log (CONTINUE/DONE/STOP/…)", value: "tally" }]
+          : []),
         ...(active.length
           ? [
-              { label: `watch ${active.length} active run(s)`, hint: "live board", value: "watch" },
+              { label: `watch ${active.length} active run(s)`, hint: "live mission + activity", value: "watch" },
               { label: "attach (OpenCode TUI)", hint: "opencode attach to a live agent session", value: "attach" },
               { label: "stop a run", hint: "graceful shutdown", value: "stop" },
             ]
@@ -246,11 +228,16 @@ export async function wizard(): Promise<void> {
       ],
     )
     if (!action || action === "exit") return
+
+    // Actions that take over the terminal (run, watch, attach, restart) don't
+    // loop back — they start a long-running process that blocks until it ends.
+    // After they return, the user is back at their shell prompt.
     if (action === "new") return newRunFlow()
-    if (action === "restart") {
-      await restartInteractive({})
-      continue
-    }
+    if (action === "watch") return watch()
+    if (action === "attach") return attachFlow()
+    if (action === "restart") return restartInteractive({})
+
+    // Actions that print output and return to the menu:
     if (action === "status") {
       const { printStatus } = await import("./doctor.ts")
       await printStatus()
@@ -264,17 +251,29 @@ export async function wizard(): Promise<void> {
       await question("press enter")
       continue
     }
-    if (action === "watch") return watch()
-    if (action === "attach") return attachFlow()
-    if (action === "stop") await stopFlow()
+    if (action === "tally") {
+      const { printTally } = await import("./tally.ts")
+      printTally({ recent: 5 })
+      await question("press enter")
+      continue
+    }
+    if (action === "stop") {
+      await stopFlow()
+      await question("press enter")
+      continue
+    }
     if (action === "clean") {
       const { pruned, kept } = Registry.pruneFinished()
-      console.log(`pruned ${pruned} finished run record(s) (${kept} kept). Run folders on disk are untouched.`)
+      console.log(
+        Style.ok(`pruned ${pruned} finished run record(s)`) +
+          Style.muted(` (${kept} kept). Run folders on disk are untouched.`),
+      )
+      await question("press enter")
+      continue
     }
     if (action === "prune-git") {
       const folder = await askText("project folder", process.cwd())
       const { spawn } = await import("node:child_process")
-      // Reuse CLI clean path
       const cli = process.argv[1]
       await new Promise<void>((resolve) => {
         const p = spawn(process.execPath, ["--experimental-strip-types", cli, "clean", "--worktrees", "--branches", "--project", folder], {
@@ -285,6 +284,9 @@ export async function wizard(): Promise<void> {
       await question("press enter")
       continue
     }
-    if (action === "models") await modelsFlow()
+    if (action === "models") {
+      await modelsFlow()
+      continue
+    }
   }
 }

@@ -6,7 +6,9 @@ import { spawnDetachedRun } from "./detach.ts"
 import { pick } from "./pick.ts"
 import { runDetail } from "./runview.ts"
 import * as Registry from "./registry.ts"
-import { DEFAULT_MODELS, loadApiKey } from "./config.ts"
+import { DEFAULT_MODELS, loadApiKey, type Models } from "./config.ts"
+import { Style } from "./style.ts"
+import { branchExists, commitsAhead } from "./git.ts"
 
 /** Run history stored on disk in a project's .swarm/runs (survives `swarm clean`). */
 function diskRuns(project: string): Registry.RunRecord[] {
@@ -22,7 +24,7 @@ function diskRuns(project: string): Registry.RunRecord[] {
   }
 }
 
-type RestartParams = { directive: string; workers: number; planner: string; worker: string; auditor: string }
+type RestartParams = { directive: string; system: string; worker: string }
 
 function question(query: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -69,38 +71,40 @@ async function pickModel(role: string, available: string[], current: string): Pr
  * Confirm restart params. Models use the same ↑/↓ picker as new-run setup
  * (Ollama Cloud list + previous value first).
  */
-async function confirmParams(
-  p: RestartParams,
-  available: string[],
-): Promise<RestartParams | undefined> {
+async function confirmParams(p: RestartParams, available: string[]): Promise<RestartParams | undefined> {
   if (!process.stdin.isTTY) return undefined
 
-  console.log("confirm parameters (models: ↑/↓ select; other fields: enter keeps [bracket] value):\n")
+  console.log(Style.bold("confirm parameters") + Style.muted(" (models: ↑/↓ select; other fields: enter keeps [bracket] value):\n"))
 
-  const directive = await question(`directive [${p.directive || "(none)"}]: `)
-  const workersRaw = await question(`workers [${p.workers}]: `)
-  const workers = workersRaw ? Number(workersRaw) : p.workers
-  if (!Number.isInteger(workers) || workers < 1 || workers > 8) {
-    console.error("workers must be an integer 1–8")
-    return undefined
-  }
+  const directive = await question(`directive [${p.directive || "(keep existing)"}]: `)
 
   if (!available.length) {
-    console.log("  (could not fetch Ollama Cloud models — type model ids, or press enter to keep previous)\n")
+    console.log(Style.warning("  (could not fetch Ollama Cloud models — type model ids, or press enter to keep previous)\n"))
   } else {
-    console.log(`  (${available.length} models from Ollama Cloud — previous selection is first)\n`)
+    console.log(Style.muted(`  (${available.length} models from Ollama Cloud — previous selection is first)\n`))
   }
 
-  const planner = await pickModel("planner", available, p.planner)
-  const worker = await pickModel("workers", available, p.worker)
-  const auditor = await pickModel("auditor", available, p.auditor)
+  const system = await pickModel("system", available, p.system)
+  const worker = await pickModel("worker", available, p.worker)
 
   return {
     directive: directive || p.directive,
-    workers,
-    planner,
+    system,
     worker,
-    auditor,
+  }
+}
+
+async function probePriorGit(project: string, oldId: string): Promise<{ hasBase: boolean; ahead: number }> {
+  const base = `swarm/${oldId}/base`
+  const w1 = `swarm/${oldId}/w1`
+  try {
+    const hasBase = await branchExists(project, base)
+    if (!hasBase) return { hasBase: false, ahead: 0 }
+    const hasW1 = await branchExists(project, w1)
+    const ahead = hasW1 ? await commitsAhead(project, base, w1) : 0
+    return { hasBase: true, ahead }
+  } catch {
+    return { hasBase: false, ahead: 0 }
   }
 }
 
@@ -119,28 +123,35 @@ export async function restartInteractive(opts: { id?: string; flags?: Record<str
       })),
     ))
   if (!id) {
-    console.error("error: no run selected (no history?)")
+    console.error(Style.error("no run selected (no history?)"))
     process.exitCode = 1
     return
   }
-  const rec = Registry.load(id) ?? (flags.project ? Registry.loadFromDisk(path.resolve(flags.project), id) : undefined)
+  const rec =
+    Registry.load(id) ??
+    (flags.project ? Registry.loadFromDisk(path.resolve(flags.project), id) : undefined) ??
+    // also try loading from any listed run's project
+    runs.find((r) => r.id === id)
   if (!rec) {
-    console.error(`error: unknown run id "${id}"`)
+    console.error(Style.error(`unknown run id "${id}"`))
     process.exitCode = 1
     return
   }
-  if (rec.status === "running" && Registry.alive(rec.pid)) {
-    console.error(`error: run ${id} is still running — stop it first (\`swarm stop ${id}\`)`)
+  // Prefer disk record for cycle accuracy
+  const recFull = Registry.loadFromDisk(rec.project, id) ?? rec
+
+  if (recFull.status === "running" && Registry.alive(recFull.pid)) {
+    console.error(Style.error(`run ${id} is still running — stop it first (\`swarm stop ${id}\`)`))
     process.exitCode = 1
     return
   }
 
+  const gitInfo = await probePriorGit(recFull.project, id)
+
   const defaults: RestartParams = {
-    directive: flags.directive ?? rec.directive ?? "",
-    workers: Number(flags.workers ?? rec.workers ?? rec.agents?.filter((a) => a.role === "worker").length ?? 1),
-    planner: flags["planner-model"] ?? flags.model ?? rec.models.planner ?? DEFAULT_MODELS.planner,
-    worker: flags["worker-model"] ?? flags.model ?? rec.models.worker ?? DEFAULT_MODELS.worker,
-    auditor: flags["auditor-model"] ?? flags.model ?? rec.models.auditor ?? DEFAULT_MODELS.auditor,
+    directive: flags.directive ?? recFull.directive ?? "",
+    system: flags["system-model"] ?? flags.model ?? recFull.models.system ?? DEFAULT_MODELS.system,
+    worker: flags["worker-model"] ?? flags.model ?? recFull.models.worker ?? DEFAULT_MODELS.worker,
   }
 
   // --yes: keep previous (or flag overrides). Interactive: pick models from Ollama list.
@@ -150,16 +161,14 @@ export async function restartInteractive(opts: { id?: string; flags?: Record<str
   } else {
     let apiKey: string | undefined
     try {
-      apiKey = loadApiKey(flags["api-key"], rec.project)
+      apiKey = loadApiKey(flags["api-key"], recFull.project)
     } catch {}
     const available = await fetchModels(apiKey)
-    // Ensure previous + defaults are on the list even if API omitted them
     const modelList = [
       ...new Set([
         ...available,
-        defaults.planner,
+        defaults.system,
         defaults.worker,
-        defaults.auditor,
         ...Object.values(DEFAULT_MODELS),
       ]),
     ]
@@ -167,47 +176,49 @@ export async function restartInteractive(opts: { id?: string; flags?: Record<str
   }
 
   if (!params) {
-    console.error("cancelled (or invalid --workers; use --yes to skip confirmation in non-interactive shells)")
+    console.error(Style.error("cancelled (or invalid; use --yes to skip confirmation in non-interactive shells)"))
     process.exitCode = 1
     return
   }
 
-  // Allow CLI flags to still override after interactive confirm if user passed them with restart id
-  if (flags["planner-model"] || flags.model) params.planner = flags["planner-model"] ?? flags.model ?? params.planner
+  if (flags["system-model"] || flags.model) params.system = flags["system-model"] ?? flags.model ?? params.system
   if (flags["worker-model"] || flags.model) params.worker = flags["worker-model"] ?? flags.model ?? params.worker
-  if (flags["auditor-model"] || flags.model) params.auditor = flags["auditor-model"] ?? flags.model ?? params.auditor
 
   if (flags.detach === "true") {
     const childArgs = [
       "restart",
       id,
       "--yes",
-      "--planner-model",
-      params.planner,
+      "--system-model",
+      params.system,
       "--worker-model",
       params.worker,
-      "--auditor-model",
-      params.auditor,
-      "--workers",
-      String(params.workers),
       ...(params.directive ? ["--directive", params.directive] : []),
       ...(flags["max-cycles"] ? ["--max-cycles", flags["max-cycles"]] : []),
       ...(flags["api-key"] ? ["--api-key", flags["api-key"]] : []),
       ...(flags.project ? ["--project", flags.project] : []),
     ]
     const pid = spawnDetachedRun(childArgs)
-    console.log(`restarting ${id} in background (pid ${pid}) — swarm status / watch / stop`)
+    console.log(
+      `${Style.ok(`restarting ${id} in background`)} ${Style.muted(`(pid ${pid})`)} — ${Style.cyan("swarm status")} / watch / stop`,
+    )
     return
   }
 
-  console.log(`restarting as a NEW run on ${rec.project}`)
-  console.log(`continuity: blackboard + accepted work from run ${id}`)
-  console.log(`models: planner=${params.planner}  worker=${params.worker}  auditor=${params.auditor}`)
+  console.log(`${Style.highlight("restarting")} run ${Style.bold(recFull.project)}`)
+  console.log(`${Style.key("run id:")} ${Style.cyan(id)} (reused — same worktrees, same run folder)`)
+  console.log(`${Style.key("from:")} cycle was ${recFull.cycle}`)
+  console.log(
+    `${Style.key("git:")} ${gitInfo.hasBase ? `base ok, worker ${gitInfo.ahead} commit(s) ahead` : "no swarm base found"}`,
+  )
+  console.log(
+    `${Style.key("models:")} ${Style.muted(`system=${params.system}  worker=${params.worker}`)}`,
+  )
+  const models: Models = { system: params.system, worker: params.worker }
   const run = new Run({
-    project: rec.project,
+    project: recFull.project,
     directive: params.directive || undefined,
-    workers: params.workers,
-    models: { planner: params.planner, worker: params.worker, auditor: params.auditor },
+    models,
     maxCycles: flags["max-cycles"] ? Number(flags["max-cycles"]) : undefined,
     apiKey: flags["api-key"],
     resumeFrom: id,

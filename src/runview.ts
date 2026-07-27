@@ -1,23 +1,22 @@
 import * as Registry from "./registry.ts"
 import { wrapText } from "./pick.ts"
+import { Style } from "./style.ts"
 
 /** Detail-panel lines for a run record, wrapped to the given width. */
 export function runDetail(r: Registry.RunRecord, width: number): string[] {
-  const workers = r.workers ?? r.agents?.filter((a) => a.role === "worker").length
   const lines = [
-    `status:    ${Registry.effectiveStatus(r)}`,
-    `cycle:     ${r.cycle}`,
-    `started:   ${r.startedAt.replace("T", " ").slice(0, 19)} UTC`,
-    `agents:    planner + auditor + ${workers ?? "?"} worker(s)`,
-    `planner:   ${r.models.planner}`,
-    `worker:    ${r.models.worker}`,
-    `auditor:   ${r.models.auditor}`,
+    Style.kv("status:", Style.status(Registry.effectiveStatus(r))),
+    Style.kv("cycle:", Style.cyan(String(r.cycle))),
+    Style.kv("started:", Style.muted(r.startedAt.replace("T", " ").slice(0, 19) + " UTC")),
+    Style.kv("agents:", `system + worker`),
+    Style.kv("system:", Style.muted(r.models.system)),
+    Style.kv("worker:", Style.muted(r.models.worker)),
     "",
-    "project:",
+    Style.bold("project:"),
     ...wrapText(r.project, width).map((l) => `  ${l}`),
     "",
-    "directive:",
-    ...wrapText(r.directive ?? "(none — planner inferred the mission)", width).map((l) => `  ${l}`),
+    Style.bold("directive:"),
+    ...wrapText(r.directive ?? "(none — system inferred the mission)", width).map((l) => `  ${Style.muted(l)}`),
   ]
   return lines
 }

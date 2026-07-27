@@ -1,15 +1,14 @@
 import fs from "node:fs"
 import path from "node:path"
 import * as Registry from "./registry.ts"
-import { parseBoard, renderBoard } from "./board.ts"
+import { ESC, Style, cutVisible } from "./style.ts"
 
-const ESC = "\x1b["
 const width = () => process.stdout.columns ?? 100
 const height = () => process.stdout.rows ?? 30
 
 function cut(text: string, n: number): string {
   const clean = text.replace(/\s+/g, " ").trim()
-  return clean.length > n ? clean.slice(0, n - 1) + "…" : clean
+  return cutVisible(clean, n)
 }
 
 function tailLines(file: string, n: number): string[] {
@@ -21,18 +20,34 @@ function tailLines(file: string, n: number): string[] {
   }
 }
 
-function colorize(line: string): string {
-  if (line.includes("[tool]")) return `${ESC}33m${line}${ESC}0m`
-  if (line.includes("[error]") || line.includes("failed")) return `${ESC}31m${line}${ESC}0m`
-  if (line.includes("ACCEPT")) return `${ESC}32m${line}${ESC}0m`
-  if (line.includes("REJECT")) return `${ESC}35m${line}${ESC}0m`
-  if (line.includes("===")) return `${ESC}1m${ESC}36m${line}${ESC}0m`
-  return line
+function badge(rec: Registry.RunRecord): string {
+  return Style.status(Registry.effectiveStatus(rec))
 }
 
-function badge(rec: Registry.RunRecord): string {
-  const status = Registry.effectiveStatus(rec)
-  return status === "alive" ? `${ESC}32m● alive${ESC}0m` : `${ESC}90m○ ${status}${ESC}0m`
+function readMission(runDir: string): string {
+  try {
+    const text = fs.readFileSync(path.join(runDir, "MISSION.md"), "utf8")
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"))
+    return lines.join(" ").slice(0, 240)
+  } catch {
+    return ""
+  }
+}
+
+/** Read the last few entries from DIALOGUE.md for the single-run view. */
+function readDialogueTail(runDir: string, maxEntries = 4): string[] {
+  try {
+    const text = fs.readFileSync(path.join(runDir, "DIALOGUE.md"), "utf8")
+    const entries = text.split(/\n## \[cycle /).filter((e) => e.trim())
+    return entries.slice(-maxEntries).map((e) => {
+      const lines = e.split(/\r?\n/).filter((l) => l.trim())
+      const header = lines[0]?.replace(/^## \[/, "## [") ?? ""
+      const body = lines.slice(1, 8).join(" ").replace(/\s+/g, " ").trim()
+      return `${header}\n  ${cut(body, width() - 4)}`
+    })
+  } catch {
+    return []
+  }
 }
 
 function frameOverview(): string {
@@ -40,40 +55,56 @@ function frameOverview(): string {
   const active = runs.filter((r) => r.status === "running" && Registry.alive(r.pid))
   const finished = runs.filter((r) => !active.includes(r))
   const lines: string[] = []
-  lines.push(`${ESC}1m${ESC}36mswarm watch${ESC}0m — ${active.length} active, ${finished.length} finished   (q to quit)`)
+  lines.push(
+    `${Style.brand("swarm watch")} — ${Style.success(String(active.length))} active, ${Style.muted(String(finished.length))} finished   ${Style.muted("(q to quit)")}`,
+  )
   lines.push("")
 
   const per = Math.max(2, Math.floor((height() - 8 - finished.length) / Math.max(1, active.length)) - 4)
   for (const r of active) {
-    lines.push(`${badge(r)} ${ESC}1m${r.id}${ESC}0m  cycle ${r.cycle}  ${cut(r.project, 50)}`)
-    if (r.directive) lines.push(`  ${ESC}90m${cut(r.directive, width() - 6)}${ESC}0m`)
+    lines.push(`${badge(r)} ${Style.bold(r.id)}  cycle ${Style.cyan(String(r.cycle))}  ${cut(r.project, 50)}`)
+    const label = r.directive || readMission(r.runDir)
+    if (label) lines.push(`  ${Style.muted(cut(label, width() - 6))}`)
     for (const l of tailLines(path.join(r.runDir, "events.log"), per)) {
-      lines.push(`  ${colorize(cut(l, width() - 6))}`)
+      lines.push(`  ${Style.logLine(cut(l, width() - 6))}`)
     }
     lines.push("")
   }
-  if (!active.length) lines.push(`${ESC}90mno active runs — start one with: node src/cli.ts run <folder>${ESC}0m`, "")
+  if (!active.length) {
+    lines.push(Style.muted("no active runs — start one with: swarm run <folder>"), "")
+  }
 
   for (const r of finished.slice(0, 10)) {
-    lines.push(`${badge(r)} ${ESC}90m${r.id}  cycle ${r.cycle}  ${cut(r.project, 60)}${ESC}0m`)
+    lines.push(`${badge(r)} ${Style.muted(`${r.id}  cycle ${r.cycle}  ${cut(r.project, 60)}`)}`)
   }
-  if (finished.length > 10) lines.push(`${ESC}90m… ${finished.length - 10} more${ESC}0m`)
-  if (finished.length) lines.push(`${ESC}90m(\`swarm clean\` prunes finished runs, \`swarm logs <id>\` shows their history)${ESC}0m`)
+  if (finished.length > 10) lines.push(Style.muted(`… ${finished.length - 10} more`))
+  if (finished.length) {
+    lines.push(Style.muted("(`swarm clean` prunes finished runs, `swarm logs <id>` shows their history)"))
+  }
 
   return lines.slice(0, height() - 1).join("\r\n")
 }
 
 function frameSingle(id: string): string {
   const rec = Registry.load(id)
-  if (!rec) return `unknown run id "${id}"`
-  const header = `${ESC}1m${ESC}36mswarm watch${ESC}0m ${badge(rec)} ${ESC}1m${rec.id}${ESC}0m  cycle ${rec.cycle}  ${rec.project}   (q to quit)`
-  const board = parseBoard(path.join(rec.runDir, "BLACKBOARD.md"))
-  const boardLines = board ? [...renderBoard(board, width() - 2, 8), ""] : []
-  const budget = height() - 2 - boardLines.length
+  if (!rec) return Style.danger(`unknown run id "${id}"`)
+  const header = `${Style.brand("swarm watch")} ${badge(rec)} ${Style.bold(rec.id)}  cycle ${Style.cyan(String(rec.cycle))}  ${rec.project}   ${Style.muted("(q to quit)")}`
+  const mission = readMission(rec.runDir)
+  const dialogue = readDialogueTail(rec.runDir)
+  const topLines: string[] = []
+  if (mission) {
+    topLines.push(Style.bold("MISSION"), `  ${cut(mission, width() - 4)}`, "")
+  }
+  if (dialogue.length) {
+    topLines.push(Style.bold("DIALOGUE (recent)"))
+    for (const d of dialogue) topLines.push(d)
+    topLines.push("")
+  }
+  const budget = height() - 2 - topLines.length
   const activity = tailLines(path.join(rec.runDir, "events.log"), Math.max(3, budget)).map((l) =>
-    colorize(cut(l, width() - 2)),
+    Style.logLine(cut(l, width() - 2)),
   )
-  return [header, "", ...boardLines, ...activity].slice(0, height() - 1).join("\r\n")
+  return [header, "", ...topLines, ...activity].slice(0, height() - 1).join("\r\n")
 }
 
 export function watch(id?: string): void {
@@ -89,7 +120,7 @@ export function watch(id?: string): void {
     process.stdin.resume()
     process.stdin.on("data", (key) => {
       const k = key.toString()
-      if (k === "q" || k === "") {
+      if (k === "q" || k === "\u0003") {
         process.stdout.write(`${ESC}?25h${ESC}2J${ESC}H`)
         process.exit(0)
       }
