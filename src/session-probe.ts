@@ -235,7 +235,7 @@ export async function probeSession(
 
   // Full message history
   try {
-    let messages = await sessionMessages(client, opts.directory, opts.sessionID)
+    let messages = await sessionMessages(client, opts.directory, opts.sessionID, opts.messageLimit)
     // Normalize: some clients wrap oddly
     if (!Array.isArray(messages)) {
       const any = messages as any

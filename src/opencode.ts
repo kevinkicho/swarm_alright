@@ -150,8 +150,16 @@ export async function sessionStatus(
   return (unwrapData(res, "session.status") as Record<string, { type: string }>) ?? {}
 }
 
-export async function sessionMessages(client: OpencodeClient, directory: string, sessionID: string): Promise<any[]> {
-  const res = await client.session.messages({ path: { id: sessionID }, query: { directory } })
+export async function sessionMessages(
+  client: OpencodeClient,
+  directory: string,
+  sessionID: string,
+  limit?: number,
+): Promise<any[]> {
+  const res = await client.session.messages({
+    path: { id: sessionID },
+    query: { directory, ...(limit != null ? { limit } : {}) },
+  })
   return (unwrapData(res, "session.messages") as any[]) ?? []
 }
 
