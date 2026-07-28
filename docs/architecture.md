@@ -90,3 +90,19 @@ Restart **reuses the same run id**, worktrees, and run folder.
 - Host if-trees for “what the worker should do next”  
 - Third “auditor” or “conductor” agent (system **is** the lead)  
 - Stuffing VERDICT and private review into the worker prompt  
+
+## Source layout (target: ~50–400 LOC modules)
+
+| Module | Role |
+| --- | --- |
+| `run.ts` | Thin orchestrator: start loop, wire agents, cycle |
+| `run-types.ts` | Shared types |
+| `run-prompts.ts` | System/worker prompts + TO_WORKER / VERDICT parse |
+| `run-host-git.ts` | Sync, re-home, commit, accept, review pack |
+| `run-turn.ts` | OpenCode turn + stall/rotate + session capture |
+| `session-probe.ts` | Full worker OpenCode dump → WORKER_SESSION.md |
+| `opencode.ts` | SDK server/client/EventBus |
+| `git.ts` | Git primitives |
+| `cli.ts` / `wizard.ts` / … | Shell surface |
+
+Prefer new code in a focused module over growing `run.ts` past ~600 lines.
