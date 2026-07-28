@@ -39,14 +39,20 @@ Host sends **TO_WORKER** to the worker. Host parses **VERDICT** for git.
 
 ```
 .swarm/runs/<id>/
-  MISSION.md      user directive
-  DIALOGUE.md     append-only system + worker messages
-  STANDARDS.md    optional lead-owned quality notes (system may edit)
-  MEMORY.md       host rewrite: paths + review pack / post-worker facts
+  MISSION.md           user directive
+  DIALOGUE.md          append-only system + worker messages
+  STANDARDS.md         optional lead-owned quality notes (system may edit)
+  WORKER_SESSION.md    **full OpenCode worker session probe** (messages, tools, I/O, status)
+  MEMORY.md            host sensors + short pointers (not a substitute for WORKER_SESSION)
   events.log
   run.json
   STOP
 ```
+
+The system agent cannot call the OpenCode HTTP API. The **host** probes the worker
+session via `@opencode-ai/sdk` (`session.messages`, status, list, optional todo/diff)
+and writes `WORKER_SESSION.md` after every worker turn and again before each system
+review. The system must open that file with tools.
 
 ## Cycle
 

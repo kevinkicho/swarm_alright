@@ -24,6 +24,7 @@ import * as Registry from "./registry.ts"
 import { Style } from "./style.ts"
 import { memoryPath, writeMemory, buildMemoryDoc, appendDialogue, clip } from "./memory.ts"
 import { loadProjectConfig, type ResolvedProjectConfig } from "./project-config.ts"
+import { probeSession, probeSummaryForMemory, type SessionProbeMeta } from "./session-probe.ts"
 
 export type RunOptions = {
   project: string
@@ -51,6 +52,7 @@ export class Run {
   private missionFile: string
   private dialogueFile: string
   private standardsFile: string
+  private workerSessionFile: string
   private logFile: string
   private stopFile: string
   private server?: ServerHandle
@@ -86,6 +88,8 @@ export class Run {
     rehomed: number
     verify?: { ok: boolean; exit: number | null; output: string }
   } | null = null
+  /** Last full worker session probe meta (path + counts). */
+  private lastWorkerProbe: SessionProbeMeta | null = null
   /** Zero-activity stall threshold (ms). Not a turn wall-clock. */
   private readonly stallMs = 20 * 60_000
 
@@ -96,6 +100,7 @@ export class Run {
     this.missionFile = path.join(this.runDir, "MISSION.md")
     this.dialogueFile = path.join(this.runDir, "DIALOGUE.md")
     this.standardsFile = path.join(this.runDir, "STANDARDS.md")
+    this.workerSessionFile = path.join(this.runDir, "WORKER_SESSION.md")
     this.logFile = path.join(this.runDir, "events.log")
     this.stopFile = path.join(this.runDir, "STOP")
   }
@@ -191,6 +196,7 @@ export class Run {
     this.missionFile = path.join(this.runDir, "MISSION.md")
     this.dialogueFile = path.join(this.runDir, "DIALOGUE.md")
     this.standardsFile = path.join(this.runDir, "STANDARDS.md")
+    this.workerSessionFile = path.join(this.runDir, "WORKER_SESSION.md")
     this.logFile = path.join(this.runDir, "events.log")
     this.stopFile = path.join(this.runDir, "STOP")
     this.projectCfg = loadProjectConfig(project)
@@ -514,61 +520,24 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
   }
 
   /**
-   * Capture a full trace of the worker's latest turn: every tool call (with
-   * tool name + input) and every reasoning/text part, in order. This is what
-   * the system probes to understand what the worker did and why — like a
-   * human reading a colleague's screen.
-   * Returns a compact markdown string suitable for the review pack.
+   * Full OpenCode session probe for the worker — messages, tools, outputs, status.
+   * Writes WORKER_SESSION.md so the system agent can open it with tools.
    */
-  private async captureWorkerTrace(worker: AgentRef, maxChars = 8000): Promise<string> {
-    try {
-      const messages = await this.api!.sessionMessages(worker.directory, worker.sessionID)
-      if (!messages.length) return "(no messages in worker session)"
-      // Take the last assistant message (this turn) and walk its parts in order.
-      const last = [...messages].reverse().find((m: any) => m?.info?.role === "assistant")
-      if (!last) return "(no assistant reply found)"
-      const parts = last.parts ?? []
-      const lines: string[] = []
-      let toolCount = 0
-      let reasoningCount = 0
-      let textChars = 0
-      for (const p of parts) {
-        if (!p || typeof p !== "object") continue
-        if (p.type === "tool" || p.tool) {
-          toolCount++
-          const tool = String(p.tool ?? "tool")
-          const input = p.state?.input ?? p.input
-          let detail = ""
-          if (tool === "bash" || /bash|shell|cmd/i.test(tool)) {
-            const cmd =
-              (typeof input === "string" ? input : null) ??
-              input?.command ??
-              input?.cmd ??
-              input?.script ??
-              (input ? JSON.stringify(input) : "")
-            detail = String(cmd).replace(/\s+/g, " ").trim().slice(0, 300)
-          } else if (input && typeof input === "object") {
-            const pathHint = input.path ?? input.filePath ?? input.file ?? input.target
-            detail = pathHint ? String(pathHint) : JSON.stringify(input).slice(0, 200)
-          } else if (typeof input === "string") {
-            detail = input.slice(0, 200)
-          }
-          lines.push(`- tool: ${tool}${detail ? ` — ${detail}` : ""}`)
-        } else if (p.type === "reasoning" && p.text) {
-          reasoningCount++
-          const r = String(p.text).replace(/\s+/g, " ").trim()
-          if (r) lines.push(`- reasoning: ${r.slice(0, 400)}`)
-        } else if (p.type === "text" && p.text) {
-          textChars += String(p.text).length
-          lines.push(String(p.text))
-        }
-      }
-      const summary = `(${toolCount} tool calls, ${reasoningCount} reasoning blocks, ${textChars} chars of text)`
-      const body = lines.join("\n").trim()
-      return clip(`### Worker session trace ${summary}\n\n${body}`, maxChars)
-    } catch (err) {
-      return `(failed to capture worker trace: ${err instanceof Error ? err.message : String(err)})`
-    }
+  private async captureWorkerSession(worker: AgentRef): Promise<SessionProbeMeta> {
+    const { meta } = await probeSession(this.api!.client, {
+      role: "worker",
+      sessionID: worker.sessionID,
+      directory: worker.directory,
+      dumpPath: this.workerSessionFile,
+      maxChars: 120_000,
+      messageLimit: 100,
+    })
+    this.lastWorkerProbe = meta
+    this.log(
+      `  [host:session] worker probe: messages=${meta.messageCount} tools=${meta.toolCalls} errors=${meta.toolErrors} status=${meta.status} → ${meta.dumpPath}` +
+        (meta.error ? ` (${meta.error.slice(0, 120)})` : ""),
+    )
+    return meta
   }
 
   /** After abort: OpenCode may already be idle (absent from status map). Poll until not busy. */
@@ -776,11 +745,18 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
     return { committed, ahead, rehomed: rehomed.length, verify }
   }
 
-  private async buildReviewPack(workerTrace: string): Promise<{ pack: string; sections: string[]; anyCommits: boolean }> {
+  private async buildReviewPack(
+    sessionMeta: SessionProbeMeta,
+  ): Promise<{ pack: string; sections: string[]; anyCommits: boolean }> {
     const parts: string[] = []
     const sections: string[] = []
     const ahead = await commitsAhead(this.opts.project, this.integrationBranch, this.workerBranch)
     this.log(`  [metric] worker commits_ahead=${ahead}`)
+
+    // Full session access — summary + path to complete dump.
+    const sessionBlock = probeSummaryForMemory(sessionMeta)
+    parts.push(sessionBlock)
+    sections.push(sessionBlock)
 
     // Prior-cycle ship facts (verify, commit) — sensors only for the lead.
     if (this.lastShip) {
@@ -800,8 +776,6 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
       const s = `### worker git\nstatus: NO_COMMITS\nbranch ${this.workerBranch} has 0 commits ahead of ${this.integrationBranch}.\nempty_commit_streak: ${this.emptyCommitStreak}`
       parts.push(s)
       sections.push(s)
-      sections.push(workerTrace)
-      parts.push(workerTrace)
       return { pack: parts.join("\n\n"), sections, anyCommits: false }
     }
     const log = await shortLog(this.opts.project, this.integrationBranch, this.workerBranch)
@@ -813,8 +787,6 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
     s += `\ngit summary:\n\`\`\`\n${clip(diff || "(empty)", 8000)}\n\`\`\``
     parts.push(s)
     sections.push(s)
-    sections.push(workerTrace)
-    parts.push(workerTrace)
     this.log(`  [host:git] review worker: ${ahead} commit(s) ahead`)
     return { pack: parts.join("\n\n"), sections, anyCommits: true }
   }
@@ -861,9 +833,10 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
     this.heartbeat("system")
     let anyCommits = false
     let reviewSections: string[] = []
+    // Always probe worker OpenCode session when we have one (cycle > 1 after first worker turn).
     if (this.cycle > 1) {
-      const workerTrace = await this.captureWorkerTrace(worker)
-      const pack = await this.buildReviewPack(workerTrace)
+      const sessionMeta = await this.captureWorkerSession(worker)
+      const pack = await this.buildReviewPack(sessionMeta)
       anyCommits = pack.anyCommits
       reviewSections = pack.sections
     }
@@ -874,13 +847,18 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
       `mission: ${this.missionFile}`,
       `dialogue: ${this.dialogueFile} (prefer latest entries; file is append-only)`,
       `standards: ${this.standardsFile} (optional lead notes — you may edit)`,
+      `worker_session_dump: ${this.workerSessionFile} (FULL OpenCode worker session — open this)`,
       `memory: ${memoryPath(this.runDir)}`,
       `project: ${this.opts.project}`,
       `worker_worktree: ${this.workerWorktree}`,
+      `worker_session_id: ${worker.sessionID}`,
       `integration: ${this.integrationBranch}`,
       `empty_commit_streak: ${this.emptyCommitStreak}`,
       `last_verdict: ${this.lastVerdict || "(none)"}`,
       `cycle: ${this.cycle}`,
+      this.lastWorkerProbe
+        ? `worker_probe: messages=${this.lastWorkerProbe.messageCount} tools=${this.lastWorkerProbe.toolCalls} errors=${this.lastWorkerProbe.toolErrors} status=${this.lastWorkerProbe.status}`
+        : `worker_probe: (none yet — first cycle)`,
       this.lastShip
         ? `last_ship: cycle=${this.lastShip.cycle} committed=${this.lastShip.committed} ahead=${this.lastShip.ahead} verify=${this.lastShip.verify ? (this.lastShip.verify.ok ? "PASS" : "FAIL") : "n/a"}`
         : `last_ship: (none yet)`,
@@ -968,6 +946,10 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
     this.throwIfStopped()
     appendDialogue(this.dialogueFile, "worker", this.cycle, workerTurn.text)
 
+    // Immediate full session dump so next system (or human) can probe without waiting a cycle.
+    this.heartbeat("probe-worker")
+    await this.captureWorkerSession(worker)
+
     // --- HOST commits + optional verify (facts for next system turn) ---
     this.heartbeat("commit")
     this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktree...`)
@@ -982,6 +964,10 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
       ship.verify
         ? `verify: ${ship.verify.ok ? "PASS" : "FAIL"} exit=${ship.verify.exit ?? "?"} ${ship.verify.output.slice(0, 200)}`
         : `verify: (not configured)`,
+      `worker_session_dump: ${this.workerSessionFile}`,
+      this.lastWorkerProbe
+        ? `worker_probe: messages=${this.lastWorkerProbe.messageCount} tools=${this.lastWorkerProbe.toolCalls} errors=${this.lastWorkerProbe.toolErrors}`
+        : `worker_probe: (failed)`,
       `worker_reply_excerpt: ${this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 400)}`,
     ])
 
@@ -1003,18 +989,21 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
       `The worker receives ONLY your ### TO_WORKER section. Put all analysis, praise, and criticism either in tools-only thinking or above TO_WORKER — never force the engineer to parse VERDICT or host jargon.`,
       ``,
       `Investigate freely before deciding:`,
-      `- Read mission, recent dialogue (tail of the file), MEMORY review pack, and STANDARDS if present.`,
-      `- Open real files in the project and/or worker worktree; compare claimed work to the tree.`,
-      `- If verify failed or empty_commit_streak is high, treat that as a sensor reading and choose the fix yourself (unblock, shrink scope, raise quality bar, or stop).`,
+      `- **Required:** open ${this.workerSessionFile} — full OpenCode dump of the worker session (every message, tool input/output/error, status). This is how you see what the engineer actually did.`,
+      `- Read mission, recent dialogue (tail), MEMORY review pack, STANDARDS if present.`,
+      `- Open real files in the project and/or worker worktree; compare claimed work to the tree and to tool outputs in the session dump.`,
+      `- If verify failed or empty_commit_streak is high, treat that as a sensor reading and choose the fix yourself.`,
       `- You may update STANDARDS.md with lasting quality notes for later cycles.`,
       ``,
       `Paths:`,
       `- mission: ${this.missionFile}`,
       `- dialogue: ${this.dialogueFile}`,
       `- standards: ${this.standardsFile}`,
+      `- worker_session (FULL probe): ${this.workerSessionFile}`,
       `- memory: ${memoryPath(this.runDir)}`,
       `- project: ${this.opts.project}`,
       `- worker worktree: ${this.workerWorktree}`,
+      `- worker session id: ${this.lastWorkerProbe?.sessionID ?? "(see MEMORY)"}`,
       ``,
     ]
 
@@ -1030,8 +1019,10 @@ and ongoing priorities for the worker. Host never rewrites judgment here.
       lines.push(
         `Review last cycle deeply: approach quality, mission progress, gaps, risks, and the smartest next step (or stop).`,
       )
-      if (hasReviewPack) {
-        lines.push(`MEMORY has git summary + worker session trace (+ verify if configured). Start there, then open files.`)
+      if (hasReviewPack || this.lastWorkerProbe) {
+        lines.push(
+          `Start with WORKER_SESSION.md (full session), then MEMORY (git/verify summary). Do not brief the next task without reading the session dump when it exists.`,
+        )
       } else {
         lines.push(
           `Host fact: no new commits last cycle (empty_commit_streak=${this.emptyCommitStreak}). You decide how to respond.`,

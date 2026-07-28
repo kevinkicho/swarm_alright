@@ -17,7 +17,8 @@
   - `MISSION.md` — the mission (directive, or system-inferred)
   - `DIALOGUE.md` — durable append-only conversation log (system + worker)
   - `STANDARDS.md` — optional lead notes (system may edit across cycles)
-  - `MEMORY.md` — host sensors + review pack / post-worker ship facts
+  - `WORKER_SESSION.md` — full OpenCode dump of the worker session (host-written)
+  - `MEMORY.md` — host sensors + short pointers to the session dump + git/verify
   - `events.log` — every phase, tool call, reply, and error
   - `STOP` — created by `swarm stop` to request graceful shutdown
 - **Git**: integration branch `swarm/<id>/base`, worker branch `swarm/<id>/w1`,
