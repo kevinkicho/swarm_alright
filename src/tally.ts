@@ -149,13 +149,13 @@ function detectSituations(c: SituationCounts, t: Omit<RunTally, "situations">): 
   const s: string[] = []
   if (c.maxBuffer > 0) s.push(`S1 maxBuffer×${c.maxBuffer} (git diff blew host buffer)`)
   if (c.verdict_none >= 3 || t.streaks.maxOmitVerdict >= 3) {
-    s.push(`S2 system mute / omit VERDICT (×${c.verdict_none}, streak ${t.streaks.maxOmitVerdict})`)
+    s.push(`S2 legacy omit-VERDICT / thin signal (×${c.verdict_none}, streak ${t.streaks.maxOmitVerdict}) — default merge is OK`)
   }
   if (c.verdict_done > 0) s.push(`S3 mission DONE emitted (×${c.verdict_done})`)
   if (c.verdict_stop > 0) s.push(`S4 mission STOP emitted (×${c.verdict_stop})`)
   if (c.fetch_failed > 0 || /fetch|turn error/.test(t.death)) s.push(`S5 fetch/turn error hang (${t.death})`)
   if (c.cycle_start <= 1 && c.worker_reply === 0 && c.system_reply === 0) s.push("S6 cold-start hang (no agent replies)")
-  if (c.verdict_continue >= 10) s.push(`S7 healthy CONTINUE loop (${c.verdict_continue} accepts)`)
+  if (c.verdict_continue >= 10) s.push(`S7 healthy continue/default-merge loop (${c.verdict_continue})`)
   if (c.rehome_skip_dirty > 0) s.push(`S8 root dirty / rehome skip×${c.rehome_skip_dirty} (rehomed sum ${t.rehomedSum})`)
   if (c.bad_request + c.context_overflow > 0) {
     s.push(`S9 Bad Request/overflow×${c.bad_request + c.context_overflow}`)
@@ -218,7 +218,8 @@ export function tallyLog(opts: { id: string; project: string; runDir: string; lo
     if (/\[cycle \d+\] system review/i.test(l)) c.system_turn++
     if (/\[reply:system\]/i.test(l)) c.system_reply++
 
-    if (/system verdict: CONTINUE/i.test(l)) {
+    // Host signals: legacy "system verdict:" and new "signal: CONTINUE (default)"
+    if (/system verdict: CONTINUE|signal: CONTINUE/i.test(l)) {
       c.verdict_continue++
       consecutiveContinue++
       maxContinue = Math.max(maxContinue, consecutiveContinue)
@@ -226,18 +227,28 @@ export function tallyLog(opts: { id: string; project: string; runDir: string; lo
       consecutiveSkip = 0
       aheadAt.CONTINUE.push(currentAhead)
     }
-    if (/system verdict: DONE/i.test(l)) {
+    if (/system verdict: DONE|signal: DONE\b/i.test(l)) {
       c.verdict_done++
       aheadAt.DONE.push(currentAhead)
     }
-    if (/system verdict: STOP/i.test(l)) {
+    if (/system verdict: STOP|signal: STOP\b/i.test(l)) {
       c.verdict_stop++
       aheadAt.STOP.push(currentAhead)
+    }
+    if (/HOST: REPASS|signal: REPASS|same-cycle second worker/i.test(l)) {
+      // count as continue family for funnel health
+      c.verdict_continue++
+      consecutiveContinue++
+      maxContinue = Math.max(maxContinue, consecutiveContinue)
+      consecutiveOmit = 0
     }
     if (/no VERDICT line/i.test(l)) {
       c.verdict_none++
       consecutiveOmit++
       maxOmit = Math.max(maxOmit, consecutiveOmit)
+    }
+    if (/default merge|ACCEPT worker \(default merge/i.test(l)) {
+      // healthy host path — already counted via signal CONTINUE when present
     }
     if (/skip system review/i.test(l)) {
       c.skip_system++
@@ -420,7 +431,7 @@ export function printTally(opts?: { runId?: string; recent?: number; json?: bool
     Style.kv("system turns/replies:", `${g.system_turn} / ${g.system_reply}`),
     Style.kv(
       "verdicts:",
-      `${Style.success(`CONTINUE ${g.verdict_continue}`)}  ${Style.warning(`DONE ${g.verdict_done}`)}  ${Style.danger(`STOP ${g.verdict_stop}`)}  (${((100 * g.verdict_continue) / verdicts).toFixed(1)}% continue)  omit-VERDICT ${g.verdict_none}`,
+      `${Style.success(`CONTINUE/default ${g.verdict_continue}`)}  ${Style.warning(`DONE ${g.verdict_done}`)}  ${Style.danger(`STOP ${g.verdict_stop}`)}  (${((100 * g.verdict_continue) / verdicts).toFixed(1)}% continue)  legacy-omit ${g.verdict_none}`,
     ),
     Style.kv("skip system:", String(g.skip_system)),
     Style.kv(

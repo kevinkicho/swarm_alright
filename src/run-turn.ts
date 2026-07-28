@@ -67,11 +67,13 @@ export async function rotateSession(deps: TurnDeps, agent: AgentRef): Promise<vo
 /**
  * Prompt + wait with Bad Request / stall recovery.
  * No wall-clock kill of healthy long tools — only zero bus activity for stallMs.
+ * Optional `system` is sticky identity (OpenCode system field) — use for lead role.
  */
 export async function runTurn(
   deps: TurnDeps,
   agent: AgentRef,
   prompt: string,
+  opts?: { system?: string },
 ): Promise<{ text: string; secs: number }> {
   const maxAttempts = 3
   let lastErr: Error | undefined
@@ -83,6 +85,7 @@ export async function runTurn(
       const idle = deps.bus.waitIdle(agent.directory, agent.sessionID, () => deps.isStopping())
       await deps.api.promptAsync(agent.directory, agent.sessionID, {
         model: { providerID: PROVIDER_ID, modelID: bareModel(agent.model) },
+        ...(opts?.system ? { system: opts.system } : {}),
         parts: [{ type: "text", text: prompt }],
       })
 

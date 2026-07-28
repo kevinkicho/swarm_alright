@@ -7,11 +7,12 @@ and OpenCode. Powered by [opencode](https://opencode.ai) +
 
 ## Pattern
 
-1. **System** reads your mission (+ dialogue + last worker session/git summary).  
-2. It writes a **normal human message** to the worker (plan, answer a question, next step).  
-3. **Worker** gets that message as its prompt, works in a git worktree until idle, then replies.  
-4. **Host** commits dirty work, packs the worker's tool/thinking trace + git summary for the system.  
-5. Loop until the system says `VERDICT: DONE` or `STOP`, or you `swarm stop`.
+1. **System** (sticky lead identity) gets a **materials-only sitrep** — paths, facts, session dump / MEMORY.  
+2. It investigates with tools and overwrites **`HANDOFF.md`** with the engineer assignment.  
+3. **Host** default-merges last worker commits (unless the lead says `HOST: STOP`).  
+4. **Worker** receives the handoff body, works in a git worktree until idle.  
+5. **Host** commits, probes the full worker session into `WORKER_SESSION.md`, packs MEMORY.  
+6. Loop until `HOST: DONE` / `STOP`, or you `swarm stop`. Optional `HOST: REPASS` for one same-cycle second pass.
 
 No team chat, no multi-agent contracts, no third “auditor” brain — one conversation, two OpenCode sessions.
 

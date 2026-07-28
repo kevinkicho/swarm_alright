@@ -17,6 +17,7 @@
   - `MISSION.md` — the mission (directive, or system-inferred)
   - `DIALOGUE.md` — durable append-only conversation log (system + worker)
   - `STANDARDS.md` — optional lead notes (system may edit across cycles)
+  - `HANDOFF.md` — engineer assignment (system overwrites each cycle; worker prompt source)
   - `WORKER_SESSION.md` — full OpenCode dump of the worker session (host-written)
   - `MEMORY.md` — host sensors + short pointers to the session dump + git/verify
   - `events.log` — every phase, tool call, reply, and error
@@ -32,9 +33,10 @@
 - **Hard**: closing the terminal of a foreground run, or killing the process.
   The record stays `running` (displayed as `crashed`), and the run's opencode
   server may be orphaned until the next `swarm clean`.
-- **System-initiated**: the system agent emits `VERDICT: DONE` (mission complete)
-  or `VERDICT: STOP` (something's wrong). The host merges on `DONE`, keeps
-  commits on `STOP`, then ends the run as `stopped`.
+- **System-initiated**: optional reply lines `HOST: DONE` (mission complete;
+  merge then end) or `HOST: STOP` (keep unmerged, end). Legacy
+  `VERDICT: DONE|STOP` still works. Host **default-merges** when the lead
+  omits a host line.
 
 ## Background (detached) runs
 
@@ -57,7 +59,7 @@ run id** — no new id, no new folder, no wasted work:
      it from the `swarm/<id>/w1` branch only if the worktree dir is gone)
    - Reuses the existing `swarm/<id>/base` integration branch
    - Reuses the existing `swarm/<id>/w1` worker branch (unaudited commits kept)
-   - Keeps `MISSION.md`, `MEMORY.md`, `events.log`, and `run.json` in place
+   - Keeps `MISSION.md`, `HANDOFF.md`, `MEMORY.md`, `events.log`, and `run.json` in place
    - Continues the cycle counter from the prior run's last cycle
 
 OpenCode sessions are always fresh (chat history is not portable), but all
@@ -71,15 +73,17 @@ directly from disk.
 
 Each cycle the host (not the models) owns:
 
-1. **Sense** — pack git summary, optional last verify, worker session trace into MEMORY
-2. **System turn** — free tool use; reply `### TO_WORKER` + `### HOST` / `VERDICT`
-3. **Extract brief** — worker gets only TO_WORKER (rewrite pass if missing/thin)
-4. **Verdict** — merge on CONTINUE/DONE when commits exist; one re-ask if no token
-5. **Sync** → **worker turn** (brief + path footer) → **re-home + commit** + optional `verify`
-6. **Post-worker MEMORY** — ship facts for next system review
-7. **Stall / Bad Request** — zero-activity ~20m or size errors → abort, rotate session, retry
+1. **Sense** — pack git summary, optional last verify, worker session probe into MEMORY
+2. **System turn** — sticky lead identity + materials-only sitrep; free tool use; write `HANDOFF.md`
+3. **Handoff hygiene** — if file thin, one rewrite pass (still model-written)
+4. **Default merge** — accept `w1` when commits exist unless `HOST: STOP` / HOLD (no CONTINUE re-ask)
+5. **Sync** → **worker turn** (handoff body + path footer) → **re-home + commit** + optional `verify`
+6. **Optional REPASS** — if lead said `HOST: REPASS`, one more system materials + worker + commit
+7. **Post-worker MEMORY** — ship facts for next system review
+8. **Stall / Bad Request** — zero-activity ~20m or size errors → abort, rotate session, retry
 
 Conversation lives in `DIALOGUE.md` + sessions. Judgment lives with the system agent.
+Handoff lives in `HANDOFF.md`.
 
 ## Long runs & context
 
@@ -116,5 +120,6 @@ Alive runs' worktrees are kept. Does not delete integration/worker **branches** 
 | Cycle keeps failing | Read `.swarm/runs/<id>/events.log`; 5 consecutive failures end the run as `errored` |
 | System never runs | No commits on `w1` after the cycle. Check for `re-home` / `commits_ahead=0` in events.log; prefer edits under the worktree |
 | `project_root dirty` but worktree clean | Host re-homes when it can; if still zero commits, open the log for re-home skip reasons |
+| Empty HANDOFF | System should overwrite `HANDOFF.md`; host does one rewrite pass then falls back to reply extract |
 | Single-flight error | Another alive run on the same folder — `swarm stop <id>` or set `"singleFlight": false` in `.swarm/config.json` |
 | Disk full of `.swarm/worktrees/*` | `swarm clean --worktrees` (optionally `--project …`) |

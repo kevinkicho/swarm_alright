@@ -27,15 +27,18 @@ import {
   sleep,
 } from "./run-types.ts"
 import {
-  buildSystemPrompt,
+  buildSystemIdentity,
+  buildSystemSitrep,
   buildWorkerPrompt,
   extractWorkerBrief,
-  parseSystemVerdict,
-  needsBriefRewrite,
-  briefRewritePrompt,
-  verdictReaskPrompt,
+  parseHostSignal,
+  needsHandoffRewrite,
+  handoffRewritePrompt,
+  readHandoffFile,
+  writeHandoff,
   systemFactNotes,
 } from "./run-prompts.ts"
+import type { HostSignal } from "./run-types.ts"
 import {
   hostSyncWorker,
   hostCommitWorker,
@@ -55,6 +58,7 @@ export class Run {
   private dialogueFile: string
   private standardsFile: string
   private workerSessionFile: string
+  private handoffFile: string
   private logFile: string
   private stopFile: string
   private server?: ServerHandle
@@ -92,6 +96,7 @@ export class Run {
     this.dialogueFile = path.join(runDir, "DIALOGUE.md")
     this.standardsFile = path.join(runDir, "STANDARDS.md")
     this.workerSessionFile = path.join(runDir, "WORKER_SESSION.md")
+    this.handoffFile = path.join(runDir, "HANDOFF.md")
     this.logFile = path.join(runDir, "events.log")
     this.stopFile = path.join(runDir, "STOP")
     void project
@@ -106,6 +111,7 @@ export class Run {
       dialogueFile: this.dialogueFile,
       standardsFile: this.standardsFile,
       workerSessionFile: this.workerSessionFile,
+      handoffFile: this.handoffFile,
       memoryFile: memoryPath(this.runDir),
       baseBranch: this.baseBranch,
       integrationBranch: this.integrationBranch,
@@ -315,6 +321,12 @@ export class Run {
         `# Lead standards (optional)\n\nThe system (technical lead) may update this file with quality bars, style notes,\nand ongoing priorities for the worker. Host never rewrites judgment here.\n`,
       )
     }
+    if (!fs.existsSync(this.handoffFile)) {
+      fs.writeFileSync(
+        this.handoffFile,
+        `# Handoff\n\n(System lead overwrites this file each cycle with the engineer assignment.)\n`,
+      )
+    }
 
     const apiKey = loadApiKey(this.opts.apiKey, project)
     const modelIDs = [...new Set([this.opts.models.system, this.opts.models.worker])]
@@ -357,8 +369,10 @@ export class Run {
     }))
     this.saveRecord()
     this.log(`agents ready: system (lead) + worker (engineer) — dialogue loop`)
-    this.log(`pattern: system message → worker works → host commits → system reads session dump → repeat`)
-    this.log(`host owns git only; no team-chat / contracts / third agent`)
+    this.log(
+      `pattern: materials sitrep → lead writes HANDOFF → default merge → worker → commit → probe → repeat`,
+    )
+    this.log(`host owns git only (default merge); no team-chat / contracts / third agent`)
     if (this.opts.models.system === this.opts.models.worker) {
       this.log(
         `note: system and worker share model ${this.opts.models.system} — consider --system-model <other> for a stronger second opinion`,
@@ -445,12 +459,140 @@ export class Run {
         mission: p.missionFile,
         dialogue: p.dialogueFile,
         standards: p.standardsFile,
+        handoff: p.handoffFile,
       },
       hostNotes,
       reviewSections,
     })
     writeMemory(p.memoryFile, body)
     this.log(`  [host:memory] wrote ${p.memoryFile} (${phase})`)
+  }
+
+  /** Resolve engineer brief: HANDOFF.md primary, reply extract fallback; persist artifact. */
+  private resolveHandoff(systemText: string): string {
+    let body = readHandoffFile(this.handoffFile)
+    // Seed file from bindPaths, or still too thin to be a real assignment.
+    const isSeed =
+      !body ||
+      /\(System lead overwrites this file each cycle/i.test(body) ||
+      body.trim().length < 40
+    if (isSeed) {
+      const fromReply = extractWorkerBrief(systemText)
+      if (fromReply.trim().length >= 40) {
+        body = fromReply.trim()
+        writeHandoff(this.handoffFile, body)
+        this.log(`  [host] handoff filled from system reply (${body.length} chars) → ${this.handoffFile}`)
+      }
+    } else {
+      this.log(`  [host] handoff artifact ready (${body.length} chars) → ${this.handoffFile}`)
+    }
+    return body.trim()
+  }
+
+  private async runSystemTurn(
+    deps: TurnDeps,
+    system: AgentRef,
+    worker: AgentRef,
+    opts: { anyCommits: boolean; reviewSections: string[]; repass?: boolean },
+  ): Promise<{ text: string; secs: number; signal: HostSignal; handoff: string }> {
+    const identity = buildSystemIdentity(this.paths())
+    this.writeHostMemory(
+      opts.repass ? "system-repass" : "system",
+      systemFactNotes({
+        paths: this.paths(),
+        workerSessionID: worker.sessionID,
+        emptyCommitStreak: this.emptyCommitStreak,
+        lastVerdict: this.lastVerdict,
+        cycle: this.cycle,
+        lastWorkerProbe: this.lastWorkerProbe,
+        lastShip: this.lastShip,
+      }),
+      opts.reviewSections,
+    )
+
+    let systemTurn = await runTurn(
+      deps,
+      system,
+      buildSystemSitrep({
+        cycle: this.cycle,
+        resumeFrom: this.opts.resumeFrom,
+        hasReviewPack: opts.anyCommits || !!this.lastWorkerProbe,
+        emptyCommitStreak: this.emptyCommitStreak,
+        lastWorkerReply: this.lastWorkerReply,
+        lastShip: this.lastShip,
+        lastWorkerProbe: this.lastWorkerProbe,
+        paths: this.paths(),
+        repass: opts.repass,
+      }),
+      { system: identity },
+    )
+    this.lastSystemReview = systemTurn.text
+    this.throwIfStopped()
+    appendDialogue(
+      this.dialogueFile,
+      opts.repass ? "system-repass" : "system",
+      this.cycle,
+      systemTurn.text,
+    )
+
+    let handoff = this.resolveHandoff(systemTurn.text)
+    if (needsHandoffRewrite(handoff)) {
+      this.log(`  [host] HANDOFF missing or thin — one rewrite pass`)
+      const rewrite = await runTurn(deps, system, handoffRewritePrompt(this.handoffFile), {
+        system: identity,
+      })
+      appendDialogue(this.dialogueFile, "system", this.cycle, `(handoff rewrite) ${rewrite.text}`)
+      systemTurn = { text: rewrite.text, secs: systemTurn.secs + rewrite.secs }
+      this.lastSystemReview = systemTurn.text
+      handoff = this.resolveHandoff(systemTurn.text)
+    }
+
+    const signal = parseHostSignal(systemTurn.text)
+    return { text: systemTurn.text, secs: systemTurn.secs, signal, handoff }
+  }
+
+  private async runWorkerShip(
+    deps: TurnDeps,
+    worker: AgentRef,
+    handoff: string,
+    label: string,
+  ): Promise<void> {
+    this.heartbeat("worker")
+    this.log(`[cycle ${this.cycle}] host sync worker from integration...`)
+    const sync = await hostSyncWorker(this.gitCtx())
+    this.lastSyncOk = sync.ok
+    this.lastSyncDetail = sync.detail
+    this.throwIfStopped()
+
+    this.log(`[cycle ${this.cycle}] worker${label}...`)
+    const workerTurn = await runTurn(deps, worker, buildWorkerPrompt(handoff, this.paths()))
+    this.lastWorkerReply = workerTurn.text
+    this.throwIfStopped()
+    appendDialogue(this.dialogueFile, label ? `worker${label}` : "worker", this.cycle, workerTurn.text)
+
+    this.heartbeat("probe-worker")
+    this.lastWorkerProbe = await captureWorkerSession(deps, worker)
+
+    this.heartbeat("commit")
+    this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktree...`)
+    const ship = await hostCommitWorker(this.gitCtx())
+    this.lastShip = { cycle: this.cycle, ...ship }
+    this.throwIfStopped()
+    this.writeHostMemory(label ? `post-worker${label}` : "post-worker", [
+      `cycle: ${this.cycle}`,
+      `committed: ${ship.committed}`,
+      `commits_ahead: ${ship.ahead}`,
+      `rehomed: ${ship.rehomed}`,
+      ship.verify
+        ? `verify: ${ship.verify.ok ? "PASS" : "FAIL"} exit=${ship.verify.exit ?? "?"} ${ship.verify.output.slice(0, 200)}`
+        : `verify: (not configured)`,
+      `handoff: ${this.handoffFile}`,
+      `worker_session_dump: ${this.workerSessionFile}`,
+      this.lastWorkerProbe
+        ? `worker_probe: messages=${this.lastWorkerProbe.messageCount} tools=${this.lastWorkerProbe.toolCalls} errors=${this.lastWorkerProbe.toolErrors}`
+        : `worker_probe: (failed)`,
+      `worker_reply_excerpt: ${this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 400)}`,
+    ])
   }
 
   private async runCycle(agents: AgentRef[]): Promise<void> {
@@ -470,78 +612,43 @@ export class Run {
       reviewSections = pack.sections
     }
 
-    this.log(`[cycle ${this.cycle}] system...`)
-    this.writeHostMemory(
-      "system",
-      systemFactNotes({
-        paths: this.paths(),
-        workerSessionID: worker.sessionID,
-        emptyCommitStreak: this.emptyCommitStreak,
-        lastVerdict: this.lastVerdict,
-        cycle: this.cycle,
-        lastWorkerProbe: this.lastWorkerProbe,
-        lastShip: this.lastShip,
-      }),
-      reviewSections,
-    )
+    this.log(`[cycle ${this.cycle}] system (materials-only sitrep)...`)
+    const sys = await this.runSystemTurn(deps, system, worker, { anyCommits, reviewSections })
 
-    let systemTurn = await runTurn(
-      deps,
-      system,
-      buildSystemPrompt({
-        cycle: this.cycle,
-        resumeFrom: this.opts.resumeFrom,
-        hasReviewPack: anyCommits || !!this.lastWorkerProbe,
-        emptyCommitStreak: this.emptyCommitStreak,
-        lastWorkerReply: this.lastWorkerReply,
-        lastShip: this.lastShip,
-        lastWorkerProbe: this.lastWorkerProbe,
-        paths: this.paths(),
-      }),
-    )
-    this.lastSystemReview = systemTurn.text
-    this.throwIfStopped()
-    appendDialogue(this.dialogueFile, "system", this.cycle, systemTurn.text)
-
-    let workerBrief = extractWorkerBrief(systemTurn.text)
-    if (needsBriefRewrite(systemTurn.text, workerBrief)) {
-      this.log(`  [host] TO_WORKER brief missing or thin — one rewrite pass`)
-      const rewrite = await runTurn(deps, system, briefRewritePrompt())
-      appendDialogue(this.dialogueFile, "system", this.cycle, `(brief rewrite) ${rewrite.text}`)
-      systemTurn = { text: rewrite.text, secs: systemTurn.secs + rewrite.secs }
-      this.lastSystemReview = systemTurn.text
-      workerBrief = extractWorkerBrief(systemTurn.text)
-    }
-    if (workerBrief !== systemTurn.text.trim()) {
-      this.log(`  [host] extracted TO_WORKER brief (${workerBrief.length} chars) for engineer`)
-    }
-
+    // Default merge: accept worker commits after review unless STOP/HOLD.
     if (this.cycle > 1) {
       if (anyCommits) {
         this.emptyCommitStreak = 0
-        this.heartbeat("verdict")
-        let verdict = parseSystemVerdict(systemTurn.text)
-        if (!verdict) {
-          this.log(`  [host] no VERDICT line — one re-ask`)
-          const reask = await runTurn(deps, system, verdictReaskPrompt())
-          appendDialogue(this.dialogueFile, "system", this.cycle, `(verdict re-ask) ${reask.text}`)
-          verdict = parseSystemVerdict(reask.text) || "CONTINUE"
-          if (!parseSystemVerdict(reask.text)) {
-            this.log(`  [host] still no VERDICT — defaulting to CONTINUE`)
-          }
-        }
-        const reason = systemTurn.text.replace(/\s+/g, " ").slice(0, 200)
-        this.log(`  [host] system verdict: ${verdict} — ${reason}`)
-        this.lastVerdict = verdict
-        await hostApplyVerdict(this.gitCtx(), verdict, reason)
-        if (verdict === "DONE" || verdict === "STOP") {
-          this.log(`[cycle ${this.cycle}] system said ${verdict} — stopping after this cycle`)
+        this.heartbeat("merge")
+        const signal = sys.signal || "CONTINUE"
+        const reason = sys.text.replace(/\s+/g, " ").slice(0, 200)
+        this.log(
+          `  [host] signal: ${signal}${sys.signal ? "" : " (default)"} — ${reason || "(no text)"}`,
+        )
+        this.lastVerdict = signal
+        await hostApplyVerdict(this.gitCtx(), signal, reason)
+        if (signal === "DONE" || signal === "STOP") {
+          this.log(`[cycle ${this.cycle}] system said ${signal} — stopping after this cycle`)
           this.stopping = true
         }
       } else {
         this.emptyCommitStreak++
-        this.log(`[cycle ${this.cycle}] no commits last cycle [metric] empty_commit_streak=${this.emptyCommitStreak}`)
+        this.log(
+          `[cycle ${this.cycle}] no commits last cycle [metric] empty_commit_streak=${this.emptyCommitStreak}`,
+        )
+        // Still honor end signals with no commits.
+        if (sys.signal === "DONE" || sys.signal === "STOP") {
+          this.lastVerdict = sys.signal
+          this.log(`[cycle ${this.cycle}] system said ${sys.signal} (no commits) — stopping`)
+          this.stopping = true
+        }
       }
+    } else if (sys.signal === "DONE" || sys.signal === "STOP") {
+      this.lastVerdict = sys.signal
+      this.log(`[cycle ${this.cycle}] system said ${sys.signal} on kickoff — stopping`)
+      this.stopping = true
+    } else {
+      this.lastVerdict = sys.signal || "CONTINUE"
     }
 
     this.throwIfStopped()
@@ -552,41 +659,54 @@ export class Run {
       return
     }
 
-    this.heartbeat("worker")
-    this.log(`[cycle ${this.cycle}] host sync worker from integration...`)
-    const sync = await hostSyncWorker(this.gitCtx())
-    this.lastSyncOk = sync.ok
-    this.lastSyncDetail = sync.detail
-    this.throwIfStopped()
+    let handoff = sys.handoff
+    if (needsHandoffRewrite(handoff)) {
+      this.log(`  [host] handoff still thin after rewrite — worker will see best-effort brief`)
+      if (!handoff.trim()) handoff = extractWorkerBrief(sys.text) || "(no handoff written — check mission and ask lead)"
+    }
 
-    this.log(`[cycle ${this.cycle}] worker...`)
-    const workerTurn = await runTurn(deps, worker, buildWorkerPrompt(workerBrief, this.paths()))
-    this.lastWorkerReply = workerTurn.text
-    this.throwIfStopped()
-    appendDialogue(this.dialogueFile, "worker", this.cycle, workerTurn.text)
+    await this.runWorkerShip(deps, worker, handoff, "")
 
-    this.heartbeat("probe-worker")
-    this.lastWorkerProbe = await captureWorkerSession(deps, worker)
-
-    this.heartbeat("commit")
-    this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktree...`)
-    const ship = await hostCommitWorker(this.gitCtx())
-    this.lastShip = { cycle: this.cycle, ...ship }
-    this.throwIfStopped()
-    this.writeHostMemory("post-worker", [
-      `cycle: ${this.cycle}`,
-      `committed: ${ship.committed}`,
-      `commits_ahead: ${ship.ahead}`,
-      `rehomed: ${ship.rehomed}`,
-      ship.verify
-        ? `verify: ${ship.verify.ok ? "PASS" : "FAIL"} exit=${ship.verify.exit ?? "?"} ${ship.verify.output.slice(0, 200)}`
-        : `verify: (not configured)`,
-      `worker_session_dump: ${this.workerSessionFile}`,
-      this.lastWorkerProbe
-        ? `worker_probe: messages=${this.lastWorkerProbe.messageCount} tools=${this.lastWorkerProbe.toolCalls} errors=${this.lastWorkerProbe.toolErrors}`
-        : `worker_probe: (failed)`,
-      `worker_reply_excerpt: ${this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 400)}`,
-    ])
+    // Optional same-cycle re-pass: one extra lead materials → handoff → worker → commit.
+    if (!this.stopping && !this.stopRequested() && sys.signal === "REPASS") {
+      this.log(`[cycle ${this.cycle}] HOST: REPASS — same-cycle second worker pass`)
+      this.heartbeat("system-repass")
+      const pack = await buildReviewPack(this.gitCtx(), this.lastWorkerProbe!)
+      const repass = await this.runSystemTurn(deps, system, worker, {
+        anyCommits: pack.anyCommits,
+        reviewSections: pack.sections,
+        repass: true,
+      })
+      if (repass.signal === "DONE" || repass.signal === "STOP") {
+        this.lastVerdict = repass.signal
+        // Merge first-pass work before ending if not STOP.
+        if (repass.signal === "DONE" && pack.anyCommits) {
+          await hostApplyVerdict(this.gitCtx(), "DONE", repass.text.replace(/\s+/g, " ").slice(0, 200))
+        }
+        if (repass.signal === "STOP") {
+          this.log(`[cycle ${this.cycle}] system said STOP on re-pass — no second worker`)
+        }
+        this.stopping = true
+      } else {
+        // Merge first-pass commits so second pass builds on integration.
+        if (pack.anyCommits) {
+          await hostApplyVerdict(
+            this.gitCtx(),
+            repass.signal || "CONTINUE",
+            "repass: merge first pass before second worker",
+          )
+        }
+        this.lastVerdict = repass.signal || "REPASS"
+        let rHandoff = repass.handoff
+        if (needsHandoffRewrite(rHandoff)) {
+          rHandoff = handoff // keep prior assignment if lead left it unchanged
+        }
+        this.throwIfStopped()
+        if (!this.stopping) {
+          await this.runWorkerShip(deps, worker, rHandoff, "-repass")
+        }
+      }
+    }
 
     const secs = Math.round((Date.now() - t0) / 1000)
     this.log(`[cycle ${this.cycle}] complete in ${secs}s`)

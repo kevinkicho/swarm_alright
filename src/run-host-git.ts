@@ -190,26 +190,34 @@ export async function buildReviewPack(
   return { pack: parts.join("\n\n"), sections, anyCommits: true }
 }
 
+/**
+ * Apply host git policy after system review.
+ * Default is merge when commits exist. STOP / HOLD skip merge.
+ * CONTINUE | DONE | REPASS | empty → accept into integration.
+ */
 export async function hostApplyVerdict(
   ctx: HostGitCtx,
-  verdict: "CONTINUE" | "DONE" | "STOP",
+  verdict: "CONTINUE" | "DONE" | "STOP" | "REPASS" | "HOLD" | "",
   reason: string,
 ): Promise<void> {
   const ahead = await commitsAhead(ctx.project, ctx.integrationBranch, ctx.workerBranch)
+  const signal = verdict || "CONTINUE"
 
-  if (verdict === "STOP") {
-    ctx.log(`  [host:git] STOP — keeping worker commits (no merge): ${reason.slice(0, 200)}`)
+  if (signal === "STOP" || signal === "HOLD") {
+    ctx.log(
+      `  [host:git] ${signal} — keeping worker commits (no merge): ${reason.slice(0, 200) || "(default)"}`,
+    )
     return
   }
 
   if (ahead === 0) {
-    ctx.log(`  [host:git] ${verdict} ignored — no commits ahead`)
+    ctx.log(`  [host:git] merge skipped — no commits ahead (signal ${signal})`)
     return
   }
 
   const result = await acceptWorkerBranch(ctx.project, ctx.integrationBranch, ctx.workerBranch, ctx.runId)
   if (result.ok) {
-    ctx.log(`  [host:git] ACCEPT worker: ${result.detail}`)
+    ctx.log(`  [host:git] ACCEPT worker (default merge / ${signal}): ${result.detail}`)
   } else {
     ctx.log(`  [host:git] ACCEPT worker failed: ${result.detail}`)
   }

@@ -17,6 +17,7 @@ export type RunPaths = {
   standards?: string
   dialogue?: string
   mission?: string
+  handoff?: string
 }
 
 export function memoryPath(runDir: string): string {
@@ -92,6 +93,7 @@ export function buildMemoryDoc(input: {
   if (input.paths.mission) lines.push(`- mission: ${input.paths.mission}`)
   if (input.paths.dialogue) lines.push(`- dialogue: ${input.paths.dialogue}`)
   if (input.paths.standards) lines.push(`- standards: ${input.paths.standards}`)
+  if (input.paths.handoff) lines.push(`- handoff (write engineer assignment here): ${input.paths.handoff}`)
   lines.push(
     "",
     "## Host notes (sensors)",
@@ -107,8 +109,8 @@ export function buildMemoryDoc(input: {
   lines.push(
     "## How to use (system lead)",
     "- These are facts, not instructions. Investigate with tools; decide quality and next work yourself.",
-    "- Put the engineer-facing brief under ### TO_WORKER; put VERDICT under ### HOST.",
-    "- Worker only receives TO_WORKER — keep analysis and git tokens out of that section.",
+    "- Overwrite HANDOFF.md with the engineer assignment (worker sees only that file).",
+    "- Host merges by default after you review; optional reply lines: HOST: DONE | STOP | REPASS.",
     "- You may edit STANDARDS.md to remember quality bars across cycles.",
     "",
   )

@@ -37,12 +37,17 @@ export type RunPaths = {
   dialogueFile: string
   standardsFile: string
   workerSessionFile: string
+  /** First-class engineer assignment written by the system lead. */
+  handoffFile: string
   memoryFile: string
   baseBranch: string
   integrationBranch: string
   workerBranch: string
   workerWorktree: string
 }
+
+/** Host control from system reply. Empty = default continue + merge. */
+export type HostSignal = "CONTINUE" | "DONE" | "STOP" | "REPASS" | "HOLD" | ""
 
 export type ReviewPack = {
   pack: string
