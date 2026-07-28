@@ -24,7 +24,8 @@
     "swarm": "./src/cli.ts"
   },
   "scripts": {
-    "swarm": "node src/cli.ts"
+    "swarm": "node src/cli.ts",
+    "selfcheck": "node --experimental-strip-types scripts/selfcheck.mjs"
   },
   "engines": {
     "node": ">=22.6"

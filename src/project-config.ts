@@ -9,7 +9,9 @@ import path from "node:path"
  * {
  *   "verify": "npm test",
  *   "linkDirs": ["node_modules"],
- *   "singleFlight": true
+ *   "singleFlight": true,
+ *   "defaultMerge": true,
+ *   "metrics": true
  * }
  */
 export type ProjectConfig = {
@@ -22,12 +24,21 @@ export type ProjectConfig = {
   linkDirs?: string[]
   /** Refuse a second concurrent alive run on the same project (default true). */
   singleFlight?: boolean
+  /**
+   * When true (default), host merges worker commits after system review unless
+   * HOST: STOP / HOLD. When false, merge only on explicit CONTINUE|DONE|REPASS.
+   */
+  defaultMerge?: boolean
+  /** Append cycle facts to metrics.jsonl for offline evals (default true). */
+  metrics?: boolean
 }
 
 export type ResolvedProjectConfig = {
   verify?: string
   linkDirs: string[]
   singleFlight: boolean
+  defaultMerge: boolean
+  metrics: boolean
 }
 
 export function loadProjectConfig(project: string): ResolvedProjectConfig {
@@ -53,6 +64,8 @@ export function loadProjectConfig(project: string): ResolvedProjectConfig {
 
   const verify = typeof raw.verify === "string" && raw.verify.trim() ? raw.verify.trim() : undefined
   const singleFlight = raw.singleFlight !== false
+  const defaultMerge = raw.defaultMerge !== false
+  const metrics = raw.metrics !== false
 
-  return { verify, linkDirs, singleFlight }
+  return { verify, linkDirs, singleFlight, defaultMerge, metrics }
 }

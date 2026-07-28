@@ -85,8 +85,18 @@ export async function printStatus(runId?: string): Promise<void> {
       }
     } catch {}
 
-    const rehome = metricFromLog(r.runDir, /re-home|rehomed=\d+|commits_ahead=\d+|skip system|ACCEPT|empty_commit_streak|VERDICT/)
+    const rehome = metricFromLog(
+      r.runDir,
+      /re-home|rehomed=\d+|commits_ahead=\d+|skip system|ACCEPT|empty_commit_streak|VERDICT|signal:|handoff|metrics\.jsonl|default merge|HOST: REPASS/,
+    )
     if (rehome) lines.push(Style.kv("log:", Style.logLine(rehome.replace(/\s+/g, " ").slice(0, 100))))
+    try {
+      const mpath = path.join(r.runDir, "metrics.jsonl")
+      if (fs.existsSync(mpath)) {
+        const n = fs.readFileSync(mpath, "utf8").split(/\r?\n/).filter((l) => l.trim()).length
+        lines.push(Style.kv("metrics:", `${n} cycle row(s) in metrics.jsonl`))
+      }
+    } catch {}
 
     if (eff === "alive" && r.port) {
       try {

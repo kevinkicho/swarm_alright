@@ -228,7 +228,20 @@ export function verdictReaskPrompt(): string {
   return `Optional host line only if ending the run:\nHOST: DONE\nor HOST: STOP`
 }
 
-/** Worker sees handoff body + tiny path footer. */
+/** Sticky micro-identity for the worker session (OpenCode `system` field). */
+export function buildWorkerIdentity(
+  paths: Pick<RunPaths, "workerWorktree" | "baseBranch" | "integrationBranch" | "missionFile">,
+): string {
+  return [
+    `You are the engineer for this autonomous run.`,
+    `Implement the assignment in the user message (from the lead's handoff).`,
+    `Work only in ${paths.workerWorktree}. Do not move branches ${paths.baseBranch} or ${paths.integrationBranch}.`,
+    `Mission file (read if needed): ${paths.missionFile}`,
+    `When done, blocked, or needing a decision — say so clearly and stop. Prefer real file changes over plans.`,
+  ].join("\n")
+}
+
+/** Worker user message: handoff body + minimal footer (identity is sticky). */
 export function buildWorkerPrompt(
   brief: string,
   paths: Pick<
@@ -240,11 +253,31 @@ export function buildWorkerPrompt(
     brief.trim(),
     "",
     "—",
-    `Worktree: ${paths.workerWorktree} (do not move branches ${paths.baseBranch} or ${paths.integrationBranch}).`,
-    `Mission: ${paths.missionFile}`,
-    `Handoff file (for reference): ${paths.handoffFile}`,
-    `When done, blocked, or needing a decision — say so clearly and stop.`,
+    `Worktree: ${paths.workerWorktree}`,
+    `Handoff artifact: ${paths.handoffFile}`,
   ].join("\n")
+}
+
+/**
+ * Effective merge signal given project defaultMerge policy.
+ * defaultMerge true  → empty signal means CONTINUE (merge).
+ * defaultMerge false → empty signal means HOLD (no merge) until explicit CONTINUE|DONE|REPASS.
+ */
+export function effectiveMergeSignal(
+  signal: HostSignal,
+  defaultMerge: boolean,
+): { signal: HostSignal | "CONTINUE"; merge: boolean; defaulted: boolean } {
+  if (signal === "STOP" || signal === "HOLD") {
+    return { signal, merge: false, defaulted: false }
+  }
+  if (signal === "DONE" || signal === "CONTINUE" || signal === "REPASS") {
+    return { signal, merge: true, defaulted: false }
+  }
+  // empty
+  if (defaultMerge) {
+    return { signal: "CONTINUE", merge: true, defaulted: true }
+  }
+  return { signal: "HOLD", merge: false, defaulted: true }
 }
 
 export function systemFactNotes(args: {

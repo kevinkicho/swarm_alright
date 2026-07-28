@@ -52,7 +52,8 @@ Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.
 
 **Run flags:** `--directive`, `--system-model`, `--worker-model`, `--model`, `--detach`, `--max-cycles`, `--api-key`.
 
-Prefer different models for system vs worker when you want a real second opinion.
+Defaults use a stronger **system** model and a faster **worker** model; override
+with `--system-model` / `--worker-model`. Offline checks: `npm run selfcheck`.
 
 ## Docs
 

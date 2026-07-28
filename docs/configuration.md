@@ -36,7 +36,9 @@ changing swarm itself. Missing file = defaults (works on any project).
 {
   "verify": "npm test",
   "linkDirs": ["node_modules"],
-  "singleFlight": true
+  "singleFlight": true,
+  "defaultMerge": true,
+  "metrics": true
 }
 ```
 
@@ -45,19 +47,23 @@ changing swarm itself. Missing file = defaults (works on any project).
 | `verify` | _(none)_ | Shell command the **host** runs in the worker worktree after auto-commit when there are new commits. Result is logged and shown to the system reviewer. Fail-soft (never aborts the run). |
 | `linkDirs` | `["node_modules"]` if `package.json` + `node_modules` exist, else `[]` | Dirs junction/symlink from project root into the worker worktree (skips reinstall). |
 | `singleFlight` | `true` | Refuse a second concurrent alive run on the same project folder. |
+| `defaultMerge` | `true` | After system review, merge worker commits unless `HOST: STOP` / `HOLD`. Set `false` to merge only on explicit `CONTINUE` / `DONE` / `REPASS`. |
+| `metrics` | `true` | Append one JSON object per cycle to `metrics.jsonl` (trajectory for offline evals). |
 
 Keep `verify` as **your** project's normal check (unit tests, `go test ./...`, etc.). Prefer a focused command over an entire CI matrix so cycles stay cheap.
 
 ## Models
 
-Models are [Ollama Cloud](https://ollama.com/search?c=cloud) ids. Defaults:
+Models are [Ollama Cloud](https://ollama.com/search?c=cloud) ids. Defaults use a
+**principal / executor** split (modern multi-agent practice):
 
 | Role | Default | Why |
 | --- | --- | --- |
-| system | `deepseek-v4-flash` | strong reasoning, 1M context |
-| worker | `deepseek-v4-flash` | strong agentic coding |
+| system | `deepseek-v4-pro` | stronger lead for review + handoff quality |
+| worker | `deepseek-v4-flash` | fast agentic coding |
 
-Override per role (`--system-model`, `--worker-model`) or both at once
+If `pro` is not on your account, pass `--system-model deepseek-v4-flash` (or pick
+in the wizard). Override per role (`--system-model`, `--worker-model`) or both
 (`--model`). Other good cloud choices: `qwen3.5:397b`, `kimi-k2.7-code`,
 `glm-5.2`, `nemotron-3-nano:30b` (cheapest). `swarm models` lists what your
 account can use.

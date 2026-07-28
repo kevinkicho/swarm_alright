@@ -29,6 +29,7 @@ import {
 import {
   buildSystemIdentity,
   buildSystemSitrep,
+  buildWorkerIdentity,
   buildWorkerPrompt,
   extractWorkerBrief,
   parseHostSignal,
@@ -37,8 +38,15 @@ import {
   readHandoffFile,
   writeHandoff,
   systemFactNotes,
+  effectiveMergeSignal,
 } from "./run-prompts.ts"
 import type { HostSignal } from "./run-types.ts"
+import {
+  appendCycleMetric,
+  shipMetricSlice,
+  probeMetricSlice,
+  type CycleMetric,
+} from "./metrics.ts"
 import {
   hostSyncWorker,
   hostCommitWorker,
@@ -370,12 +378,18 @@ export class Run {
     this.saveRecord()
     this.log(`agents ready: system (lead) + worker (engineer) — dialogue loop`)
     this.log(
-      `pattern: materials sitrep → lead writes HANDOFF → default merge → worker → commit → probe → repeat`,
+      `pattern: materials sitrep → lead writes HANDOFF → merge policy → worker → commit → probe → metrics`,
     )
-    this.log(`host owns git only (default merge); no team-chat / contracts / third agent`)
+    this.log(
+      `host owns git only (defaultMerge=${this.projectCfg?.defaultMerge !== false}); no team-chat / contracts / third agent`,
+    )
     if (this.opts.models.system === this.opts.models.worker) {
       this.log(
-        `note: system and worker share model ${this.opts.models.system} — consider --system-model <other> for a stronger second opinion`,
+        `note: system and worker share model ${this.opts.models.system} — prefer a stronger --system-model for review quality`,
+      )
+    } else {
+      this.log(
+        `models: system=${this.opts.models.system}  worker=${this.opts.models.worker} (principal/executor split)`,
       )
     }
     if (this.opts.maxCycles) this.log(`(test mode: will stop after ${this.opts.maxCycles} cycle(s))`)
@@ -565,7 +579,10 @@ export class Run {
     this.throwIfStopped()
 
     this.log(`[cycle ${this.cycle}] worker${label}...`)
-    const workerTurn = await runTurn(deps, worker, buildWorkerPrompt(handoff, this.paths()))
+    const workerId = buildWorkerIdentity(this.paths())
+    const workerTurn = await runTurn(deps, worker, buildWorkerPrompt(handoff, this.paths()), {
+      system: workerId,
+    })
     this.lastWorkerReply = workerTurn.text
     this.throwIfStopped()
     appendDialogue(this.dialogueFile, label ? `worker${label}` : "worker", this.cycle, workerTurn.text)
@@ -595,11 +612,29 @@ export class Run {
     ])
   }
 
+  private recordCycleMetric(partial: Omit<CycleMetric, "ts" | "runId" | "cycle" | "models">): void {
+    if (this.projectCfg?.metrics === false) return
+    appendCycleMetric(this.runDir, {
+      ts: new Date().toISOString(),
+      runId: this.id,
+      cycle: this.cycle,
+      models: this.opts.models,
+      ...partial,
+    })
+    this.log(`  [host:metrics] appended cycle ${this.cycle} → metrics.jsonl`)
+  }
+
   private async runCycle(agents: AgentRef[]): Promise<void> {
     const system = agents.find((a) => a.role === "system")!
     const worker = agents.find((a) => a.role === "worker")!
     const t0 = Date.now()
     const deps = this.turnDeps()
+    const defaultMerge = this.projectCfg?.defaultMerge !== false
+    let merged = false
+    let workerShips = 0
+    let didRepass = false
+    let handoffFromReply = false
+    const handoffBefore = readHandoffFile(this.handoffFile)
 
     this.heartbeat("system")
     let anyCommits = false
@@ -614,21 +649,24 @@ export class Run {
 
     this.log(`[cycle ${this.cycle}] system (materials-only sitrep)...`)
     const sys = await this.runSystemTurn(deps, system, worker, { anyCommits, reviewSections })
+    const mergePlan = effectiveMergeSignal(sys.signal, defaultMerge)
 
-    // Default merge: accept worker commits after review unless STOP/HOLD.
+    // Merge after review when policy allows (default merge or explicit continue family).
     if (this.cycle > 1) {
       if (anyCommits) {
         this.emptyCommitStreak = 0
         this.heartbeat("merge")
-        const signal = sys.signal || "CONTINUE"
         const reason = sys.text.replace(/\s+/g, " ").slice(0, 200)
         this.log(
-          `  [host] signal: ${signal}${sys.signal ? "" : " (default)"} — ${reason || "(no text)"}`,
+          `  [host] signal: ${mergePlan.signal}${mergePlan.defaulted ? " (default)" : ""} merge=${mergePlan.merge} — ${reason || "(no text)"}`,
         )
-        this.lastVerdict = signal
-        await hostApplyVerdict(this.gitCtx(), signal, reason)
-        if (signal === "DONE" || signal === "STOP") {
-          this.log(`[cycle ${this.cycle}] system said ${signal} — stopping after this cycle`)
+        this.lastVerdict = mergePlan.signal
+        const apply = await hostApplyVerdict(this.gitCtx(), mergePlan.signal, reason, {
+          doMerge: mergePlan.merge,
+        })
+        merged = apply.merged
+        if (sys.signal === "DONE" || sys.signal === "STOP") {
+          this.log(`[cycle ${this.cycle}] system said ${sys.signal} — stopping after this cycle`)
           this.stopping = true
         }
       } else {
@@ -636,9 +674,8 @@ export class Run {
         this.log(
           `[cycle ${this.cycle}] no commits last cycle [metric] empty_commit_streak=${this.emptyCommitStreak}`,
         )
-        // Still honor end signals with no commits.
+        this.lastVerdict = mergePlan.signal
         if (sys.signal === "DONE" || sys.signal === "STOP") {
-          this.lastVerdict = sys.signal
           this.log(`[cycle ${this.cycle}] system said ${sys.signal} (no commits) — stopping`)
           this.stopping = true
         }
@@ -648,12 +685,28 @@ export class Run {
       this.log(`[cycle ${this.cycle}] system said ${sys.signal} on kickoff — stopping`)
       this.stopping = true
     } else {
-      this.lastVerdict = sys.signal || "CONTINUE"
+      this.lastVerdict = mergePlan.signal
     }
 
     this.throwIfStopped()
     if (this.stopping) {
       const secs = Math.round((Date.now() - t0) / 1000)
+      this.recordCycleMetric({
+        secs,
+        phase_end: "stopped_no_worker",
+        signal: mergePlan.signal,
+        signal_default: mergePlan.defaulted,
+        empty_commit_streak: this.emptyCommitStreak,
+        any_commits_reviewed: anyCommits,
+        merged,
+        handoff_chars: (sys.handoff || "").length,
+        handoff_from_reply: false,
+        repass: false,
+        system_secs: sys.secs,
+        worker_ships: 0,
+        last_ship: shipMetricSlice(this.lastShip),
+        worker_probe: probeMetricSlice(this.lastWorkerProbe),
+      })
       this.log(`[cycle ${this.cycle}] complete in ${secs}s (no worker — system ended run)`)
       this.heartbeat("idle")
       return
@@ -662,13 +715,20 @@ export class Run {
     let handoff = sys.handoff
     if (needsHandoffRewrite(handoff)) {
       this.log(`  [host] handoff still thin after rewrite — worker will see best-effort brief`)
-      if (!handoff.trim()) handoff = extractWorkerBrief(sys.text) || "(no handoff written — check mission and ask lead)"
+      if (!handoff.trim()) {
+        handoff = extractWorkerBrief(sys.text) || "(no handoff written — check mission and ask lead)"
+      }
+    }
+    if (handoff && handoff !== handoffBefore && handoffBefore.length < 40) {
+      handoffFromReply = true
     }
 
     await this.runWorkerShip(deps, worker, handoff, "")
+    workerShips++
 
     // Optional same-cycle re-pass: one extra lead materials → handoff → worker → commit.
     if (!this.stopping && !this.stopRequested() && sys.signal === "REPASS") {
+      didRepass = true
       this.log(`[cycle ${this.cycle}] HOST: REPASS — same-cycle second worker pass`)
       this.heartbeat("system-repass")
       const pack = await buildReviewPack(this.gitCtx(), this.lastWorkerProbe!)
@@ -679,36 +739,59 @@ export class Run {
       })
       if (repass.signal === "DONE" || repass.signal === "STOP") {
         this.lastVerdict = repass.signal
-        // Merge first-pass work before ending if not STOP.
         if (repass.signal === "DONE" && pack.anyCommits) {
-          await hostApplyVerdict(this.gitCtx(), "DONE", repass.text.replace(/\s+/g, " ").slice(0, 200))
+          const apply = await hostApplyVerdict(
+            this.gitCtx(),
+            "DONE",
+            repass.text.replace(/\s+/g, " ").slice(0, 200),
+            { doMerge: true },
+          )
+          merged = merged || apply.merged
         }
         if (repass.signal === "STOP") {
           this.log(`[cycle ${this.cycle}] system said STOP on re-pass — no second worker`)
         }
         this.stopping = true
       } else {
-        // Merge first-pass commits so second pass builds on integration.
         if (pack.anyCommits) {
-          await hostApplyVerdict(
+          const apply = await hostApplyVerdict(
             this.gitCtx(),
             repass.signal || "CONTINUE",
             "repass: merge first pass before second worker",
+            { doMerge: true },
           )
+          merged = merged || apply.merged
         }
         this.lastVerdict = repass.signal || "REPASS"
         let rHandoff = repass.handoff
         if (needsHandoffRewrite(rHandoff)) {
-          rHandoff = handoff // keep prior assignment if lead left it unchanged
+          rHandoff = handoff
         }
         this.throwIfStopped()
         if (!this.stopping) {
           await this.runWorkerShip(deps, worker, rHandoff, "-repass")
+          workerShips++
         }
       }
     }
 
     const secs = Math.round((Date.now() - t0) / 1000)
+    this.recordCycleMetric({
+      secs,
+      phase_end: "idle",
+      signal: (this.lastVerdict as HostSignal) || mergePlan.signal,
+      signal_default: mergePlan.defaulted,
+      empty_commit_streak: this.emptyCommitStreak,
+      any_commits_reviewed: anyCommits,
+      merged,
+      handoff_chars: handoff.length,
+      handoff_from_reply: handoffFromReply,
+      repass: didRepass,
+      system_secs: sys.secs,
+      worker_ships: workerShips,
+      last_ship: shipMetricSlice(this.lastShip),
+      worker_probe: probeMetricSlice(this.lastWorkerProbe),
+    })
     this.log(`[cycle ${this.cycle}] complete in ${secs}s`)
     this.heartbeat("idle")
     await sleep(1500)

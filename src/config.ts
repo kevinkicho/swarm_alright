@@ -6,8 +6,13 @@ export const PROVIDER_ID = "ollama"
 
 export type Models = { system: string; worker: string }
 
+/**
+ * Modern principal / executor split: stronger lead for review + handoff,
+ * fast tool model for implementation. Override with --system-model / --worker-model.
+ * If pro is unavailable on the account, pick flash for both in the wizard or flags.
+ */
 export const DEFAULT_MODELS: Models = {
-  system: "deepseek-v4-flash",
+  system: "deepseek-v4-pro",
   worker: "deepseek-v4-flash",
 }
 

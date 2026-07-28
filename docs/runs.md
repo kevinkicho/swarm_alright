@@ -20,6 +20,7 @@
   - `HANDOFF.md` — engineer assignment (system overwrites each cycle; worker prompt source)
   - `WORKER_SESSION.md` — full OpenCode dump of the worker session (host-written)
   - `MEMORY.md` — host sensors + short pointers to the session dump + git/verify
+  - `metrics.jsonl` — append-only cycle trajectory (signal, merge, ship, probe, duration)
   - `events.log` — every phase, tool call, reply, and error
   - `STOP` — created by `swarm stop` to request graceful shutdown
 - **Git**: integration branch `swarm/<id>/base`, worker branch `swarm/<id>/w1`,
@@ -80,7 +81,8 @@ Each cycle the host (not the models) owns:
 5. **Sync** → **worker turn** (handoff body + path footer) → **re-home + commit** + optional `verify`
 6. **Optional REPASS** — if lead said `HOST: REPASS`, one more system materials + worker + commit
 7. **Post-worker MEMORY** — ship facts for next system review
-8. **Stall / Bad Request** — zero-activity ~20m or size errors → abort, rotate session, retry
+8. **metrics.jsonl** — one structured row per cycle (when `metrics` not disabled)
+9. **Stall / Bad Request** — zero-activity ~20m or size errors → abort, rotate session, retry
 
 Conversation lives in `DIALOGUE.md` + sessions. Judgment lives with the system agent.
 Handoff lives in `HANDOFF.md`.

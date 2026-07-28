@@ -29,7 +29,10 @@ user directive → MISSION.md (once)
 2. **Sticky lead identity** — role lives in OpenCode `system` field, not repeated dual-audience templates.
 3. **Handoff as artifact** — engineer assignment is `HANDOFF.md` (durable across restarts); not buried in chat ceremony.
 4. **Default merge** — host merges worker commits after review unless the lead says `HOST: STOP` (or HOLD). No required `VERDICT` every turn.
-5. **Optional same-cycle re-pass** — lead may say `HOST: REPASS` for one extra worker pass before the next cycle.
+5. **Optional same-cycle re-pass** — lead may say `HOST: REPASS` for one extra worker pass before the next cycle.  
+6. **Principal / executor models** — stronger default system model; faster worker (override anytime).  
+7. **Trajectory metrics** — `metrics.jsonl` cycle facts for offline evals (not more prompt law).  
+8. **Sticky worker micro-identity** — short OpenCode `system` field; user message stays handoff-only.
 
 ## System control lines (optional)
 
@@ -54,6 +57,7 @@ Fallback: if the lead still uses `### TO_WORKER` in the reply and forgets the fi
   HANDOFF.md           engineer assignment (system overwrites each cycle)
   WORKER_SESSION.md    full OpenCode worker session probe (messages, tools, I/O, status)
   MEMORY.md            host sensors + short pointers (not a substitute for WORKER_SESSION)
+  metrics.jsonl        one JSON object per cycle (signal, ship, probe, secs) for evals
   events.log
   run.json
   STOP
@@ -109,9 +113,10 @@ Restart **reuses the same run id**, worktrees, and run folder.
 | --- | --- |
 | `run.ts` | Thin orchestrator: start loop, wire agents, cycle |
 | `run-types.ts` | Shared types |
-| `run-prompts.ts` | Sticky identity, materials sitrep, handoff helpers, host-signal parse |
+| `run-prompts.ts` | Sticky identity, materials sitrep, handoff helpers, host-signal / merge policy |
 | `run-host-git.ts` | Sync, re-home, commit, accept (default merge), review pack |
 | `run-turn.ts` | OpenCode turn + optional `system` identity + stall/rotate + session capture |
+| `metrics.ts` | Append-only `metrics.jsonl` trajectory rows |
 | `session-probe.ts` | Full worker OpenCode dump → WORKER_SESSION.md |
 | `opencode.ts` | SDK server/client/EventBus |
 | `git.ts` | Git primitives |
