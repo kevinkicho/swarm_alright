@@ -40,10 +40,8 @@ export function buildSystemIdentity(paths: RunPaths): string {
     ``,
     `Git is not your ceremony:`,
     `- Host merges worker commits by default after you review them.`,
-    `- To end the run after merge, put a line somewhere in your reply: HOST: DONE`,
-    `- To end without merging last work: HOST: STOP`,
-    `- To request one more worker turn this cycle after ship: HOST: REPASS`,
-    `- Omit host lines to continue (default). Legacy VERDICT: CONTINUE|DONE|STOP still works.`,
+    `- Optional reply lines only when needed: HOST: DONE | STOP | REPASS`,
+    `- Omit host lines to continue (default). Take as long as you need to review session dump and real code.`,
   ].join("\n")
 }
 
@@ -143,30 +141,18 @@ export function writeHandoff(handoffFile: string, body: string): void {
 }
 
 /**
- * Fallback: worker-facing brief from system reply text.
- * Prefer HANDOFF.md; this catches models that still use ### TO_WORKER.
+ * Salvage only an explicit ### TO_WORKER section from a system reply.
+ * Prefer HANDOFF.md written by tools. Never treat free-form analysis as the brief.
  */
 export function extractWorkerBrief(systemText: string): string {
   const text = systemText.trim()
-  if (!text) return text
+  if (!text) return ""
 
   const section = text.match(
     /(?:^|\n)#{1,3}\s*TO[_\s-]?WORKER\s*\n([\s\S]*?)(?=\n#{1,3}\s*HOST\b|\n#{1,3}\s*VERDICT\b|\n(?:HOST|VERDICT)\s*:|$)/i,
   )
   if (section?.[1]?.trim()) return section[1].trim()
-
-  const cleaned = text
-    .split(/\r?\n/)
-    .filter((l) => !/^\s*VERDICT\s*:/i.test(l))
-    .filter((l) => !/^\s*HOST\s*:/i.test(l))
-    .filter((l) => !/^\s*#{1,3}\s*HOST\b/i.test(l))
-    .join("\n")
-    .trim()
-  // Avoid dumping a long analysis reply onto the worker when there was no handoff section.
-  if (cleaned.length > 2000 && !/#{1,3}\s*TO[_\s-]?WORKER/i.test(text)) {
-    return cleaned.slice(0, 1200)
-  }
-  return cleaned || text
+  return ""
 }
 
 /**

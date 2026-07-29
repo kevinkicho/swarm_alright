@@ -149,9 +149,7 @@ function classifyDeath(lines: string[]): string {
 function detectSituations(c: SituationCounts, t: Omit<RunTally, "situations">): string[] {
   const s: string[] = []
   if (c.maxBuffer > 0) s.push(`S1 maxBuffer×${c.maxBuffer} (git diff blew host buffer)`)
-  if (c.verdict_none >= 3 || t.streaks.maxOmitVerdict >= 3) {
-    s.push(`S2 legacy omit-VERDICT / thin signal (×${c.verdict_none}, streak ${t.streaks.maxOmitVerdict}) — default merge is OK`)
-  }
+  // S2 retired: under default merge, omitting VERDICT/HOST is healthy (not "system mute").
   if (c.verdict_done > 0) s.push(`S3 mission DONE emitted (×${c.verdict_done})`)
   if (c.verdict_stop > 0) s.push(`S4 mission STOP emitted (×${c.verdict_stop})`)
   if (c.fetch_failed > 0 || /fetch|turn error/.test(t.death)) s.push(`S5 fetch/turn error hang (${t.death})`)
@@ -244,13 +242,12 @@ export function tallyLog(opts: { id: string; project: string; runDir: string; lo
       consecutiveOmit = 0
     }
     if (/no VERDICT line/i.test(l)) {
+      // Legacy log line only — not a health failure under default merge.
       c.verdict_none++
       consecutiveOmit++
       maxOmit = Math.max(maxOmit, consecutiveOmit)
     }
-    if (/default merge|ACCEPT worker \(default merge/i.test(l)) {
-      // healthy host path — already counted via signal CONTINUE when present
-    }
+    // "signal: CONTINUE (default)" already matched by signal: CONTINUE above.
     if (/skip system review/i.test(l)) {
       c.skip_system++
       consecutiveSkip++
@@ -497,9 +494,9 @@ export function printTally(opts?: { runId?: string; recent?: number; json?: bool
     frameBox(
       "situation codes",
       [
-        "S0 quiet  S1 maxBuffer  S2 system mute  S3 DONE emitted  S4 STOP emitted",
-        "S5 fetch hang  S6 cold start  S7 CONTINUE loop  S8 rehome skip",
-        "S9 Bad Request/overflow  S10 unaudited pile-up",
+        "S0 quiet  S1 maxBuffer  S2 (retired: omit VERDICT is OK under default merge)",
+        "S3 DONE emitted  S4 STOP emitted  S5 fetch hang  S6 cold start",
+        "S7 CONTINUE/default-merge loop  S8 rehome skip  S9 Bad Request/overflow  S10 pile-up",
         "",
         Style.tip("swarm tally [run-id]   |   swarm scorecard [run-id]   |   --json"),
       ],

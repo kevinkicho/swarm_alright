@@ -1,6 +1,7 @@
 /**
  * OpenCode turn execution: prompt, waitIdle, stall recovery, session rotate.
  */
+import fs from "node:fs"
 import { PROVIDER_ID, bareModel } from "./config.ts"
 import type { Api, EventBus } from "./opencode.ts"
 import { probeSession, type SessionProbeMeta } from "./session-probe.ts"
@@ -159,4 +160,29 @@ export async function captureWorkerSession(
       (meta.error ? ` (${meta.error.slice(0, 120)})` : ""),
   )
   return meta
+}
+
+/**
+ * True when we already dumped this worker session after the last ship.
+ * Skip re-probe at next cycle start — the lead still has WORKER_SESSION.md on disk
+ * for a deep review; host just avoids rewriting the same dump.
+ * Re-probe after session rotate or if the dump file is missing/empty.
+ */
+export function isWorkerProbeFresh(
+  worker: AgentRef,
+  last: SessionProbeMeta | null,
+  dumpPath: string,
+): boolean {
+  if (!last) return false
+  if (last.sessionID !== worker.sessionID) return false
+  if (last.directory !== worker.directory) return false
+  if (last.error) return false
+  try {
+    if (!fs.existsSync(dumpPath)) return false
+    const st = fs.statSync(dumpPath)
+    if (st.size < 200) return false
+  } catch {
+    return false
+  }
+  return true
 }

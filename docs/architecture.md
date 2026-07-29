@@ -69,13 +69,13 @@ and again before each system review. The system must open that file with tools.
 
 ## Cycle
 
-1. **Sense** — host builds review pack (git summary, last verify, worker session probe).  
-2. **System turn** — sticky identity + materials sitrep; free tool use; write `HANDOFF.md`.  
-3. **Handoff hygiene** — if file still thin, one rewrite pass (still model-written).  
-4. **Default merge** — accept `w1` into integration unless STOP/HOLD (no re-ask for CONTINUE).  
-5. **Sync** → **Worker turn** (handoff body) → **commit** + optional project `verify`.  
-6. **Optional REPASS** — one more system materials + worker + commit if lead asked.  
-7. **Post-worker MEMORY** — ship facts for next cycle.  
+1. **Sense** — git review pack; re-use last `WORKER_SESSION.md` when the worker session is unchanged (re-probe only after rotate / missing dump). Deep lead review of that file is intentional.  
+2. **System turn** — sticky identity + materials sitrep; free tool use; long review of session + code; write `HANDOFF.md`.  
+3. **Handoff hygiene** — salvage explicit `### TO_WORKER` if present; else one short write-artifact pass if the file is still empty (not a second full review).  
+4. **Default merge** — accept `w1` unless STOP/HOLD.  
+5. **Sync** → **Worker turn** → **commit** + optional `verify` + **probe once** into `WORKER_SESSION.md`.  
+6. **Optional REPASS** — one more lead materials + worker + commit if asked.  
+7. **MEMORY + metrics** — sensors for next cycle / offline scorecard.  
 8. Loop until DONE/STOP / `swarm stop`.
 
 ## Host reliability (not judgment)

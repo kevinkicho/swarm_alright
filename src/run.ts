@@ -54,7 +54,7 @@ import {
   hostApplyVerdict,
   type HostGitCtx,
 } from "./run-host-git.ts"
-import { runTurn, captureWorkerSession, type TurnDeps } from "./run-turn.ts"
+import { runTurn, captureWorkerSession, isWorkerProbeFresh, type TurnDeps } from "./run-turn.ts"
 
 export type { RunOptions } from "./run-types.ts"
 
@@ -498,25 +498,31 @@ export class Run {
     this.log(`  [host:memory] wrote ${p.memoryFile} (${phase})`)
   }
 
-  /** Resolve engineer brief: HANDOFF.md primary, reply extract fallback; persist artifact. */
-  private resolveHandoff(systemText: string): string {
+  /**
+   * Resolve engineer brief: HANDOFF.md is primary.
+   * Host may salvage an explicit ### TO_WORKER section from the reply without another model turn.
+   * Does not dump free-form analysis onto the worker.
+   */
+  private resolveHandoff(systemText: string): { body: string; fromReply: boolean } {
     let body = readHandoffFile(this.handoffFile)
-    // Seed file from bindPaths, or still too thin to be a real assignment.
     const isSeed =
       !body ||
       /\(System lead overwrites this file each cycle/i.test(body) ||
       body.trim().length < 40
+    let fromReply = false
     if (isSeed) {
-      const fromReply = extractWorkerBrief(systemText)
-      if (fromReply.trim().length >= 40) {
-        body = fromReply.trim()
+      const fromSection = extractWorkerBrief(systemText)
+      // Only accept structured extract (### TO_WORKER), not a raw analysis dump.
+      if (fromSection.trim().length >= 40 && /#{1,3}\s*TO[_\s-]?WORKER/i.test(systemText)) {
+        body = fromSection.trim()
         writeHandoff(this.handoffFile, body)
-        this.log(`  [host] handoff filled from system reply (${body.length} chars) → ${this.handoffFile}`)
+        fromReply = true
+        this.log(`  [host] handoff filled from ### TO_WORKER (${body.length} chars) → ${this.handoffFile}`)
       }
     } else {
       this.log(`  [host] handoff artifact ready (${body.length} chars) → ${this.handoffFile}`)
     }
-    return body.trim()
+    return { body: body.trim(), fromReply }
   }
 
   private async runSystemTurn(
@@ -524,7 +530,7 @@ export class Run {
     system: AgentRef,
     worker: AgentRef,
     opts: { anyCommits: boolean; reviewSections: string[]; repass?: boolean },
-  ): Promise<{ text: string; secs: number; signal: HostSignal; handoff: string }> {
+  ): Promise<{ text: string; secs: number; signal: HostSignal; handoff: string; handoffFromReply: boolean }> {
     const identity = buildSystemIdentity(this.paths())
     this.writeHostMemory(
       opts.repass ? "system-repass" : "system",
@@ -540,6 +546,7 @@ export class Run {
       opts.reviewSections,
     )
 
+    // One deep lead turn — host does not truncate review time.
     let systemTurn = await runTurn(
       deps,
       system,
@@ -565,20 +572,34 @@ export class Run {
       systemTurn.text,
     )
 
-    let handoff = this.resolveHandoff(systemTurn.text)
+    let resolved = this.resolveHandoff(systemTurn.text)
+    let handoff = resolved.body
+    let handoffFromReply = resolved.fromReply
+
+    // Extra turn only if the lead reviewed but never wrote HANDOFF (and no ### TO_WORKER to salvage).
+    // Short write-the-artifact pass — not a second deep review.
     if (needsHandoffRewrite(handoff)) {
-      this.log(`  [host] HANDOFF missing or thin — one rewrite pass`)
+      this.log(`  [host] HANDOFF still thin after review — one write-artifact pass (not a re-review)`)
       const rewrite = await runTurn(deps, system, handoffRewritePrompt(this.handoffFile), {
         system: identity,
       })
-      appendDialogue(this.dialogueFile, "system", this.cycle, `(handoff rewrite) ${rewrite.text}`)
+      appendDialogue(this.dialogueFile, "system", this.cycle, `(handoff write) ${rewrite.text}`)
       systemTurn = { text: rewrite.text, secs: systemTurn.secs + rewrite.secs }
       this.lastSystemReview = systemTurn.text
-      handoff = this.resolveHandoff(systemTurn.text)
+      resolved = this.resolveHandoff(systemTurn.text)
+      handoff = readHandoffFile(this.handoffFile)
+      if (needsHandoffRewrite(handoff) && resolved.body.length >= 40) handoff = resolved.body
+      handoffFromReply = handoffFromReply || resolved.fromReply
     }
 
     const signal = parseHostSignal(systemTurn.text)
-    return { text: systemTurn.text, secs: systemTurn.secs, signal, handoff }
+    return {
+      text: systemTurn.text,
+      secs: systemTurn.secs,
+      signal,
+      handoff: handoff.trim(),
+      handoffFromReply,
+    }
   }
 
   private async runWorkerShip(
@@ -656,9 +677,15 @@ export class Run {
     let anyCommits = false
     let reviewSections: string[] = []
     if (this.cycle > 1) {
-      const sessionMeta = await captureWorkerSession(deps, worker)
-      this.lastWorkerProbe = sessionMeta
-      const pack = await buildReviewPack(this.gitCtx(), sessionMeta)
+      // Host: re-use last post-ship dump when session unchanged (lead still deep-reads the file).
+      if (isWorkerProbeFresh(worker, this.lastWorkerProbe, this.workerSessionFile)) {
+        this.log(
+          `  [host:session] reusing WORKER_SESSION.md (session ${worker.sessionID.slice(0, 12)}… unchanged — no re-probe)`,
+        )
+      } else {
+        this.lastWorkerProbe = await captureWorkerSession(deps, worker)
+      }
+      const pack = await buildReviewPack(this.gitCtx(), this.lastWorkerProbe!)
       anyCommits = pack.anyCommits
       reviewSections = pack.sections
     }
@@ -666,6 +693,7 @@ export class Run {
     this.log(`[cycle ${this.cycle}] system (materials-only sitrep)...`)
     const sys = await this.runSystemTurn(deps, system, worker, { anyCommits, reviewSections })
     const mergePlan = effectiveMergeSignal(sys.signal, defaultMerge)
+    if (sys.handoffFromReply) handoffFromReply = true
 
     // Merge after review when policy allows (default merge or explicit continue family).
     if (this.cycle > 1) {
@@ -730,12 +758,12 @@ export class Run {
 
     let handoff = sys.handoff
     if (needsHandoffRewrite(handoff)) {
-      this.log(`  [host] handoff still thin after rewrite — worker will see best-effort brief`)
-      if (!handoff.trim()) {
-        handoff = extractWorkerBrief(sys.text) || "(no handoff written — check mission and ask lead)"
-      }
+      this.log(`  [host] handoff still thin — worker gets placeholder; lead should write HANDOFF next cycle`)
+      handoff =
+        handoff.trim() ||
+        "(no HANDOFF.md written — inspect mission and prior work; ask lead via your reply if blocked)"
     }
-    if (handoff && handoff !== handoffBefore && handoffBefore.length < 40) {
+    if (!handoffFromReply && handoff && handoff !== handoffBefore && handoffBefore.length < 40) {
       handoffFromReply = true
     }
 

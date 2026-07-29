@@ -82,9 +82,31 @@ async function main() {
     assert.equal(prompts.parseHostSignal("HOST: REPASS"), "REPASS")
   })
 
-  check("extractWorkerBrief strips host section", () => {
+  check("extractWorkerBrief only ### TO_WORKER (not free-form analysis)", () => {
     const text = ["### TO_WORKER", "Do the thing.", "", "### HOST", "VERDICT: CONTINUE"].join("\n")
     assert.equal(prompts.extractWorkerBrief(text), "Do the thing.")
+    assert.equal(prompts.extractWorkerBrief("I reviewed the code thoroughly and it looks good."), "")
+  })
+
+  check("isWorkerProbeFresh requires same session + dump file", async () => {
+    const turn = await load("run-turn.ts")
+    const dump = path.join(tmp, "WORKER_SESSION.md")
+    fs.writeFileSync(dump, "# probe\n" + "x".repeat(300))
+    const worker = { role: "worker", directory: tmp, sessionID: "sess-1", model: "m" }
+    const meta = {
+      role: "worker",
+      sessionID: "sess-1",
+      directory: tmp,
+      messageCount: 1,
+      toolCalls: 0,
+      toolErrors: 0,
+      status: "idle",
+      dumpPath: dump,
+      chars: 300,
+    }
+    assert.equal(turn.isWorkerProbeFresh(worker, meta, dump), true)
+    assert.equal(turn.isWorkerProbeFresh({ ...worker, sessionID: "other" }, meta, dump), false)
+    assert.equal(turn.isWorkerProbeFresh(worker, null, dump), false)
   })
 
   check("handoff file round-trip", () => {
