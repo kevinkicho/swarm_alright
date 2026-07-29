@@ -173,14 +173,32 @@ async function cmdStop(args: Args): Promise<void> {
   const id = args.positional[0] ?? (await pickRunId((r) => r.status === "running" && Registry.alive(r.pid)))
   const rec = id ? Registry.load(id) : undefined
   if (!rec) {
-    console.error(id === undefined ? Style.error("no run selected (no active runs?)") : Style.error(`unknown run id "${id}"`))
+    console.error(
+      id === undefined
+        ? Style.error("no run selected (no active runs?)") +
+            `\n  ${Style.muted("Start or resume:")} ${Style.cyan("swarm run <folder>")}  /  ${Style.cyan("swarm restart")}`
+        : Style.error(`unknown run id "${id}"`) +
+            `\n  ${Style.muted("Not in registry.")} ${Style.cyan("swarm ls")}` +
+            `\n  ${Style.muted("Disk history only:")} ${Style.cyan(`swarm restart ${id} --project <folder>`)}`,
+    )
     process.exit(1)
   }
   if (rec.status !== "running") {
     console.log(`${Style.muted(`run ${id} is already`)} ${Style.status(rec.status)}`)
     return
   }
-  fs.writeFileSync(path.join(rec.runDir, "STOP"), new Date().toISOString())
+  // STOP file may fail if runDir was deleted — still try to mark stopped.
+  try {
+    fs.mkdirSync(rec.runDir, { recursive: true })
+    fs.writeFileSync(path.join(rec.runDir, "STOP"), new Date().toISOString())
+  } catch (err) {
+    console.error(
+      Style.error(`could not write STOP file under ${rec.runDir}`) +
+        `\n  ${Style.muted(err instanceof Error ? err.message : String(err))}` +
+        `\n  ${Style.muted("Process may still be alive:")} pid ${rec.pid}`,
+    )
+    process.exit(1)
+  }
   console.log(`${Style.warning("stop requested")} for run ${Style.bold(id!)} — waiting for it to finish the current turn...`)
   console.log(Style.muted("(Ctrl+C here to stop waiting — the run will keep shutting down)"))
   while (true) {
@@ -197,15 +215,28 @@ async function cmdLogs(args: Args): Promise<void> {
   const id = args.positional[0] ?? (await pickRunId())
   const rec = id ? Registry.load(id) : undefined
   if (!rec) {
-    console.error(id === undefined ? Style.error("no run selected (no runs?)") : Style.error(`unknown run id "${id}"`))
+    console.error(
+      id === undefined
+        ? Style.error("no run selected (no runs?)") + `\n  ${Style.muted("Try:")} ${Style.cyan("swarm ls")}`
+        : Style.error(`unknown run id "${id}"`) + `\n  ${Style.muted("Try:")} ${Style.cyan("swarm ls")}`,
+    )
     process.exit(1)
   }
   const logFile = path.join(rec.runDir, "events.log")
+  if (!fs.existsSync(logFile)) {
+    console.error(
+      Style.error(`events.log missing for run ${id}`) +
+        `\n  ${Style.muted("Expected:")} ${logFile}` +
+        `\n  ${Style.muted("Run folder may have been deleted; registry entry can still linger until")} ${Style.cyan("swarm clean")}`,
+    )
+    process.exit(1)
+  }
   console.log(`${Style.brand("tailing")} ${Style.muted(logFile)} ${Style.muted("(Ctrl+C to stop)")}`)
   let offset = 0
   let carry = ""
   const pump = () => {
     try {
+      if (!fs.existsSync(logFile)) return
       const stat = fs.statSync(logFile)
       if (stat.size > offset) {
         const fd = fs.openSync(logFile, "r")

@@ -70,7 +70,11 @@ export async function attachFlow(id?: string, agentFlag?: string): Promise<void>
   }
   const rec = id ? Registry.load(id) : undefined
   if (!rec) {
-    console.error(Style.error(`unknown run id "${id}"`))
+    console.error(
+      Style.error(`unknown run id "${id}"`) +
+        `\n  ${Style.muted("Not in registry.")} ${Style.cyan("swarm ls")}` +
+        `\n  ${Style.muted("If only disk history remains, restart first:")} ${Style.cyan(`swarm restart ${id} --project <folder>`)}`,
+    )
     process.exit(1)
   }
   if (rec.status !== "running" || !Registry.alive(rec.pid)) {

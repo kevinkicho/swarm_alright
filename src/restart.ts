@@ -123,7 +123,11 @@ export async function restartInteractive(opts: { id?: string; flags?: Record<str
       })),
     ))
   if (!id) {
-    console.error(Style.error("no run selected (no history?)"))
+    console.error(
+      Style.error("no run selected (no history in registry)") +
+        `\n  ${Style.muted("List:")} ${Style.cyan("swarm ls")}` +
+        `\n  ${Style.muted("History after clean:")} ${Style.cyan("swarm restart --project <folder>")}`,
+    )
     process.exitCode = 1
     return
   }
@@ -133,7 +137,13 @@ export async function restartInteractive(opts: { id?: string; flags?: Record<str
     // also try loading from any listed run's project
     runs.find((r) => r.id === id)
   if (!rec) {
-    console.error(Style.error(`unknown run id "${id}"`))
+    console.error(
+      Style.error(`unknown run id "${id}"`) +
+        `\n  ${Style.muted("Not in ~/.swarm/runs (registry).")}` +
+        `\n  ${Style.muted("If the project still has .swarm/runs/")}${id}${Style.muted(":")}` +
+        `\n    ${Style.cyan(`swarm restart ${id} --project <folder>`)}` +
+        `\n  ${Style.muted("Otherwise list what remains:")} ${Style.cyan("swarm ls")}  /  ${Style.cyan("swarm restart --project <folder>")}`,
+    )
     process.exitCode = 1
     return
   }
