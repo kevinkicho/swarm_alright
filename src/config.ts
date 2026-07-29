@@ -38,8 +38,9 @@ const KNOWN_LIMITS: Record<string, { context: number; output: number }> = {
 /** Default when model id is unknown — prefer large cloud window over 131k undercount. */
 const DEFAULT_LIMIT = { context: 1_000_000, output: 64_000 }
 
-function modelLimit(id: string): { context: number; output: number } {
-  const bare = bareModel(id)
+/** Resolve OpenCode context/output limits for a model id (any ollama/ prefix ok). */
+export function modelLimit(id: string): { context: number; output: number } {
+  const bare = id.startsWith(`${PROVIDER_ID}/`) ? id.slice(PROVIDER_ID.length + 1) : id
   if (KNOWN_LIMITS[bare]) return KNOWN_LIMITS[bare]
   // Strip :tag variants (e.g. glm-5.2:latest → glm-5.2)
   const base = bare.split(":")[0]

@@ -174,6 +174,15 @@ async function main() {
     assert.notEqual(cfg.DEFAULT_MODELS.system, cfg.DEFAULT_MODELS.worker)
   })
 
+  check("glm-5.2 and peers get 1M context (not 131k)", () => {
+    assert.equal(cfg.modelLimit("glm-5.2").context, 1_000_000)
+    assert.equal(cfg.modelLimit("glm-5.2:cloud").context, 1_000_000)
+    assert.equal(cfg.modelLimit("ollama/glm-5.2").context, 1_000_000)
+    assert.equal(cfg.modelLimit("deepseek-v4-flash").context, 1_000_000)
+    const injected = cfg.opencodeConfig("k", ["glm-5.2"])
+    assert.equal(injected.provider.ollama.models["glm-5.2"].limit.context, 1_000_000)
+  })
+
   const scorecard = await load("scorecard.ts")
 
   check("scoreTrajectory ship rate and flags", () => {

@@ -4,7 +4,7 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import { loadApiKey, opencodeConfig, bareModel } from "./config.ts"
+import { loadApiKey, opencodeConfig, bareModel, modelLimit } from "./config.ts"
 import { startServer, Api, EventBus, type ServerHandle, type SwarmEvent } from "./opencode.ts"
 import { ensureRepo, ensureOnBranch } from "./git.ts"
 import * as Registry from "./registry.ts"
@@ -363,11 +363,20 @@ export class Run {
         this.cycle = Math.max(0, priorRec.cycle)
         this.log(`cycle counter continues from ${this.cycle} (next cycle will be ${this.cycle + 1})`)
       }
+      // ensureRepo may have just committed leftover dirty work — keep old baseline so
+      // the system still sees those commits as unreviewed (baseline..HEAD).
       if (!readBaseline(this.runDir)) {
         const tip = await writeBaseline(this.runDir, project)
         this.log(`resume: no BASELINE.sha — set baseline to HEAD ${tip.slice(0, 10)}`)
       } else {
-        this.log(`resume: baseline ${readBaseline(this.runDir).slice(0, 10)}… (unreviewed commits stay visible)`)
+        this.log(
+          `resume: baseline ${readBaseline(this.runDir).slice(0, 10)}… (unreviewed = baseline..HEAD; not advanced on resume)`,
+        )
+      }
+      // Seed empty handoff only if missing — never clobber lead's last HANDOFF.md
+      if (fs.existsSync(this.handoffFile)) {
+        const h = fs.readFileSync(this.handoffFile, "utf8")
+        this.log(`resume: HANDOFF.md present (${h.trim().length} chars) — lead can refine or keep`)
       }
     } else {
       const tip = await writeBaseline(this.runDir, project)
@@ -400,6 +409,13 @@ export class Run {
     const apiKey = loadApiKey(this.opts.apiKey, project)
     const modelIDs = [...new Set([this.opts.models.system, this.opts.models.worker])]
     this.log(`starting opencode server (models: ${modelIDs.map(bareModel).join(", ")})...`)
+    // Log injected context so TUI % is predictable (must be 1M for glm-5.2 / deepseek-v4, not 131k).
+    for (const m of modelIDs) {
+      const lim = modelLimit(m)
+      this.log(
+        `  [host:model] ${bareModel(m)} → context=${lim.context.toLocaleString()} output=${lim.output.toLocaleString()} (OpenCode meter / compaction)`,
+      )
+    }
     this.server = await startServer({
       config: opencodeConfig(apiKey, modelIDs),
       onOutput: (line) => this.log(`  [opencode] ${line.slice(0, 300)}`),
