@@ -39,6 +39,12 @@ export function appendHandoffHistory(historyFile: string, cycle: number, body: s
   if (!prev) {
     prev = `# Handoff history\n\nPrior engineer assignments (append-only). Newest at bottom.\n`
   }
+  // Skip duplicate consecutive body (same assignment re-confirmed).
+  const lastBlock = prev.split(/\n## \[cycle /).pop() ?? ""
+  if (lastBlock.includes(text.slice(0, Math.min(120, text.length))) && text.length < 2000) {
+    const prevBody = lastBlock.replace(/^.*?\][^\n]*\n\n?/s, "").trim()
+    if (prevBody === text) return
+  }
   const stamp = new Date().toISOString()
   fs.writeFileSync(historyFile, prev + `\n## [cycle ${cycle}] ${stamp}\n\n${text}\n`)
 }

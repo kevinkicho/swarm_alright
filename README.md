@@ -56,12 +56,19 @@ Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.
 Defaults use a stronger **system** model and a faster **worker** model; override
 with `--system-model` / `--worker-model`.
 
-## Dev checks
+## Dev checks / before a test run
 
 ```powershell
-npm run selfcheck    # offline unit checks (no API)
-npm run precommit    # same (git hook target)
+npm run selfcheck     # offline unit checks (no API)
+npm run preflight     # run-ready host checks (git worktree smoke + selfcheck)
+npm run precommit     # same as selfcheck (git hook target)
 .\scripts\install-precommit.ps1   # enable git pre-commit hook once
+```
+
+Suggested first live smoke:
+
+```powershell
+node src/cli.ts run C:\path\to\project --max-cycles 1 --directive "tiny smoke change"
 ```
 
 ## Docs

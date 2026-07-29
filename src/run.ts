@@ -188,17 +188,49 @@ export class Run {
           this.saveRecord()
         }
       },
-      archiveWorkerBeforeRotate: () => {
-        const dest = archiveWorkerSessionDump({
-          runDir: this.runDir,
-          cycle: this.cycle,
-          tag: "pre-rotate",
-          sourcePath: this.workerSessionFile,
-          meta: this.lastWorkerProbe,
-        })
-        if (dest) {
+      archiveWorkerBeforeRotate: async (agent) => {
+        // Fresh probe of the session about to be discarded (not only last post-ship dump).
+        try {
+          const meta = await captureWorkerSession(
+            {
+              api: this.api!,
+              bus: this.bus!,
+              stallMs: this.stallMs,
+              runId: this.id,
+              workerSessionFile: this.workerSessionFile,
+              isStopping: () => this.stopping || this.stopRequested(),
+              markActivity: () => this.markActivity(),
+              lastActivityAt: () => this.lastActivityAt,
+              log: (m) => this.log(m),
+            },
+            agent,
+          )
+          this.lastWorkerProbe = meta
+          const dest = archiveWorkerSessionDump({
+            runDir: this.runDir,
+            cycle: this.cycle,
+            tag: "pre-rotate",
+            sourcePath: this.workerSessionFile,
+            meta,
+          })
           writeSessionIndex(this.runDir)
-          this.log(`  [host:log] archived worker session before rotate → ${dest}`)
+          if (dest) this.log(`  [host:log] archived worker session before rotate → ${dest}`)
+        } catch (err) {
+          this.log(
+            `  [host:log] pre-rotate probe/archive failed: ${err instanceof Error ? err.message : String(err)}`.slice(
+              0,
+              200,
+            ),
+          )
+          // Fall back to copying whatever is already on disk.
+          const dest = archiveWorkerSessionDump({
+            runDir: this.runDir,
+            cycle: this.cycle,
+            tag: "pre-rotate-fallback",
+            sourcePath: this.workerSessionFile,
+            meta: this.lastWorkerProbe,
+          })
+          if (dest) writeSessionIndex(this.runDir)
         }
       },
     }
@@ -447,6 +479,11 @@ export class Run {
     } else {
       this.log(
         `models: system=${this.opts.models.system}  worker=${this.opts.models.worker} (principal/executor split)`,
+      )
+    }
+    if (/pro/i.test(this.opts.models.system) && !process.env.SWARM_SKIP_MODEL_HINT) {
+      this.log(
+        `note: system model "${this.opts.models.system}" — if Ollama returns 404/unauthorized, use --system-model deepseek-v4-flash`,
       )
     }
     if (this.opts.maxCycles) this.log(`(test mode: will stop after ${this.opts.maxCycles} cycle(s))`)
@@ -775,7 +812,25 @@ export class Run {
       } else {
         await this.captureAndArchiveWorker(deps, worker, "pre-review")
       }
-      const pack = await buildReviewPack(this.gitCtx(), this.lastWorkerProbe!)
+      if (!this.lastWorkerProbe) {
+        // Should not happen after capture; keep cycle alive with empty probe meta for git pack.
+        this.log(`  [host:session] warning: no worker probe meta — git review pack only`)
+      }
+      const pack = await buildReviewPack(
+        this.gitCtx(),
+        this.lastWorkerProbe ?? {
+          role: "worker",
+          sessionID: worker.sessionID,
+          directory: worker.directory,
+          messageCount: 0,
+          toolCalls: 0,
+          toolErrors: 0,
+          status: "unknown",
+          dumpPath: this.workerSessionFile,
+          chars: 0,
+          error: "missing probe meta",
+        },
+      )
       anyCommits = pack.anyCommits
       reviewSections = pack.sections
     }
@@ -822,8 +877,9 @@ export class Run {
       this.lastVerdict = mergePlan.signal
     }
 
-    this.throwIfStopped()
-    if (this.stopping) {
+    // Graceful end after DONE/STOP (or STOP file): do not throw — avoid "cycle failed" noise.
+    if (this.stopping || this.stopRequested()) {
+      this.stopping = true
       const secs = Math.round((Date.now() - t0) / 1000)
       this.recordCycleMetric({
         secs,
@@ -834,14 +890,16 @@ export class Run {
         any_commits_reviewed: anyCommits,
         merged,
         handoff_chars: (sys.handoff || "").length,
-        handoff_from_reply: false,
+        handoff_from_reply: handoffFromReply,
         repass: false,
         system_secs: sys.secs,
         worker_ships: 0,
         last_ship: shipMetricSlice(this.lastShip),
         worker_probe: probeMetricSlice(this.lastWorkerProbe),
       })
-      this.log(`[cycle ${this.cycle}] complete in ${secs}s (no worker — system ended run)`)
+      this.log(
+        `[cycle ${this.cycle}] complete in ${secs}s (no worker — ${sys.signal || "stop"} / host end)`,
+      )
       this.heartbeat("idle")
       return
     }
@@ -865,7 +923,23 @@ export class Run {
       didRepass = true
       this.log(`[cycle ${this.cycle}] HOST: REPASS — same-cycle second worker pass`)
       this.heartbeat("system-repass")
-      const pack = await buildReviewPack(this.gitCtx(), this.lastWorkerProbe!)
+      if (!this.lastWorkerProbe) {
+        await this.captureAndArchiveWorker(deps, worker, "repass-pre")
+      }
+      const pack = await buildReviewPack(
+        this.gitCtx(),
+        this.lastWorkerProbe ?? {
+          role: "worker",
+          sessionID: worker.sessionID,
+          directory: worker.directory,
+          messageCount: 0,
+          toolCalls: 0,
+          toolErrors: 0,
+          status: "unknown",
+          dumpPath: this.workerSessionFile,
+          chars: 0,
+        },
+      )
       const repass = await this.runSystemTurn(deps, system, worker, {
         anyCommits: pack.anyCommits,
         reviewSections: pack.sections,

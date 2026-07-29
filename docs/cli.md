@@ -107,17 +107,27 @@ verify, tool errors, handoff size, operator flags). Offline; no OpenCode server.
 | `--recent N` | How many recent runs when no id (default 5) |
 | `--json` | Machine-readable JSON |
 
-## Dev: selfcheck / precommit
+## Dev: selfcheck / precommit / preflight
 
 Offline checks (no API key, no OpenCode server):
 
 ```powershell
 npm run selfcheck
-npm run precommit    # same script
+npm run precommit    # same as selfcheck (git hook target)
+npm run preflight    # run-ready host checks (+ nested selfcheck)
+npm run preflight -- C:\path\to\project   # also warn if project has no .git
 .\scripts\install-precommit.ps1   # git core.hooksPath=.githooks
 ```
 
 The pre-commit hook runs `npm run precommit` before each commit.
+
+### Suggested live smoke
+
+```powershell
+npm run preflight
+node src/cli.ts run C:\path\to\project --max-cycles 1 --directive "add a one-line README note"
+# then: swarm logs / watch; inspect .swarm/runs/<id>/MATERIALS.md
+```
 
 ## swarm watch [run-id]
 

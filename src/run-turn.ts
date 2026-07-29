@@ -19,8 +19,8 @@ export type TurnDeps = {
   lastActivityAt: () => number
   log: (msg: string) => void
   onSessionRotated?: (agent: AgentRef) => void
-  /** Archive live worker dump before session id changes (stall/size rotate). */
-  archiveWorkerBeforeRotate?: () => void
+  /** Probe+archive worker session before id changes (stall/size rotate). */
+  archiveWorkerBeforeRotate?: (agent: AgentRef) => void | Promise<void>
 }
 
 function isContextSizeError(msg: string): boolean {
@@ -61,9 +61,9 @@ export async function waitUntilNotBusy(
 }
 
 export async function rotateSession(deps: TurnDeps, agent: AgentRef): Promise<void> {
-  if (agent.role === "worker") {
+  if (agent.role === "worker" && deps.archiveWorkerBeforeRotate) {
     try {
-      deps.archiveWorkerBeforeRotate?.()
+      await deps.archiveWorkerBeforeRotate(agent)
     } catch {}
   }
   const session = await deps.api.createSession(agent.directory, `swarm ${deps.runId} ${agent.role} (rotated)`)

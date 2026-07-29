@@ -37,10 +37,13 @@ Operating and evolving swarm_alright. These are **operator guidance**, not host-
 
 ## Running well
 
-1. **Detach long runs**: `swarm run … --detach` then `swarm watch` / `swarm tui`.
-2. **Restart same id**: `swarm restart` reuses worktrees, HANDOFF history, sessions archives — don’t start a new run to “continue.”
-3. **When stuck**: `swarm doctor`, `swarm scorecard <id>`, open `MATERIALS.md` + latest `sessions/` dump — same surface the lead uses.
-4. **Disk**: `sessions/` and `memory/` grow; prune dead runs with `swarm clean --worktrees` when needed.
+1. **Preflight (offline)**: `npm run preflight` — host parsers, git worktree smoke, nested selfcheck. Optional: `npm run preflight -- C:\path\to\project`.
+2. **First live smoke**: `--max-cycles 1` (or 2) with a tiny directive before multi-hour detach.
+3. **Detach long runs**: `swarm run … --detach` then `swarm watch` / `swarm tui`.
+4. **Restart same id**: `swarm restart` reuses worktrees, HANDOFF history, sessions archives — don’t start a new run to “continue.”
+5. **When stuck**: `swarm doctor`, `swarm scorecard <id>`, open `MATERIALS.md` + latest `sessions/` dump — same surface the lead uses.
+6. **Disk**: `sessions/` and `memory/` grow; prune dead runs with `swarm clean --worktrees` when needed.
+7. **Model 404**: if default system model is unavailable on the account, pass `--system-model deepseek-v4-flash`.
 
 ## Reading a run (human or future tooling)
 
@@ -84,7 +87,8 @@ Suggested order (mirrors MATERIALS.md):
 
 ```powershell
 npm run selfcheck   # offline parsers, handoff, merge policy, archives
-npm run precommit   # same (hook target)
+npm run preflight   # run-ready host + git worktree smoke + nested selfcheck
+npm run precommit   # same as selfcheck (hook target)
 ```
 
 Install the git hook once (from repo root):
