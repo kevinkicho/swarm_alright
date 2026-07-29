@@ -1,17 +1,17 @@
 # swarm_alright
 
 Autonomous **system ↔ worker** loop on any project folder. The system agent acts
-like a human lead; the worker implements until it stops; the host only runs git
-and OpenCode. Powered by [opencode](https://opencode.ai) +
-[Ollama Cloud](https://ollama.com/cloud).
+like a human lead (takes as long as it needs on session dumps and real code); the
+worker implements; the host only runs git, OpenCode, and durable logging. Powered
+by [opencode](https://opencode.ai) + [Ollama Cloud](https://ollama.com/cloud).
 
 ## Pattern
 
-1. **System** (sticky lead identity) gets a **materials-only sitrep** — paths, facts, session dump / MEMORY.  
-2. It investigates with tools and overwrites **`HANDOFF.md`** with the engineer assignment.  
-3. **Host** default-merges last worker commits (unless the lead says `HOST: STOP`).  
+1. **System** gets a materials sitrep + sticky lead identity; opens **`MATERIALS.md`** and whatever it needs (live/`sessions/` dumps, MEMORY, worktree, git).  
+2. It overwrites **`HANDOFF.md`** with the engineer assignment.  
+3. **Host** default-merges last worker commits (unless `HOST: STOP`).  
 4. **Worker** receives the handoff body, works in a git worktree until idle.  
-5. **Host** commits, probes the full worker session into `WORKER_SESSION.md`, packs MEMORY.  
+5. **Host** commits, probes the full worker session, **archives** the dump, updates ship log / MEMORY / metrics.  
 6. Loop until `HOST: DONE` / `STOP`, or you `swarm stop`. Optional `HOST: REPASS` for one same-cycle second pass.
 
 No team chat, no multi-agent contracts, no third “auditor” brain — one conversation, two OpenCode sessions.
@@ -35,6 +35,7 @@ node src/cli.ts watch
 node src/cli.ts tui      # attach into system or worker
 node src/cli.ts stop
 node src/cli.ts restart  # same run id + worktrees
+node src/cli.ts scorecard
 ```
 
 Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.
@@ -53,11 +54,20 @@ Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.
 **Run flags:** `--directive`, `--system-model`, `--worker-model`, `--model`, `--detach`, `--max-cycles`, `--api-key`.
 
 Defaults use a stronger **system** model and a faster **worker** model; override
-with `--system-model` / `--worker-model`. Offline checks: `npm run selfcheck`.
+with `--system-model` / `--worker-model`.
+
+## Dev checks
+
+```powershell
+npm run selfcheck    # offline unit checks (no API)
+npm run precommit    # same (git hook target)
+.\scripts\install-precommit.ps1   # enable git pre-commit hook once
+```
 
 ## Docs
 
-- [Architecture](docs/architecture.md) — loop, files, git  
+- [Architecture](docs/architecture.md) — loop, run folder, modules  
+- [Recommendations](docs/recommendations.md) — ops guidance + future work  
 - [CLI](docs/cli.md) · [Runs](docs/runs.md) · [Configuration](docs/configuration.md) · [UI](docs/ui.md)
 
 ## License

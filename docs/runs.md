@@ -88,7 +88,8 @@ Each cycle the host (not the models) owns:
 9. **Stall / Bad Request** — zero-activity ~20m or size errors → abort, rotate session, retry
 
 Conversation lives in `DIALOGUE.md` + sessions. Judgment lives with the system agent.
-Handoff lives in `HANDOFF.md`.
+Handoff lives in `HANDOFF.md`. Durable archives live under `sessions/`, `ships/`, `memory/`
+so multi-cycle review survives session rotate. See [recommendations.md](./recommendations.md).
 
 ## Long runs & context
 

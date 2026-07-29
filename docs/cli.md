@@ -107,6 +107,18 @@ verify, tool errors, handoff size, operator flags). Offline; no OpenCode server.
 | `--recent N` | How many recent runs when no id (default 5) |
 | `--json` | Machine-readable JSON |
 
+## Dev: selfcheck / precommit
+
+Offline checks (no API key, no OpenCode server):
+
+```powershell
+npm run selfcheck
+npm run precommit    # same script
+.\scripts\install-precommit.ps1   # git core.hooksPath=.githooks
+```
+
+The pre-commit hook runs `npm run precommit` before each commit.
+
 ## swarm watch [run-id]
 
 Live dashboard, repaints only when something changes, `q` to quit.

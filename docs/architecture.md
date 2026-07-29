@@ -32,7 +32,11 @@ user directive → MISSION.md (once)
 5. **Optional same-cycle re-pass** — lead may say `HOST: REPASS` for one extra worker pass before the next cycle.  
 6. **Principal / executor models** — stronger default system model; faster worker (override anytime).  
 7. **Trajectory metrics** — `metrics.jsonl` cycle facts for offline evals (not more prompt law).  
-8. **Sticky worker micro-identity** — short OpenCode `system` field; user message stays handoff-only.
+8. **Sticky worker micro-identity** — short OpenCode `system` field; user message stays handoff-only.  
+9. **Durable materials surface** — host archives session dumps, ships, MEMORY snapshots so the lead never loses history on rotate.  
+10. **No time pressure on the lead** — long review of thinking + real code is intended, not waste.
+
+See also [recommendations.md](./recommendations.md).
 
 ## System control lines (optional)
 
@@ -128,6 +132,8 @@ Restart **reuses the same run id**, worktrees, and run folder.
 | `run-prompts.ts` | Sticky identity, materials sitrep, handoff helpers, host-signal / merge policy |
 | `run-host-git.ts` | Sync, re-home, commit, accept (default merge), review pack |
 | `run-turn.ts` | OpenCode turn + optional `system` identity + stall/rotate + session capture |
+| `run-log.ts` | Session/ship/memory archives + SESSION_INDEX |
+| `materials.ts` | MATERIALS.md inventory + handoff history append |
 | `metrics.ts` | Append-only `metrics.jsonl` trajectory rows |
 | `scorecard.ts` | Aggregate trajectories → ship/merge rates + operator flags |
 | `session-probe.ts` | Full worker OpenCode dump → WORKER_SESSION.md |
@@ -136,3 +142,5 @@ Restart **reuses the same run id**, worktrees, and run folder.
 | `cli.ts` / `wizard.ts` / … | Shell surface |
 
 Prefer new code in a focused module over growing `run.ts` past ~600 lines.
+
+Dev: `npm run selfcheck` / `npm run precommit`; install hook with `.\scripts\install-precommit.ps1`.

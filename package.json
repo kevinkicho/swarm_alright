@@ -25,7 +25,9 @@
   },
   "scripts": {
     "swarm": "node src/cli.ts",
-    "selfcheck": "node --experimental-strip-types scripts/selfcheck.mjs"
+    "selfcheck": "node --experimental-strip-types scripts/selfcheck.mjs",
+    "precommit": "node --experimental-strip-types scripts/selfcheck.mjs",
+    "install-hooks": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-precommit.ps1"
   },
   "engines": {
     "node": ">=22.6"
