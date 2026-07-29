@@ -16,13 +16,39 @@ export const DEFAULT_MODELS: Models = {
   worker: "deepseek-v4-flash",
 }
 
-// Context/output token limits for known Ollama Cloud models (used by opencode for compaction).
+/**
+ * Context/output limits OpenCode uses for the TUI % bar and auto-compaction.
+ * If a model is missing, we used to fall back to 131k — that makes a 1M model
+ * show ~56k tokens as ~43% (56k/131k). Keep big cloud models at 1M here.
+ */
 const KNOWN_LIMITS: Record<string, { context: number; output: number }> = {
   "deepseek-v4-flash": { context: 1_000_000, output: 64_000 },
   "deepseek-v4-pro": { context: 1_000_000, output: 64_000 },
+  "glm-5.2": { context: 1_000_000, output: 64_000 },
+  "glm-5.2:cloud": { context: 1_000_000, output: 64_000 },
+  "glm-5.1": { context: 200_000, output: 32_000 },
+  "kimi-k2.5": { context: 262_144, output: 16_384 },
+  "kimi-k2.7-code": { context: 262_144, output: 16_384 },
+  "qwen3.5:397b": { context: 262_144, output: 16_384 },
   "gemma4:31b": { context: 262_144, output: 16_384 },
   "nemotron-3-nano:30b": { context: 262_144, output: 16_384 },
   "nemotron-3-nano:4b": { context: 131_072, output: 16_384 },
+}
+
+/** Default when model id is unknown — prefer large cloud window over 131k undercount. */
+const DEFAULT_LIMIT = { context: 1_000_000, output: 64_000 }
+
+function modelLimit(id: string): { context: number; output: number } {
+  const bare = bareModel(id)
+  if (KNOWN_LIMITS[bare]) return KNOWN_LIMITS[bare]
+  // Strip :tag variants (e.g. glm-5.2:latest → glm-5.2)
+  const base = bare.split(":")[0]
+  if (KNOWN_LIMITS[base]) return KNOWN_LIMITS[base]
+  // Long-context cloud family prefixes
+  if (/^(glm-5|deepseek-v4|qwen3|kimi-k2)/i.test(base)) {
+    return { context: 1_000_000, output: 64_000 }
+  }
+  return DEFAULT_LIMIT
 }
 
 function fromDotenv(file: string): string | undefined {
@@ -105,11 +131,12 @@ export function opencodeConfig(apiKey: string, modelIDs: string[]) {
   const models: Record<string, unknown> = {}
   for (const raw of modelIDs) {
     const id = bareModel(raw)
+    const limit = modelLimit(id)
     models[id] = {
       name: id,
       tool_call: true,
       reasoning: true,
-      limit: KNOWN_LIMITS[id] ?? { context: 131_072, output: 16_384 },
+      limit,
     }
   }
   return {

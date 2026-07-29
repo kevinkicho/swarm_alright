@@ -69,8 +69,14 @@ in the wizard). Override per role (`--system-model`, `--worker-model`) or both
 account can use.
 
 Any model you pass is registered in the run's opencode config with tool calling
-enabled and conservative context limits (known limits for the defaults; safe
-131k/16k otherwise).
+enabled and an explicit **context limit** OpenCode uses for the TUI % bar and
+auto-compaction. Known 1M-class cloud models (`deepseek-v4-*`, `glm-5.2`, …)
+are set to 1M tokens. Unknown models default to **1M / 64k output** (not 131k)
+so the context meter is not artificially inflated.
+
+If the UI still shows ~40% at ~50k tokens after a restart, the run was started
+with the old 131k fallback — stop and start a new run so the injected config
+picks up the new limits.
 
 ## Injected opencode config
 
