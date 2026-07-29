@@ -6,6 +6,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { RunPaths, SessionProbeMeta, ShipResult } from "./run-types.ts"
+import { listSessionArchives, sessionsDir } from "./run-log.ts"
 
 export function materialsPath(runDir: string): string {
   return path.join(runDir, "MATERIALS.md")
@@ -64,7 +65,9 @@ export function writeMaterialsIndex(input: {
     `Judgment is yours; this file only lists what exists.`,
     ``,
     `## Worker thinking & tool history`,
-    `- full session dump: ${p.workerSessionFile}`,
+    `- live session dump (latest probe): ${p.workerSessionFile}`,
+    `- session archive index: ${p.sessionIndexFile}`,
+    `- session archives dir: ${p.sessionsDir}`,
     probe
       ? `- last probe: session=${probe.sessionID} messages=${probe.messageCount} tools=${probe.toolCalls} errors=${probe.toolErrors} status=${probe.status} chars=${probe.chars}`
       : `- last probe: (none yet — kickoff cycle or not shipped)`,
@@ -84,6 +87,7 @@ export function writeMaterialsIndex(input: {
     `- worker branch: ${p.workerBranch}`,
     `- worker worktree: ${p.workerWorktree}`,
     `- host MEMORY (git --stat, verify, probe pointers): ${p.memoryFile}`,
+    `- ship log (every auto-commit/verify): ${p.shipLogFile}`,
     ship
       ? `- last ship: cycle=${ship.cycle} committed=${ship.committed} ahead=${ship.ahead} rehomed=${ship.rehomed} verify=${ship.verify ? (ship.verify.ok ? "PASS" : "FAIL") : "n/a"}`
       : `- last ship: (none yet)`,
@@ -98,20 +102,39 @@ export function writeMaterialsIndex(input: {
     `- \`git diff --name-status ${p.integrationBranch}...${p.workerBranch}\``,
     `- open changed files under ${p.workerWorktree} (or project after merge)`,
     ``,
-    `## Run telemetry (optional)`,
+    `## Session archives (prior worker dumps)`,
+  ]
+
+  const archives = listSessionArchives(p.runDir)
+  if (!archives.length) {
+    lines.push(`- (none yet)`)
+  } else {
+    const dir = sessionsDir(p.runDir)
+    for (const name of archives.slice(-12)) {
+      lines.push(`- ${path.join(dir, name)}`)
+    }
+    if (archives.length > 12) {
+      lines.push(`- … +${archives.length - 12} more — see ${p.sessionIndexFile}`)
+    }
+  }
+
+  lines.push(
+    ``,
+    `## Run telemetry`,
     `- metrics trajectory: ${p.metricsFile}`,
     `- host events log: ${p.eventsLogFile}`,
     `- this materials map: ${p.materialsFile}`,
+    `- MEMORY snapshots: ${path.join(p.runDir, "memory")}`,
     `- run dir: ${p.runDir}`,
     ``,
     `## Suggested investigation order (optional)`,
-    `1. Open ${p.workerSessionFile} — what the engineer actually did (thinking, tools, errors).`,
-    `2. Open MEMORY review pack and/or run git commands above — what landed on the branch.`,
-    `3. Open real files under ${p.workerWorktree} (and ${p.project} as needed) — claims vs tree.`,
-    `4. Read recent ${p.dialogueFile} / ${p.handoffHistoryFile} if you need multi-cycle context.`,
+    `1. Open ${p.workerSessionFile} (or a sessions/ archive) — worker thinking, tools, errors.`,
+    `2. Open MEMORY / ${p.shipLogFile} / git commands — what landed on the branch.`,
+    `3. Open real files under ${p.workerWorktree} — claims vs tree.`,
+    `4. Read ${p.dialogueFile} / ${p.handoffHistoryFile} / older session archives for multi-cycle context.`,
     `5. Write the next engineer assignment to ${p.handoffFile}.`,
     ``,
-  ]
+  )
 
   fs.mkdirSync(path.dirname(p.materialsFile), { recursive: true })
   fs.writeFileSync(p.materialsFile, lines.join("\n"))

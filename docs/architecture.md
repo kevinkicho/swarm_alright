@@ -54,20 +54,26 @@ Fallback: if the lead still uses `### TO_WORKER` in the reply and forgets the fi
   MISSION.md           user directive
   DIALOGUE.md          append-only system + worker messages
   STANDARDS.md         optional lead-owned quality notes (system may edit)
-  MATERIALS.md         host inventory map (session, history, repo, git tips) for the lead
+  MATERIALS.md         host inventory map (all surfaces below)
   HANDOFF.md           engineer assignment (system overwrites each cycle)
-  HANDOFF_HISTORY.md   prior handoffs (append-only work history)
-  WORKER_SESSION.md    full OpenCode worker session probe (messages, tools, I/O, status)
-  MEMORY.md            host sensors + git review pack (not a substitute for WORKER_SESSION)
-  metrics.jsonl        one JSON object per cycle (signal, ship, probe, secs) for evals
+  HANDOFF_HISTORY.md   prior handoffs (append-only)
+  WORKER_SESSION.md    live full OpenCode worker session probe
+  SESSION_INDEX.md     index of archived worker dumps
+  sessions/            archived dumps (per cycle / pre-rotate / post-ship)
+  SHIP_LOG.md          every host commit + verify
+  ships/cycle-N.md     per-cycle ship snapshot
+  memory/              MEMORY.md snapshots by cycle/phase
+  MEMORY.md            live host sensors + git review pack
+  metrics.jsonl        cycle trajectory for offline scorecard
   events.log
   run.json
   STOP
 ```
 
-The system lead is **enabled to probe everything available**: worker session dump,
-dialogue/handoff history, worktree and project files, git ranges, MEMORY, metrics.
-Host never caps how long the lead may spend reviewing.
+The system lead is **enabled to probe everything available**: live and archived
+worker sessions, dialogue/handoff/ship history, worktree and project files, git,
+MEMORY snapshots, metrics. Host logs liberally so the lead has a workable surface;
+host never caps how long the lead may spend reviewing.
 
 The system agent cannot call the OpenCode HTTP API. The **host** probes the worker
 session via `@opencode-ai/sdk` and writes `WORKER_SESSION.md` after every worker turn

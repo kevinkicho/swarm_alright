@@ -56,6 +56,15 @@ import {
   eventsLogPath,
 } from "./materials.ts"
 import {
+  archiveWorkerSessionDump,
+  appendShipLog,
+  writeSessionIndex,
+  archiveMemorySnapshot,
+  sessionsDir,
+  sessionIndexPath,
+  shipLogPath,
+} from "./run-log.ts"
+import {
   hostSyncWorker,
   hostCommitWorker,
   buildReviewPack,
@@ -133,6 +142,9 @@ export class Run {
       metricsFile: metricsFilePath(this.runDir),
       eventsLogFile: eventsLogPath(this.runDir),
       memoryFile: memoryPath(this.runDir),
+      sessionsDir: sessionsDir(this.runDir),
+      sessionIndexFile: sessionIndexPath(this.runDir),
+      shipLogFile: shipLogPath(this.runDir),
       baseBranch: this.baseBranch,
       integrationBranch: this.integrationBranch,
       workerBranch: this.workerBranch,
@@ -176,7 +188,40 @@ export class Run {
           this.saveRecord()
         }
       },
+      archiveWorkerBeforeRotate: () => {
+        const dest = archiveWorkerSessionDump({
+          runDir: this.runDir,
+          cycle: this.cycle,
+          tag: "pre-rotate",
+          sourcePath: this.workerSessionFile,
+          meta: this.lastWorkerProbe,
+        })
+        if (dest) {
+          writeSessionIndex(this.runDir)
+          this.log(`  [host:log] archived worker session before rotate → ${dest}`)
+        }
+      },
     }
+  }
+
+  /** Probe worker, archive dump, refresh session index — durable surface for the lead. */
+  private async captureAndArchiveWorker(
+    deps: TurnDeps,
+    worker: AgentRef,
+    tag: string,
+  ): Promise<SessionProbeMeta> {
+    const meta = await captureWorkerSession(deps, worker)
+    this.lastWorkerProbe = meta
+    const dest = archiveWorkerSessionDump({
+      runDir: this.runDir,
+      cycle: this.cycle,
+      tag,
+      sourcePath: this.workerSessionFile,
+      meta,
+    })
+    writeSessionIndex(this.runDir)
+    if (dest) this.log(`  [host:log] archived worker session (${tag}) → ${dest}`)
+    return meta
   }
 
   log(msg: string): void {
@@ -510,6 +555,7 @@ export class Run {
     })
     writeMemory(p.memoryFile, body)
     this.log(`  [host:memory] wrote ${p.memoryFile} (${phase})`)
+    archiveMemorySnapshot(this.runDir, this.cycle, phase, p.memoryFile)
   }
 
   /** Host inventory so the lead can probe worker artifacts, history, and repo output. */
@@ -660,13 +706,21 @@ export class Run {
     appendDialogue(this.dialogueFile, label ? `worker${label}` : "worker", this.cycle, workerTurn.text)
 
     this.heartbeat("probe-worker")
-    this.lastWorkerProbe = await captureWorkerSession(deps, worker)
+    const sessionArchiveTag = label ? `post-ship${label}` : "post-ship"
+    await this.captureAndArchiveWorker(deps, worker, sessionArchiveTag)
 
     this.heartbeat("commit")
     this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktree...`)
     const ship = await hostCommitWorker(this.gitCtx())
     this.lastShip = { cycle: this.cycle, ...ship }
     this.throwIfStopped()
+    appendShipLog({
+      runDir: this.runDir,
+      cycle: this.cycle,
+      ship: this.lastShip,
+      handoffChars: readHandoffFile(this.handoffFile).length,
+      workerSessionArchive: path.join(sessionsDir(this.runDir), `worker-c${this.cycle}-latest.md`),
+    })
     this.writeHostMemory(label ? `post-worker${label}` : "post-worker", [
       `cycle: ${this.cycle}`,
       `committed: ${ship.committed}`,
@@ -717,8 +771,9 @@ export class Run {
         this.log(
           `  [host:session] reusing WORKER_SESSION.md (session ${worker.sessionID.slice(0, 12)}… unchanged — no re-probe)`,
         )
+        writeSessionIndex(this.runDir)
       } else {
-        this.lastWorkerProbe = await captureWorkerSession(deps, worker)
+        await this.captureAndArchiveWorker(deps, worker, "pre-review")
       }
       const pack = await buildReviewPack(this.gitCtx(), this.lastWorkerProbe!)
       anyCommits = pack.anyCommits

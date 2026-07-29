@@ -17,12 +17,13 @@
   - `MISSION.md` — the mission (directive, or system-inferred)
   - `DIALOGUE.md` — durable append-only conversation log (system + worker)
   - `STANDARDS.md` — optional lead notes (system may edit across cycles)
-  - `MATERIALS.md` — host inventory of worker artifacts, history, and repo/git pointers
-  - `HANDOFF.md` — engineer assignment (system overwrites each cycle; worker prompt source)
-  - `HANDOFF_HISTORY.md` — prior handoffs (append-only)
-  - `WORKER_SESSION.md` — full OpenCode dump of the worker session (host-written; up to ~200k chars)
-  - `MEMORY.md` — host sensors + short pointers to the session dump + git/verify
-  - `metrics.jsonl` — append-only cycle trajectory (signal, merge, ship, probe, duration)
+  - `MATERIALS.md` — host inventory of all surfaces below
+  - `HANDOFF.md` / `HANDOFF_HISTORY.md` — current + prior engineer assignments
+  - `WORKER_SESSION.md` — live full OpenCode worker dump (host-written; up to ~200k chars)
+  - `SESSION_INDEX.md` + `sessions/` — archived worker dumps (post-ship, pre-review, pre-rotate)
+  - `SHIP_LOG.md` + `ships/` — every auto-commit / verify
+  - `MEMORY.md` + `memory/` — live sensors and per-phase snapshots
+  - `metrics.jsonl` — cycle trajectory for offline scorecard
   - `events.log` — every phase, tool call, reply, and error
   - `STOP` — created by `swarm stop` to request graceful shutdown
 - **Git**: integration branch `swarm/<id>/base`, worker branch `swarm/<id>/w1`,

@@ -46,6 +46,10 @@ export type RunPaths = {
   metricsFile: string
   eventsLogFile: string
   memoryFile: string
+  /** Directory of archived WORKER_SESSION dumps. */
+  sessionsDir: string
+  sessionIndexFile: string
+  shipLogFile: string
   baseBranch: string
   integrationBranch: string
   workerBranch: string

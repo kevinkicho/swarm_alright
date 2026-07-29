@@ -52,6 +52,9 @@ async function main() {
     metricsFile: path.join(tmp, "metrics.jsonl"),
     eventsLogFile: path.join(tmp, "events.log"),
     memoryFile: path.join(tmp, "MEMORY.md"),
+    sessionsDir: path.join(tmp, "sessions"),
+    sessionIndexFile: path.join(tmp, "SESSION_INDEX.md"),
+    shipLogFile: path.join(tmp, "SHIP_LOG.md"),
     baseBranch: "main",
     integrationBranch: "swarm/t/base",
     workerBranch: "swarm/t/w1",
@@ -266,8 +269,49 @@ async function main() {
   check("system identity enables full probe (not time pressure)", () => {
     const id = prompts.buildSystemIdentity(paths)
     assert.match(id, /as long as you need|Investigate freely/i)
-    assert.match(id, /session dump|WORKER_SESSION|workerSessionFile/i)
+    assert.match(id, /session dump|WORKER_SESSION|workerSessionFile|sessions/i)
     assert.match(id, /MATERIALS|materialsFile/i)
+  })
+
+  const runLog = await load("run-log.ts")
+
+  check("session archive + ship log + index", () => {
+    const p = {
+      ...paths,
+      sessionsDir: path.join(tmp, "sessions"),
+      sessionIndexFile: path.join(tmp, "SESSION_INDEX.md"),
+      shipLogFile: path.join(tmp, "SHIP_LOG.md"),
+    }
+    fs.writeFileSync(p.workerSessionFile, "# dump\n" + "tool work\n".repeat(40))
+    const dest = runLog.archiveWorkerSessionDump({
+      runDir: tmp,
+      cycle: 3,
+      tag: "post-ship",
+      sourcePath: p.workerSessionFile,
+      meta: {
+        role: "worker",
+        sessionID: "sess-abc123",
+        directory: tmp,
+        messageCount: 2,
+        toolCalls: 1,
+        toolErrors: 0,
+        status: "idle",
+        dumpPath: p.workerSessionFile,
+        chars: 500,
+      },
+    })
+    assert.ok(dest && fs.existsSync(dest))
+    runLog.writeSessionIndex(tmp)
+    assert.match(fs.readFileSync(path.join(tmp, "SESSION_INDEX.md"), "utf8"), /worker-c3/)
+    runLog.appendShipLog({
+      runDir: tmp,
+      cycle: 3,
+      ship: { cycle: 3, committed: true, ahead: 1, rehomed: 0, verify: { ok: true, exit: 0, output: "ok" } },
+      handoffChars: 100,
+      workerSessionArchive: dest,
+    })
+    assert.match(fs.readFileSync(path.join(tmp, "SHIP_LOG.md"), "utf8"), /committed: true/)
+    assert.ok(fs.existsSync(path.join(tmp, "ships", "cycle-3.md")))
   })
 
   // cleanup
