@@ -7,7 +7,8 @@ Operating and evolving swarm_alright. These are **operator guidance**, not host-
 | Do | Don’t |
 | --- | --- |
 | Let the **system lead** take as long as it needs to review worker thinking, tools, and real code | Cap system turns or “optimize away” multi-lens review |
-| Keep **host dumb**: sensors, git, dumps, merge policy | Encode craftsmanship slogans or behavior trees in the host |
+| Keep **host dumb**: sensors, git, dumps, baseline accept | Encode craftsmanship slogans or behavior trees in the host |
+| **Project root only** — no nested worktrees | Creating `.swarm/worktrees` clones (waste + confusion) |
 | Give the lead a **workable materials surface** (MATERIALS, sessions/, ships, MEMORY) | Hide history on session rotate |
 | Prefer **HANDOFF.md** as the engineer contract | Dual-audience chat ceremony every turn (`### TO_WORKER` + required VERDICT) |
 | **Default merge** after review | Force CONTINUE tokens for healthy loops |

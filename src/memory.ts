@@ -88,8 +88,8 @@ export function buildMemoryDoc(input: {
     "## Paths",
     `- memory: ${input.paths.memory}`,
     `- project: ${input.paths.project}`,
-    `- integration branch (host-managed): ${input.paths.integrationBranch}`,
-    `- user branch (never touch): ${input.paths.baseBranch}`,
+    `- project branch: ${input.paths.baseBranch}`,
+    `- workspace: project root (root mode — no nested worktree)`,
   ]
   if (input.paths.workerWorktree) lines.push(`- worker worktree: ${input.paths.workerWorktree}`)
   if (input.paths.materials) lines.push(`- materials index (start here): ${input.paths.materials}`)

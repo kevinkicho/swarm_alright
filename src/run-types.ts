@@ -10,7 +10,7 @@ export type RunOptions = {
   models: Models
   maxCycles?: number
   apiKey?: string
-  /** Continue a previous run by reusing its id, worktrees, and run folder. */
+  /** Continue a previous run by reusing its id and run folder (project root workspace). */
   resumeFrom?: string
 }
 
@@ -51,8 +51,10 @@ export type RunPaths = {
   sessionIndexFile: string
   shipLogFile: string
   baseBranch: string
-  integrationBranch: string
-  workerBranch: string
+  /**
+   * Workspace for agents — always the project root (no nested worktrees).
+   * Kept as workerWorktree name for path compatibility in prompts/materials.
+   */
   workerWorktree: string
 }
 

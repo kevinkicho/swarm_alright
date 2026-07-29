@@ -294,7 +294,7 @@ export async function probeSession(
   if (probeError) lines.push(`- probe_error: ${probeError}`)
   lines.push("")
   lines.push(
-    "System lead: treat this file as a full recording of what the worker did. Open cited paths in the worker worktree to verify claims.",
+    "System lead: treat this file as a full recording of what the worker did. Open cited paths in the project root to verify claims.",
   )
 
   let markdown = lines.join("\n")

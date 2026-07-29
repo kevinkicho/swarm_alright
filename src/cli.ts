@@ -19,12 +19,12 @@ const USAGE = `swarm — command center for autonomous runs (OpenCode + Ollama C
 Usage:
   swarm                          Interactive command center (status + actions)
   swarm status [run-id]          Live facilitation snapshot (phase, git ahead, opencode busy)
-  swarm doctor [folder]          Diagnose branch mess, dirty root, dead worktrees, tips
+  swarm doctor [folder]          Diagnose dirty root, legacy worktrees, tips
   swarm doctor --tally [run-id]  Situation tally from events.log (recent 5, or one run)
   swarm tally [run-id]           Same as doctor --tally (--recent N, --json)
   swarm scorecard [run-id]       Trajectory scorecard from metrics.jsonl (--recent N, --json)
-  swarm run <folder> [options]  Start a run on a project folder
-  swarm restart [run-id]         Resume a past run (reuses same run id, worktrees, run folder)
+  swarm run <folder> [options]  Start a run on a project folder (agents use project root)
+  swarm restart [run-id]         Resume a past run (same run id + run folder)
                                 --yes keeps models
   swarm ls                       List all runs
   swarm watch [run-id]           Live mission + activity
@@ -32,8 +32,8 @@ Usage:
   swarm logs [run-id]            Tail events.log
   swarm stop [run-id]            Graceful stop
   swarm clean                    Prune finished registry records (+ orphan servers)
-  swarm clean --worktrees        Also drop git worktrees for dead runs
-  swarm clean --branches         Also delete swarm/<dead-id>/* branches
+  swarm clean --worktrees        Drop legacy .swarm/worktrees for dead runs
+  swarm clean --branches         Delete legacy swarm/<dead-id>/* branches
   swarm models                   List Ollama Cloud models
   swarm help                     This help
 
@@ -46,9 +46,9 @@ run options:
   --max-cycles N       Stop after N cycles
   --detach             Background (survives terminal close)
 
-Pattern: materials sitrep → lead writes HANDOFF.md → default merge → worker →
+Pattern: materials sitrep → HANDOFF.md → accept baseline → worker on project root →
 host commits + probes WORKER_SESSION + metrics.jsonl → loop.
-No team chat or multi-agent contracts. Restart reuses the same run id + worktrees.
+Root mode: no nested git worktrees. Restart reuses run id + run folder.
 `
 
 type Args = { positional: string[]; flags: Record<string, string> }

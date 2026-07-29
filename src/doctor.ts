@@ -81,7 +81,7 @@ export async function printStatus(runId?: string): Promise<void> {
       const dirty = await dirtyPaths(r.project)
       if (dirty.length) {
         lines.push(
-          Style.kv("root dirty:", Style.warning(`${dirty.length} path(s)`) + Style.muted(" — host re-homes into worktree each cycle")),
+          Style.kv("root dirty:", Style.warning(`${dirty.length} path(s)`) + Style.muted(" — host auto-commits project root each cycle")),
         )
       }
     } catch {}
@@ -195,12 +195,14 @@ export async function printDoctor(projectArg?: string): Promise<void> {
   const wtRoot = path.join(project, ".swarm", "worktrees")
   if (fs.existsSync(wtRoot)) {
     const wts = fs.readdirSync(wtRoot)
-    lines.push(
-      Style.kv(
-        "worktrees:",
-        `${wts.length} — ${Style.muted(`prune dead with: swarm clean --worktrees --project "${project}"`)}`,
-      ),
-    )
+    if (wts.length) {
+      lines.push(
+        Style.kv(
+          "legacy worktrees:",
+          `${wts.length} — ${Style.muted(`root mode does not create these; prune: swarm clean --worktrees --project "${project}"`)}`,
+        ),
+      )
+    }
   }
 
   const sample = alive[0] ?? onProj[0]

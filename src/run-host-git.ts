@@ -1,20 +1,18 @@
 /**
- * Host git facilitation for a run (sync, re-home, commit, accept, review pack).
- * Takes plain deps so Run stays thin.
+ * Host git facilitation — root-only mode.
+ * Agents edit the project folder; no nested worktrees or swarm worker branches.
+ * Review range is baseline SHA..HEAD (baseline advanced on accept/merge).
  */
+import fs from "node:fs"
+import path from "node:path"
 import { spawnSync } from "node:child_process"
 import {
   ensureOnBranch,
-  syncWorkerFromIntegration,
   commitWorktree,
   commitsAhead,
   shortLog,
   rangeDiff,
-  acceptWorkerBranch,
-  dirtyPaths,
-  rehomeDirtyIntoWorktree,
-  restoreTrackedPathsToHead,
-  isDirty,
+  revParse,
 } from "./git.ts"
 import { clip } from "./memory.ts"
 import { probeSummaryForMemory, type SessionProbeMeta } from "./session-probe.ts"
@@ -24,12 +22,13 @@ export type HostGitLog = (msg: string) => void
 
 export type HostGitCtx = {
   project: string
+  /** User branch at run start (we stay here). */
   baseBranch: string
-  integrationBranch: string
-  workerBranch: string
-  workerWorktree: string
+  /** Same as project — root-only workspace. */
+  workDir: string
   runId: string
   cycle: number
+  runDir: string
   verifyCmd?: string
   emptyCommitStreak: number
   lastShip: ShipResult | null
@@ -38,75 +37,59 @@ export type HostGitCtx = {
   log: HostGitLog
 }
 
-export async function hostSyncWorker(ctx: HostGitCtx): Promise<{ ok: boolean; detail: string }> {
-  await ensureOnBranch(ctx.project, ctx.baseBranch)
-  const result = await syncWorkerFromIntegration(ctx.workerWorktree, ctx.integrationBranch)
-  ctx.log(`  [host:git] sync worker: ${result.ok ? "ok" : "conflict"} — ${result.detail.slice(0, 200)}`)
-  return { ok: result.ok, detail: result.detail.slice(0, 300) }
+export function baselinePath(runDir: string): string {
+  return path.join(runDir, "BASELINE.sha")
 }
 
-export async function hostRehomeOutsideWorktree(ctx: HostGitCtx): Promise<string[]> {
-  let rootDirty: string[] = []
+export function readBaseline(runDir: string): string {
   try {
-    rootDirty = await dirtyPaths(ctx.project)
+    return fs.readFileSync(baselinePath(runDir), "utf8").trim()
   } catch {
-    return []
+    return ""
   }
-  rootDirty = rootDirty.filter((p) => !p.startsWith(".swarm/"))
-  if (!rootDirty.length) return []
+}
 
-  try {
-    const wtDirty = await isDirty(ctx.workerWorktree)
-    if (wtDirty) {
-      ctx.log(
-        `  [host:git] worker: worktree already dirty — skip re-home (${rootDirty.length} root path(s) still dirty)`,
-      )
-      return []
-    }
-    const { copied, skipped } = await rehomeDirtyIntoWorktree(ctx.project, ctx.workerWorktree, rootDirty)
-    if (copied.length) {
-      const clean = copied.map((c) => c.replace(/ \(deleted\)$/, ""))
-      ctx.log(
-        `  [host:git] re-home → worker: ${copied.length} path(s): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? "…" : ""}`,
-      )
-      return clean
-    } else if (skipped.length) {
-      ctx.log(`  [host:git] re-home worker: nothing copied (${skipped.length} skipped)`)
-    }
-  } catch (err) {
-    ctx.log(`  [host:git] re-home worker failed: ${err instanceof Error ? err.message : String(err)}`)
-  }
-  return []
+export async function writeBaseline(runDir: string, project: string, sha?: string): Promise<string> {
+  const tip = (sha ?? (await revParse(project, "HEAD"))).trim()
+  fs.mkdirSync(runDir, { recursive: true })
+  fs.writeFileSync(baselinePath(runDir), tip + "\n")
+  return tip
+}
+
+/** No separate worker tree — stay on project root / base branch. */
+export async function hostSyncWorker(ctx: HostGitCtx): Promise<{ ok: boolean; detail: string }> {
+  await ensureOnBranch(ctx.project, ctx.baseBranch)
+  ctx.log(`  [host:git] root mode: workspace is project root (no worktree sync)`)
+  return { ok: true, detail: "root mode — no separate worker branch" }
 }
 
 export async function hostCommitWorker(
   ctx: HostGitCtx,
 ): Promise<{ committed: boolean; ahead: number; rehomed: number; verify?: ShipResult["verify"] }> {
-  const rehomed = await hostRehomeOutsideWorktree(ctx)
   let committed = false
   let ahead = 0
   let verify: ShipResult["verify"]
+  const baseline = readBaseline(ctx.runDir) || "HEAD"
 
   try {
-    let rootStillDirty = 0
-    try {
-      rootStillDirty = (await dirtyPaths(ctx.project)).filter((p) => !p.startsWith(".swarm/")).length
-    } catch {}
     const result = await commitWorktree(
-      ctx.workerWorktree,
+      ctx.project,
       `swarm ${ctx.runId} worker: cycle ${ctx.cycle} (host auto-commit)`,
     )
     committed = result.committed
-    ahead = await commitsAhead(ctx.project, ctx.integrationBranch, ctx.workerBranch)
+    try {
+      ahead = await commitsAhead(ctx.project, baseline, "HEAD")
+    } catch {
+      ahead = committed ? 1 : 0
+    }
     ctx.log(
-      `  [host:git] commit worker: ${result.committed ? "committed" : "clean"} ${result.sha.slice(0, 7)} — ${result.detail}` +
-        ` [metric] rehomed=${rehomed.length} commits_ahead=${ahead}` +
-        `${!result.committed && rootStillDirty ? ` project_root_dirty=${rootStillDirty}` : ""}`,
+      `  [host:git] commit root: ${result.committed ? "committed" : "clean"} ${result.sha.slice(0, 7)} — ${result.detail}` +
+        ` [metric] rehomed=0 commits_ahead=${ahead}`,
     )
     if (ctx.verifyCmd && result.committed) {
       try {
         const v = spawnSync(ctx.verifyCmd, {
-          cwd: ctx.workerWorktree,
+          cwd: ctx.project,
           shell: true,
           encoding: "utf8",
           timeout: 600_000,
@@ -114,35 +97,22 @@ export async function hostCommitWorker(
         const out = ((v.stdout || "") + (v.stderr || "")).trim().slice(0, 800)
         const exit = typeof v.status === "number" ? v.status : null
         verify = { ok: exit === 0, exit, output: out }
-        ctx.log(`  [host:verify] worker: exit ${exit}${out ? ` — ${out.slice(0, 400)}` : ""}`)
+        ctx.log(`  [host:verify] root: exit ${exit}${out ? ` — ${out.slice(0, 400)}` : ""}`)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         verify = { ok: false, exit: null, output: msg.slice(0, 400) }
-        ctx.log(`  [host:verify] worker failed: ${msg.slice(0, 300)}`)
+        ctx.log(`  [host:verify] root failed: ${msg.slice(0, 300)}`)
       }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    ctx.log(`  [host:git] commit worker FAILED: ${msg.slice(0, 300)}`)
+    ctx.log(`  [host:git] commit root FAILED: ${msg.slice(0, 300)}`)
     try {
-      ahead = await commitsAhead(ctx.project, ctx.integrationBranch, ctx.workerBranch)
+      ahead = await commitsAhead(ctx.project, baseline, "HEAD")
     } catch {}
   }
 
-  if (committed && rehomed.length) {
-    try {
-      const restored = await restoreTrackedPathsToHead(ctx.project, rehomed)
-      if (restored.length) {
-        ctx.log(
-          `  [host:git] restored ${restored.length} tracked path(s) on ${ctx.baseBranch} to HEAD after re-home ship`,
-        )
-      }
-    } catch (err) {
-      ctx.log(`  [host:git] root restore skipped: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-
-  return { committed, ahead, rehomed: rehomed.length, verify }
+  return { committed, ahead, rehomed: 0, verify }
 }
 
 export async function buildReviewPack(
@@ -151,8 +121,14 @@ export async function buildReviewPack(
 ): Promise<ReviewPack> {
   const parts: string[] = []
   const sections: string[] = []
-  const ahead = await commitsAhead(ctx.project, ctx.integrationBranch, ctx.workerBranch)
-  ctx.log(`  [metric] worker commits_ahead=${ahead}`)
+  const baseline = readBaseline(ctx.runDir) || "HEAD"
+  let ahead = 0
+  try {
+    ahead = await commitsAhead(ctx.project, baseline, "HEAD")
+  } catch {
+    ahead = 0
+  }
+  ctx.log(`  [metric] commits_ahead_of_baseline=${ahead} baseline=${baseline.slice(0, 10)}`)
 
   const sessionBlock = probeSummaryForMemory(sessionMeta)
   parts.push(sessionBlock)
@@ -160,7 +136,7 @@ export async function buildReviewPack(
 
   if (ctx.lastShip) {
     const s = ctx.lastShip
-    let block = `### last ship (cycle ${s.cycle})\ncommitted: ${s.committed}\nahead_after: ${s.ahead}\nrehomed_paths: ${s.rehomed}\n`
+    let block = `### last ship (cycle ${s.cycle})\ncommitted: ${s.committed}\nahead_after: ${s.ahead}\nrehomed_paths: 0 (root mode)\n`
     if (s.verify) {
       block += `verify: ${s.verify.ok ? "PASS" : "FAIL"} exit=${s.verify.exit ?? "?"}\n`
       if (s.verify.output) block += `verify_output:\n\`\`\`\n${clip(s.verify.output, 600)}\n\`\`\`\n`
@@ -173,47 +149,63 @@ export async function buildReviewPack(
 
   if (ahead === 0) {
     const s = [
-      `### worker git`,
-      `status: NO_COMMITS`,
-      `branch ${ctx.workerBranch} has 0 commits ahead of ${ctx.integrationBranch}.`,
+      `### project git (root mode)`,
+      `status: NO_COMMITS since baseline`,
+      `baseline: ${baseline}`,
+      `branch: ${ctx.baseBranch}`,
+      `workspace: ${ctx.project}`,
       `empty_commit_streak: ${ctx.emptyCommitStreak}`,
-      `worktree: ${ctx.workerWorktree}`,
-      `tip: still open WORKER_SESSION.md — the engineer may have tried and failed, or edited outside the worktree.`,
-      `deeper: git log ${ctx.integrationBranch}..${ctx.workerBranch} --oneline (from ${ctx.project})`,
+      `tip: open WORKER_SESSION.md — engineer may have tried without shipping file changes.`,
+      `deeper: git log ${baseline.slice(0, 10)}..HEAD --oneline`,
     ].join("\n")
     parts.push(s)
     sections.push(s)
     return { pack: parts.join("\n\n"), sections, anyCommits: false }
   }
-  const log = await shortLog(ctx.project, ctx.integrationBranch, ctx.workerBranch)
-  const diff = await rangeDiff(ctx.project, ctx.integrationBranch, ctx.workerBranch)
-  let s = [
-    `### worker git`,
-    `status: HAS_COMMITS (${ahead} ahead of ${ctx.integrationBranch})`,
-    `worktree: ${ctx.workerWorktree}`,
-    `branches: ${ctx.integrationBranch}..${ctx.workerBranch}`,
+
+  let log = ""
+  let diff = ""
+  try {
+    log = await shortLog(ctx.project, baseline, "HEAD")
+  } catch {
+    log = "(log failed)"
+  }
+  try {
+    diff = await rangeDiff(ctx.project, baseline, "HEAD")
+  } catch {
+    diff = "(diff failed)"
+  }
+
+  const s = [
+    `### project git (root mode)`,
+    `status: HAS_COMMITS (${ahead} since baseline)`,
+    `workspace: ${ctx.project}`,
+    `branch: ${ctx.baseBranch}`,
+    `baseline: ${baseline}`,
+    `range: ${baseline.slice(0, 10)}..HEAD`,
     `log:`,
     log || "(empty)",
     ``,
-    `deeper (run yourself if you need more than --stat):`,
-    `- git log ${ctx.integrationBranch}..${ctx.workerBranch} --oneline`,
-    `- git diff ${ctx.integrationBranch}...${ctx.workerBranch} -- <path>`,
-    `- open files under ${ctx.workerWorktree}`,
+    `deeper:`,
+    `- git log ${baseline.slice(0, 10)}..HEAD --oneline`,
+    `- git diff ${baseline.slice(0, 10)}...HEAD -- <path>`,
+    `- open files under ${ctx.project}`,
+    ``,
+    `git summary (--stat / name-status):`,
+    "```",
+    clip(diff || "(empty)", 8000),
+    "```",
   ].join("\n")
-  if (!ctx.lastSyncOk) {
-    s += `\n\n### git sync\nstatus: CONFLICT\nCould not sync from ${ctx.integrationBranch}: ${ctx.lastSyncDetail}\n`
-  }
-  s += `\n\ngit summary (--stat / name-status):\n\`\`\`\n${clip(diff || "(empty)", 8000)}\n\`\`\``
   parts.push(s)
   sections.push(s)
-  ctx.log(`  [host:git] review worker: ${ahead} commit(s) ahead`)
+  ctx.log(`  [host:git] review: ${ahead} commit(s) since baseline`)
   return { pack: parts.join("\n\n"), sections, anyCommits: true }
 }
 
 /**
- * Apply host git policy after system review.
- * Caller decides whether to merge (defaultMerge + signal). This only executes.
- * STOP / HOLD skip merge. CONTINUE | DONE | REPASS → accept when ahead > 0.
+ * Accept = advance baseline to HEAD (commits already on the working branch).
+ * STOP/HOLD = leave baseline so next cycle still sees the same unreviewed range
+ * (useful if run continues); commits remain on the branch either way.
  */
 export async function hostApplyVerdict(
   ctx: HostGitCtx,
@@ -221,29 +213,32 @@ export async function hostApplyVerdict(
   reason: string,
   opts?: { doMerge?: boolean },
 ): Promise<{ merged: boolean }> {
-  const ahead = await commitsAhead(ctx.project, ctx.integrationBranch, ctx.workerBranch)
   const signal = verdict || "CONTINUE"
   const doMerge = opts?.doMerge ?? !(signal === "STOP" || signal === "HOLD")
+  const baseline = readBaseline(ctx.runDir) || "HEAD"
+  let ahead = 0
+  try {
+    ahead = await commitsAhead(ctx.project, baseline, "HEAD")
+  } catch {
+    ahead = 0
+  }
 
   if (!doMerge || signal === "STOP" || signal === "HOLD") {
     ctx.log(
-      `  [host:git] ${signal} — keeping worker commits (no merge): ${reason.slice(0, 200) || "(policy)"}`,
+      `  [host:git] ${signal} — baseline unchanged (commits stay on ${ctx.baseBranch}): ${reason.slice(0, 200) || "(policy)"}`,
     )
     return { merged: false }
   }
 
   if (ahead === 0) {
-    ctx.log(`  [host:git] merge skipped — no commits ahead (signal ${signal})`)
+    ctx.log(`  [host:git] accept skipped — nothing new since baseline (signal ${signal})`)
     return { merged: false }
   }
 
-  const result = await acceptWorkerBranch(ctx.project, ctx.integrationBranch, ctx.workerBranch, ctx.runId)
-  if (result.ok) {
-    ctx.log(`  [host:git] ACCEPT worker (${signal}): ${result.detail}`)
-    await ensureOnBranch(ctx.project, ctx.baseBranch)
-    return { merged: true }
-  }
-  ctx.log(`  [host:git] ACCEPT worker failed: ${result.detail}`)
+  const tip = await writeBaseline(ctx.runDir, ctx.project)
+  ctx.log(
+    `  [host:git] ACCEPT root (${signal}): advanced baseline → ${tip.slice(0, 10)} (${ahead} commit(s) on ${ctx.baseBranch})`,
+  )
   await ensureOnBranch(ctx.project, ctx.baseBranch)
-  return { merged: false }
+  return { merged: true }
 }

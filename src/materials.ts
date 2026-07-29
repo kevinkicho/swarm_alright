@@ -77,8 +77,8 @@ export function writeMaterialsIndex(input: {
     probe
       ? `- last probe: session=${probe.sessionID} messages=${probe.messageCount} tools=${probe.toolCalls} errors=${probe.toolErrors} status=${probe.status} chars=${probe.chars}`
       : `- last probe: (none yet — kickoff cycle or not shipped)`,
-    `- worker worktree (where the engineer edits): ${p.workerWorktree}`,
-    `- worker branch: ${p.workerBranch}`,
+    `- engineer workspace (project root): ${p.workerWorktree}`,
+    `- branch: ${p.baseBranch}`,
     ``,
     `## Work history (conversation & assignments)`,
     `- dialogue (append-only system↔worker): ${p.dialogueFile}`,
@@ -87,26 +87,21 @@ export function writeMaterialsIndex(input: {
     `- mission: ${p.missionFile}`,
     `- standards (you may edit): ${p.standardsFile}`,
     ``,
-    `## Work output (repo / git)`,
-    `- project root (user branch ${p.baseBranch} — do not move it): ${p.project}`,
-    `- integration branch (host merge target): ${p.integrationBranch}`,
-    `- worker branch: ${p.workerBranch}`,
-    `- worker worktree: ${p.workerWorktree}`,
+    `## Work output (repo / git) — root mode`,
+    `- project root: ${p.project}`,
+    `- branch: ${p.baseBranch}`,
+    `- baseline file (accept advances this): ${path.join(p.runDir, "BASELINE.sha")}`,
     `- host MEMORY (git --stat, verify, probe pointers): ${p.memoryFile}`,
     `- ship log (every auto-commit/verify): ${p.shipLogFile}`,
     ship
-      ? `- last ship: cycle=${ship.cycle} committed=${ship.committed} ahead=${ship.ahead} rehomed=${ship.rehomed} verify=${ship.verify ? (ship.verify.ok ? "PASS" : "FAIL") : "n/a"}`
+      ? `- last ship: cycle=${ship.cycle} committed=${ship.committed} ahead=${ship.ahead} verify=${ship.verify ? (ship.verify.ok ? "PASS" : "FAIL") : "n/a"}`
       : `- last ship: (none yet)`,
     `empty_commit_streak: ${input.emptyCommitStreak}`,
-    input.lastSyncOk
-      ? `last_sync: ok`
-      : `last_sync: conflict — ${input.lastSyncDetail.slice(0, 200)}`,
     ``,
-    `Useful git (run from project root with tools if you want more than MEMORY's summary):`,
-    `- \`git log ${p.integrationBranch}..${p.workerBranch} --oneline\``,
-    `- \`git diff --stat ${p.integrationBranch}...${p.workerBranch}\``,
-    `- \`git diff --name-status ${p.integrationBranch}...${p.workerBranch}\``,
-    `- open changed files under ${p.workerWorktree} (or project after merge)`,
+    `Useful git (from project root; baseline..HEAD is the unreviewed range):`,
+    `- \`git log $(cat .swarm/runs/.../BASELINE.sha 2>/dev/null || echo HEAD)..HEAD --oneline\``,
+    `- \`git diff --stat HEAD~N\` or open MEMORY review pack`,
+    `- open changed files under ${p.project}`,
     ``,
     `## Session archives (prior worker dumps)`,
   ]
@@ -136,7 +131,7 @@ export function writeMaterialsIndex(input: {
     `## Suggested investigation order (optional)`,
     `1. Open ${p.workerSessionFile} (or a sessions/ archive) — worker thinking, tools, errors.`,
     `2. Open MEMORY / ${p.shipLogFile} / git commands — what landed on the branch.`,
-    `3. Open real files under ${p.workerWorktree} — claims vs tree.`,
+    `3. Open real files under ${p.project} — claims vs tree.`,
     `4. Read ${p.dialogueFile} / ${p.handoffHistoryFile} / older session archives for multi-cycle context.`,
     `5. Write the next engineer assignment to ${p.handoffFile}.`,
     ``,

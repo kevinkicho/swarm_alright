@@ -15,11 +15,11 @@ import path from "node:path"
  * }
  */
 export type ProjectConfig = {
-  /** Shell command run in the worker worktree after auto-commit (host-owned). Omit to skip. */
+  /** Shell command run in the project root after auto-commit (host-owned). Omit to skip. */
   verify?: string
   /**
-   * Directories to link from the project root into each worktree when present.
-   * Default: ["node_modules"] only if the project has package.json + node_modules.
+   * Legacy: was used to link dirs into nested worktrees. Root mode ignores this
+   * (agents already use the project root). Kept for config compatibility.
    */
   linkDirs?: string[]
   /** Refuse a second concurrent alive run on the same project (default true). */

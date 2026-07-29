@@ -31,7 +31,7 @@ export function buildSystemIdentity(paths: RunPaths): string {
     `- Worker thinking / tools / errors: ${paths.workerSessionFile} (live dump) and ${paths.sessionsDir} (archived dumps per cycle/rotate)`,
     `- Session index: ${paths.sessionIndexFile}`,
     `- Work history: ${paths.dialogueFile}, ${paths.handoffHistoryFile}, ${paths.shipLogFile}`,
-    `- Work output (repo): files under ${paths.workerWorktree} and ${paths.project}; git vs ${paths.integrationBranch} / ${paths.workerBranch}`,
+    `- Work output (repo): files under ${paths.project} (project root — no nested worktree)`,
     `- Host sensors: ${paths.memoryFile}, ${paths.materialsFile} (inventory of all of the above)`,
     `- Mission / lasting notes: ${paths.missionFile}, ${paths.standardsFile} (you may edit standards)`,
     `- Telemetry: ${paths.metricsFile}, ${paths.eventsLogFile}`,
@@ -61,8 +61,7 @@ export function buildSystemSitrep(f: SystemPromptFacts): string {
     `Core probe targets:`,
     `- worker thinking/tools: ${p.workerSessionFile} · archives ${p.sessionsDir} · index ${p.sessionIndexFile}`,
     `- host sensors (git/verify): ${p.memoryFile} · ships ${p.shipLogFile}`,
-    `- worktree (code): ${p.workerWorktree}`,
-    `- project: ${p.project}`,
+    `- project root (code): ${p.project}`,
     `- dialogue / handoff history: ${p.dialogueFile} · ${p.handoffHistoryFile}`,
     `- write next assignment: ${p.handoffFile}`,
     `- mission / standards: ${p.missionFile} · ${p.standardsFile}`,
@@ -220,12 +219,12 @@ export function verdictReaskPrompt(): string {
 
 /** Sticky micro-identity for the worker session (OpenCode `system` field). */
 export function buildWorkerIdentity(
-  paths: Pick<RunPaths, "workerWorktree" | "baseBranch" | "integrationBranch" | "missionFile">,
+  paths: Pick<RunPaths, "workerWorktree" | "baseBranch" | "missionFile">,
 ): string {
   return [
     `You are the engineer for this autonomous run.`,
     `Implement the assignment in the user message (from the lead's handoff).`,
-    `Work only in ${paths.workerWorktree}. Do not move branches ${paths.baseBranch} or ${paths.integrationBranch}.`,
+    `Edit the project at its root: ${paths.workerWorktree} (branch ${paths.baseBranch}). Do not create nested clones or extra worktrees.`,
     `Mission file (read if needed): ${paths.missionFile}`,
     `When done, blocked, or needing a decision — say so clearly and stop. Prefer real file changes over plans.`,
   ].join("\n")
@@ -234,16 +233,13 @@ export function buildWorkerIdentity(
 /** Worker user message: handoff body + minimal footer (identity is sticky). */
 export function buildWorkerPrompt(
   brief: string,
-  paths: Pick<
-    RunPaths,
-    "workerWorktree" | "baseBranch" | "integrationBranch" | "missionFile" | "handoffFile"
-  >,
+  paths: Pick<RunPaths, "workerWorktree" | "baseBranch" | "missionFile" | "handoffFile">,
 ): string {
   return [
     brief.trim(),
     "",
     "—",
-    `Worktree: ${paths.workerWorktree}`,
+    `Project root: ${paths.workerWorktree} (branch ${paths.baseBranch})`,
     `Handoff artifact: ${paths.handoffFile}`,
   ].join("\n")
 }
@@ -294,11 +290,10 @@ export function systemFactNotes(args: {
     `memory: ${p.memoryFile}`,
     `metrics: ${p.metricsFile}`,
     `events: ${p.eventsLogFile}`,
-    `project: ${p.project}`,
-    `worker_worktree: ${p.workerWorktree}`,
+    `project_root: ${p.project}`,
+    `workspace: ${p.workerWorktree} (same as project root)`,
     `worker_session_id: ${args.workerSessionID}`,
-    `integration: ${p.integrationBranch}`,
-    `worker_branch: ${p.workerBranch}`,
+    `branch: ${p.baseBranch}`,
     `empty_commit_streak: ${args.emptyCommitStreak}`,
     `last_host_signal: ${args.lastVerdict || "(none — default continue/merge)"}`,
     `cycle: ${args.cycle}`,

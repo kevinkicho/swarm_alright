@@ -6,14 +6,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { loadApiKey, opencodeConfig, bareModel } from "./config.ts"
 import { startServer, Api, EventBus, type ServerHandle, type SwarmEvent } from "./opencode.ts"
-import {
-  ensureRepo,
-  addWorktree,
-  branchExists,
-  git,
-  ensureOnBranch,
-  linkSharedDirs,
-} from "./git.ts"
+import { ensureRepo, ensureOnBranch } from "./git.ts"
 import * as Registry from "./registry.ts"
 import { Style } from "./style.ts"
 import { memoryPath, writeMemory, buildMemoryDoc, appendDialogue } from "./memory.ts"
@@ -69,6 +62,8 @@ import {
   hostCommitWorker,
   buildReviewPack,
   hostApplyVerdict,
+  writeBaseline,
+  readBaseline,
   type HostGitCtx,
 } from "./run-host-git.ts"
 import { runTurn, captureWorkerSession, isWorkerProbeFresh, type TurnDeps } from "./run-turn.ts"
@@ -92,8 +87,7 @@ export class Run {
   private record?: Registry.RunRecord
   private projectCfg?: ResolvedProjectConfig
   private baseBranch = ""
-  private integrationBranch = ""
-  private workerBranch = ""
+  /** Project root — agents work here (no nested worktrees). */
   private workerWorktree = ""
   private stopping = false
   private cycle = 0
@@ -146,8 +140,6 @@ export class Run {
       sessionIndexFile: sessionIndexPath(this.runDir),
       shipLogFile: shipLogPath(this.runDir),
       baseBranch: this.baseBranch,
-      integrationBranch: this.integrationBranch,
-      workerBranch: this.workerBranch,
       workerWorktree: this.workerWorktree,
     }
   }
@@ -156,11 +148,10 @@ export class Run {
     return {
       project: this.opts.project,
       baseBranch: this.baseBranch,
-      integrationBranch: this.integrationBranch,
-      workerBranch: this.workerBranch,
-      workerWorktree: this.workerWorktree,
+      workDir: this.workerWorktree,
       runId: this.id,
       cycle: this.cycle,
+      runDir: this.runDir,
       verifyCmd: this.projectCfg?.verify,
       emptyCommitStreak: this.emptyCommitStreak,
       lastShip: this.lastShip,
@@ -361,47 +352,28 @@ export class Run {
     this.log(`run ${this.id} ${resuming ? "resuming" : "starting"} on ${project}`)
     this.log(`preparing git repo...`)
     this.baseBranch = await ensureRepo(project)
-    this.log(`git ready (base branch: ${this.baseBranch})`)
+    this.log(`git ready (branch: ${this.baseBranch})`)
     await ensureOnBranch(project, this.baseBranch)
 
-    this.integrationBranch = `swarm/${this.id}/base`
-    this.workerBranch = `swarm/${this.id}/w1`
-    this.workerWorktree = path.join(project, ".swarm", "worktrees", this.id, "w1")
-
+    // Root-only: agents edit the project folder. No .swarm/worktrees, no swarm/*/w1 branches.
+    this.workerWorktree = project
     if (resuming) {
-      const hasBase = await branchExists(project, this.integrationBranch)
-      if (!hasBase) {
-        this.log(`resume: no ${this.integrationBranch} — starting base from HEAD`)
-        await git(project, ["branch", this.integrationBranch, "HEAD"])
-      }
-      const hasW1 = await branchExists(project, this.workerBranch)
-      if (!hasW1) {
-        this.log(`resume: no ${this.workerBranch} — starting from integration tip`)
-        await addWorktree(project, this.workerWorktree, this.workerBranch, this.integrationBranch)
-        if (this.projectCfg.linkDirs.length) {
-          linkSharedDirs(project, this.workerWorktree, this.projectCfg.linkDirs)
-        }
-      } else if (!fs.existsSync(this.workerWorktree)) {
-        await addWorktree(project, this.workerWorktree, this.workerBranch, this.workerBranch)
-        if (this.projectCfg.linkDirs.length) {
-          linkSharedDirs(project, this.workerWorktree, this.projectCfg.linkDirs)
-        }
-      }
       const priorRec = Registry.load(this.id) ?? Registry.loadFromDisk(project, this.id)
       if (priorRec && Number.isFinite(priorRec.cycle)) {
         this.cycle = Math.max(0, priorRec.cycle)
         this.log(`cycle counter continues from ${this.cycle} (next cycle will be ${this.cycle + 1})`)
       }
-    } else {
-      fs.mkdirSync(path.dirname(this.workerWorktree), { recursive: true })
-      await git(project, ["branch", this.integrationBranch, "HEAD"])
-      await addWorktree(project, this.workerWorktree, this.workerBranch, this.integrationBranch)
-      if (this.projectCfg.linkDirs.length) {
-        linkSharedDirs(project, this.workerWorktree, this.projectCfg.linkDirs)
+      if (!readBaseline(this.runDir)) {
+        const tip = await writeBaseline(this.runDir, project)
+        this.log(`resume: no BASELINE.sha — set baseline to HEAD ${tip.slice(0, 10)}`)
+      } else {
+        this.log(`resume: baseline ${readBaseline(this.runDir).slice(0, 10)}… (unreviewed commits stay visible)`)
       }
+    } else {
+      const tip = await writeBaseline(this.runDir, project)
+      this.log(`baseline: ${tip.slice(0, 10)} on ${this.baseBranch} (root mode — no nested worktrees)`)
     }
-    this.log(`integration branch: ${this.integrationBranch}`)
-    this.log(`worker worktree: ${this.workerWorktree} (branch ${this.workerBranch})`)
+    this.log(`workspace: ${this.workerWorktree} (project root)`)
 
     if (!fs.existsSync(this.missionFile)) {
       const mission =
@@ -465,12 +437,12 @@ export class Run {
       model: a.model,
     }))
     this.saveRecord()
-    this.log(`agents ready: system (lead) + worker (engineer) — dialogue loop`)
+    this.log(`agents ready: system (lead) + worker (engineer) — both on project root`)
     this.log(
-      `pattern: materials sitrep → lead writes HANDOFF → merge policy → worker → commit → probe → metrics`,
+      `pattern: materials sitrep → HANDOFF → accept baseline → worker on root → commit → probe → metrics`,
     )
     this.log(
-      `host owns git only (defaultMerge=${this.projectCfg?.defaultMerge !== false}); no team-chat / contracts / third agent`,
+      `root mode: no nested worktrees; host commits on ${this.baseBranch} (defaultMerge=${this.projectCfg?.defaultMerge !== false})`,
     )
     if (this.opts.models.system === this.opts.models.worker) {
       this.log(
@@ -551,17 +523,18 @@ export class Run {
 
   private async createAgents(): Promise<AgentRef[]> {
     const agents: AgentRef[] = []
-    const sysSession = await this.api!.createSession(this.opts.project, `swarm ${this.id} system`)
+    const root = this.opts.project
+    const sysSession = await this.api!.createSession(root, `swarm ${this.id} system`)
     agents.push({
       role: "system",
-      directory: this.opts.project,
+      directory: root,
       sessionID: sysSession.id,
       model: this.opts.models.system,
     })
-    const wSession = await this.api!.createSession(this.workerWorktree, `swarm ${this.id} worker`)
+    const wSession = await this.api!.createSession(root, `swarm ${this.id} worker`)
     agents.push({
       role: "worker",
-      directory: this.workerWorktree,
+      directory: root,
       sessionID: wSession.id,
       model: this.opts.models.worker,
     })
@@ -577,7 +550,7 @@ export class Run {
       paths: {
         memory: p.memoryFile,
         project: p.project,
-        integrationBranch: p.integrationBranch,
+        integrationBranch: p.baseBranch,
         baseBranch: p.baseBranch,
         workerWorktree: p.workerWorktree,
         mission: p.missionFile,
@@ -747,7 +720,7 @@ export class Run {
     await this.captureAndArchiveWorker(deps, worker, sessionArchiveTag)
 
     this.heartbeat("commit")
-    this.log(`[cycle ${this.cycle}] host re-home + auto-commit dirty worktree...`)
+    this.log(`[cycle ${this.cycle}] host auto-commit dirty project root...`)
     const ship = await hostCommitWorker(this.gitCtx())
     this.lastShip = { cycle: this.cycle, ...ship }
     this.throwIfStopped()
@@ -1024,7 +997,7 @@ export class Run {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = undefined
     }
-    this.log(`run ${this.id} ${status} — cleaning up (worktrees and branches are kept)`)
+    this.log(`run ${this.id} ${status} — cleaning up (project root + run folder kept; no nested worktrees)`)
     if (this.record) {
       this.record.status = status
       this.record.lastHeartbeat = new Date().toISOString()

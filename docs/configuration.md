@@ -44,8 +44,8 @@ changing swarm itself. Missing file = defaults (works on any project).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `verify` | _(none)_ | Shell command the **host** runs in the worker worktree after auto-commit when there are new commits. Result is logged and shown to the system reviewer. Fail-soft (never aborts the run). |
-| `linkDirs` | `["node_modules"]` if `package.json` + `node_modules` exist, else `[]` | Dirs junction/symlink from project root into the worker worktree (skips reinstall). |
+| `verify` | _(none)_ | Shell command the **host** runs in the **project root** after auto-commit when there are new commits. Fail-soft (never aborts the run). |
+| `linkDirs` | legacy | Ignored in root mode (no nested worktrees). Kept for older configs. |
 | `singleFlight` | `true` | Refuse a second concurrent alive run on the same project folder. |
 | `defaultMerge` | `true` | After system review, merge worker commits unless `HOST: STOP` / `HOLD`. Set `false` to merge only on explicit `CONTINUE` / `DONE` / `REPASS`. |
 | `metrics` | `true` | Append one JSON object per cycle to `metrics.jsonl` (trajectory for offline evals). |

@@ -255,9 +255,9 @@ async function main() {
     })
     const body = fs.readFileSync(p.materialsFile, "utf8")
     assert.match(body, /WORKER_SESSION|worker_session|session dump/i)
-    assert.match(body, /worktree/i)
+    assert.match(body, /project root|root mode/i)
     assert.match(body, /HANDOFF_HISTORY|handoff history/i)
-    assert.match(body, /git log/)
+    assert.match(body, /git log|BASELINE/i)
     materials.appendHandoffHistory(
       p.handoffHistoryFile,
       2,
@@ -271,6 +271,12 @@ async function main() {
     assert.match(id, /as long as you need|Investigate freely/i)
     assert.match(id, /session dump|WORKER_SESSION|workerSessionFile|sessions/i)
     assert.match(id, /MATERIALS|materialsFile/i)
+  })
+
+  check("worker identity is root mode (no nested worktree)", () => {
+    const w = prompts.buildWorkerIdentity(paths)
+    assert.match(w, /project at its root|Project root|project root/i)
+    assert.match(w, /nested/i)
   })
 
   const runLog = await load("run-log.ts")

@@ -7,14 +7,14 @@ by [opencode](https://opencode.ai) + [Ollama Cloud](https://ollama.com/cloud).
 
 ## Pattern
 
-1. **System** gets a materials sitrep + sticky lead identity; opens **`MATERIALS.md`** and whatever it needs (live/`sessions/` dumps, MEMORY, worktree, git).  
+1. **System** gets a materials sitrep + sticky lead identity; opens **`MATERIALS.md`** and whatever it needs (session dumps, MEMORY, **project root**, git).  
 2. It overwrites **`HANDOFF.md`** with the engineer assignment.  
-3. **Host** default-merges last worker commits (unless `HOST: STOP`).  
-4. **Worker** receives the handoff body, works in a git worktree until idle.  
-5. **Host** commits, probes the full worker session, **archives** the dump, updates ship log / MEMORY / metrics.  
-6. Loop until `HOST: DONE` / `STOP`, or you `swarm stop`. Optional `HOST: REPASS` for one same-cycle second pass.
+3. **Host** advances **`BASELINE.sha`** when accepting last work (unless `HOST: STOP`).  
+4. **Worker** receives the handoff and edits the **project root** (no nested worktrees).  
+5. **Host** commits dirty files on that branch, probes/archives the worker session, updates MEMORY / metrics.  
+6. Loop until `HOST: DONE` / `STOP`, or you `swarm stop`.
 
-No team chat, no multi-agent contracts, no third “auditor” brain — one conversation, two OpenCode sessions.
+No nested `.swarm/worktrees`, no team chat, no third “auditor” — two OpenCode sessions on the same project folder.
 
 ## Quick start
 

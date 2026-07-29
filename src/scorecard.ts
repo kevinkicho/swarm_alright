@@ -109,7 +109,7 @@ export function scoreTrajectory(
   const n = rows.length
   const flags: string[] = []
   if (!n) flags.push("no metrics.jsonl yet (run a cycle with metrics enabled)")
-  if (n >= 3 && ship_commits === 0) flags.push("no commits shipped across cycles — worker stuck or edits off worktree")
+  if (n >= 3 && ship_commits === 0) flags.push("no commits shipped across cycles — worker stuck or no file changes")
   if (empty_streak_max >= 3) flags.push(`empty_commit_streak peaked at ${empty_streak_max}`)
   if (n >= 2 && thin_handoff / n >= 0.5) flags.push("thin handoff often — lead not writing HANDOFF.md")
   if (tool_calls > 0 && tool_errors / tool_calls >= 0.25) flags.push("high tool error rate on worker probes")

@@ -207,10 +207,10 @@ export async function wizard(): Promise<void> {
       [
         { label: "start a new run", hint: "system + worker on a project folder", value: "new" },
         ...(runs.length
-          ? [{ label: "restart a run from history", hint: "reuses same run id, worktrees, run folder", value: "restart" }]
+          ? [{ label: "restart a run from history", hint: "reuses same run id + run folder (project root)", value: "restart" }]
           : []),
         { label: "status", hint: "phase, git ahead, opencode busy", value: "status" },
-        { label: "doctor", hint: "branch sprawl, dirty root, worktrees, tips", value: "doctor" },
+        { label: "doctor", hint: "dirty root, legacy worktrees, tips", value: "doctor" },
         ...(runs.length
           ? [{ label: "tally recent logs", hint: "situation counts from events.log (CONTINUE/DONE/STOP/…)", value: "tally" }]
           : []),
@@ -222,7 +222,7 @@ export async function wizard(): Promise<void> {
             ]
           : []),
         ...(finished ? [{ label: `prune ${finished} finished run record(s)`, value: "clean" }] : []),
-        { label: "clean branches & worktrees", hint: "drop dead swarm/* refs and worktrees", value: "prune-git" },
+        { label: "clean legacy branches & worktrees", hint: "drop old swarm/* refs and .swarm/worktrees", value: "prune-git" },
         { label: "list ollama cloud models", value: "models" },
         { label: "exit", value: "exit" },
       ],

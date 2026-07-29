@@ -11,6 +11,7 @@ async function resolveAgents(rec: Registry.RunRecord): Promise<Registry.AgentRec
   if (rec.agents?.length) return rec.agents
 
   const url = `http://127.0.0.1:${rec.port}`
+  // Root mode: both agents use the project directory (legacy worktrees optional if present).
   const dirs = [rec.project]
   try {
     const wtRoot = path.join(rec.project, ".swarm", "worktrees", rec.id)

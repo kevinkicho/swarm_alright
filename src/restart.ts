@@ -216,10 +216,10 @@ export async function restartInteractive(opts: { id?: string; flags?: Record<str
   }
 
   console.log(`${Style.highlight("restarting")} run ${Style.bold(recFull.project)}`)
-  console.log(`${Style.key("run id:")} ${Style.cyan(id)} (reused — same worktrees, same run folder)`)
+  console.log(`${Style.key("run id:")} ${Style.cyan(id)} (reused — same run folder; project root workspace)`)
   console.log(`${Style.key("from:")} cycle was ${recFull.cycle}`)
   console.log(
-    `${Style.key("git:")} ${gitInfo.hasBase ? `base ok, worker ${gitInfo.ahead} commit(s) ahead` : "no swarm base found"}`,
+    `${Style.key("git:")} ${gitInfo.hasBase ? `legacy swarm base exists (${gitInfo.ahead} ahead) — root mode ignores worktrees` : "root mode (no nested worktrees)"}`,
   )
   console.log(
     `${Style.key("models:")} ${Style.muted(`system=${params.system}  worker=${params.worker}`)}`,
