@@ -172,18 +172,38 @@ export async function buildReviewPack(
   }
 
   if (ahead === 0) {
-    const s = `### worker git\nstatus: NO_COMMITS\nbranch ${ctx.workerBranch} has 0 commits ahead of ${ctx.integrationBranch}.\nempty_commit_streak: ${ctx.emptyCommitStreak}`
+    const s = [
+      `### worker git`,
+      `status: NO_COMMITS`,
+      `branch ${ctx.workerBranch} has 0 commits ahead of ${ctx.integrationBranch}.`,
+      `empty_commit_streak: ${ctx.emptyCommitStreak}`,
+      `worktree: ${ctx.workerWorktree}`,
+      `tip: still open WORKER_SESSION.md — the engineer may have tried and failed, or edited outside the worktree.`,
+      `deeper: git log ${ctx.integrationBranch}..${ctx.workerBranch} --oneline (from ${ctx.project})`,
+    ].join("\n")
     parts.push(s)
     sections.push(s)
     return { pack: parts.join("\n\n"), sections, anyCommits: false }
   }
   const log = await shortLog(ctx.project, ctx.integrationBranch, ctx.workerBranch)
   const diff = await rangeDiff(ctx.project, ctx.integrationBranch, ctx.workerBranch)
-  let s = `### worker git\nstatus: HAS_COMMITS (${ahead} ahead of ${ctx.integrationBranch})\nlog:\n${log || "(empty)"}\n`
+  let s = [
+    `### worker git`,
+    `status: HAS_COMMITS (${ahead} ahead of ${ctx.integrationBranch})`,
+    `worktree: ${ctx.workerWorktree}`,
+    `branches: ${ctx.integrationBranch}..${ctx.workerBranch}`,
+    `log:`,
+    log || "(empty)",
+    ``,
+    `deeper (run yourself if you need more than --stat):`,
+    `- git log ${ctx.integrationBranch}..${ctx.workerBranch} --oneline`,
+    `- git diff ${ctx.integrationBranch}...${ctx.workerBranch} -- <path>`,
+    `- open files under ${ctx.workerWorktree}`,
+  ].join("\n")
   if (!ctx.lastSyncOk) {
-    s += `\n### git sync\nstatus: CONFLICT\nCould not sync from ${ctx.integrationBranch}: ${ctx.lastSyncDetail}\n`
+    s += `\n\n### git sync\nstatus: CONFLICT\nCould not sync from ${ctx.integrationBranch}: ${ctx.lastSyncDetail}\n`
   }
-  s += `\ngit summary:\n\`\`\`\n${clip(diff || "(empty)", 8000)}\n\`\`\``
+  s += `\n\ngit summary (--stat / name-status):\n\`\`\`\n${clip(diff || "(empty)", 8000)}\n\`\`\``
   parts.push(s)
   sections.push(s)
   ctx.log(`  [host:git] review worker: ${ahead} commit(s) ahead`)

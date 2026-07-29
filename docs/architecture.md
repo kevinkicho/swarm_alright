@@ -54,14 +54,20 @@ Fallback: if the lead still uses `### TO_WORKER` in the reply and forgets the fi
   MISSION.md           user directive
   DIALOGUE.md          append-only system + worker messages
   STANDARDS.md         optional lead-owned quality notes (system may edit)
+  MATERIALS.md         host inventory map (session, history, repo, git tips) for the lead
   HANDOFF.md           engineer assignment (system overwrites each cycle)
+  HANDOFF_HISTORY.md   prior handoffs (append-only work history)
   WORKER_SESSION.md    full OpenCode worker session probe (messages, tools, I/O, status)
-  MEMORY.md            host sensors + short pointers (not a substitute for WORKER_SESSION)
+  MEMORY.md            host sensors + git review pack (not a substitute for WORKER_SESSION)
   metrics.jsonl        one JSON object per cycle (signal, ship, probe, secs) for evals
   events.log
   run.json
   STOP
 ```
+
+The system lead is **enabled to probe everything available**: worker session dump,
+dialogue/handoff history, worktree and project files, git ranges, MEMORY, metrics.
+Host never caps how long the lead may spend reviewing.
 
 The system agent cannot call the OpenCode HTTP API. The **host** probes the worker
 session via `@opencode-ai/sdk` and writes `WORKER_SESSION.md` after every worker turn

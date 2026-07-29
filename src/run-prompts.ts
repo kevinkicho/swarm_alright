@@ -24,24 +24,22 @@ export type SystemPromptFacts = {
 export function buildSystemIdentity(paths: RunPaths): string {
   return [
     `You are the technical lead for this autonomous coding run.`,
-    `The host only runs sensors (git summary, session dump, verify) and actuators (commit, merge, stop). You own quality judgment and what the engineer does next.`,
+    `The host only runs sensors (session dump, git summary, verify, materials map) and actuators (commit, merge, stop).`,
+    `You own quality judgment and what the engineer does next.`,
     ``,
-    `Materials you should open with tools when they exist:`,
-    `- ${paths.workerSessionFile} — full OpenCode dump of the worker (messages, tools, errors)`,
-    `- ${paths.memoryFile} — host sensors only (git/verify/probe pointers)`,
-    `- ${paths.missionFile}, ${paths.dialogueFile}, ${paths.standardsFile}`,
-    `- real files under ${paths.project} and ${paths.workerWorktree}`,
+    `Investigate freely — take as long as you need. You are enabled to probe anything available:`,
+    `- Worker thinking / tools / errors: open ${paths.workerSessionFile} (full OpenCode dump)`,
+    `- Work history: ${paths.dialogueFile}, ${paths.handoffHistoryFile}, prior ${paths.handoffFile} versions in history`,
+    `- Work output (repo): files under ${paths.workerWorktree} and ${paths.project}; git vs ${paths.integrationBranch} / ${paths.workerBranch}`,
+    `- Host sensors: ${paths.memoryFile}, ${paths.materialsFile} (inventory of all of the above)`,
+    `- Mission / lasting notes: ${paths.missionFile}, ${paths.standardsFile} (you may edit standards)`,
+    `- Optional telemetry: ${paths.metricsFile}, ${paths.eventsLogFile}`,
+    `Do not guess worker behavior from summaries alone when the full dump or tree is available.`,
     ``,
-    `Handoff (first-class artifact):`,
-    `- Write the engineer assignment by overwriting ${paths.handoffFile}.`,
-    `- The worker receives only that file's body plus a short path footer — not your analysis.`,
-    `- Prefer one coherent unit of work with a clear definition of done.`,
-    `- You may update ${paths.standardsFile} with lasting quality notes.`,
+    `After you are satisfied (or know what is still unknown), overwrite ${paths.handoffFile} with the next engineer assignment.`,
+    `The worker receives only that file's body — not your private analysis.`,
     ``,
-    `Git is not your ceremony:`,
-    `- Host merges worker commits by default after you review them.`,
-    `- Optional reply lines only when needed: HOST: DONE | STOP | REPASS`,
-    `- Omit host lines to continue (default). Take as long as you need to review session dump and real code.`,
+    `Git is host-owned: merges by default after you review. Optional reply lines: HOST: DONE | STOP | REPASS. Omit to continue.`,
   ].join("\n")
 }
 
@@ -53,27 +51,29 @@ export function buildSystemSitrep(f: SystemPromptFacts): string {
   const p = f.paths
   const lines: string[] = [
     f.repass
-      ? `Cycle ${f.cycle} — same-cycle re-pass materials (worker just shipped; refine or keep handoff).`
-      : `Cycle ${f.cycle} — materials ready.`,
+      ? `Cycle ${f.cycle} — same-cycle re-pass. Materials refreshed after worker ship.`
+      : `Cycle ${f.cycle} — materials ready for your review.`,
     ``,
-    `Paths:`,
-    `- handoff (write assignment here): ${p.handoffFile}`,
-    `- worker_session: ${p.workerSessionFile}`,
-    `- memory: ${p.memoryFile}`,
-    `- mission: ${p.missionFile}`,
-    `- dialogue: ${p.dialogueFile}`,
-    `- standards: ${p.standardsFile}`,
+    `Start with the host inventory (full map of artifacts + git pointers):`,
+    `- ${p.materialsFile}`,
+    ``,
+    `Core probe targets:`,
+    `- worker thinking/tools: ${p.workerSessionFile}`,
+    `- host sensors (git/verify): ${p.memoryFile}`,
+    `- worktree (code): ${p.workerWorktree}`,
     `- project: ${p.project}`,
-    `- worker worktree: ${p.workerWorktree}`,
+    `- dialogue / handoff history: ${p.dialogueFile} · ${p.handoffHistoryFile}`,
+    `- write next assignment: ${p.handoffFile}`,
+    `- mission / standards: ${p.missionFile} · ${p.standardsFile}`,
     ``,
-    `Facts:`,
+    `Sensor facts:`,
     `- empty_commit_streak: ${f.emptyCommitStreak}`,
-    `- worker_session_id: ${f.lastWorkerProbe?.sessionID ?? "(see MEMORY)"}`,
+    `- worker_session_id: ${f.lastWorkerProbe?.sessionID ?? "(see MATERIALS / MEMORY)"}`,
   ]
 
   if (f.lastWorkerProbe) {
     lines.push(
-      `- worker_probe: messages=${f.lastWorkerProbe.messageCount} tools=${f.lastWorkerProbe.toolCalls} errors=${f.lastWorkerProbe.toolErrors} status=${f.lastWorkerProbe.status}`,
+      `- worker_probe: messages=${f.lastWorkerProbe.messageCount} tools=${f.lastWorkerProbe.toolCalls} errors=${f.lastWorkerProbe.toolErrors} status=${f.lastWorkerProbe.status} chars=${f.lastWorkerProbe.chars}`,
     )
   } else {
     lines.push(`- worker_probe: (none yet)`)
@@ -89,34 +89,37 @@ export function buildSystemSitrep(f: SystemPromptFacts): string {
       `- last_ship: cycle=${f.lastShip.cycle} committed=${f.lastShip.committed} ahead=${f.lastShip.ahead} verify=${v}`,
     )
     if (f.lastShip.verify && !f.lastShip.verify.ok) {
-      lines.push(`- host note: last verify FAILED — details in MEMORY if you care.`)
+      lines.push(`- last verify FAILED — full output in MEMORY if you want it.`)
     }
   } else {
     lines.push(`- last_ship: (none yet)`)
   }
 
   if (f.hasReviewPack || f.lastWorkerProbe) {
-    lines.push(`- review materials: WORKER_SESSION + MEMORY review pack present`)
+    lines.push(`- review pack present in MEMORY (git summary + probe pointer)`)
   } else if (f.cycle > 1) {
-    lines.push(`- review materials: no new commits last cycle (streak=${f.emptyCommitStreak})`)
+    lines.push(`- no new commits last cycle (streak=${f.emptyCommitStreak}) — still open session dump / tree if useful`)
   }
 
   if (f.cycle === 1 && !f.resumeFrom && !f.repass) {
-    lines.push(``, `Kickoff: learn mission + codebase, then write first handoff.`)
+    lines.push(``, `Kickoff: learn mission + codebase with tools, then write first handoff.`)
   } else if (f.cycle === 1 && f.resumeFrom && !f.repass) {
-    lines.push(``, `Resume: reconstruct from dialogue/files/git, then write handoff.`)
+    lines.push(``, `Resume: reconstruct from materials + git + dialogue, then write handoff.`)
   } else if (!f.repass) {
-    lines.push(``, `Review last cycle materials, then write the next handoff (or HOST: DONE / STOP).`)
+    lines.push(
+      ``,
+      `Review worker session dump, real code, and git output as deeply as you need, then write ${p.handoffFile} (or HOST: DONE / STOP).`,
+    )
   } else {
-    lines.push(``, `Update ${p.handoffFile} if the engineer needs a refined pass; or HOST: DONE / STOP.`)
+    lines.push(``, `Refine ${p.handoffFile} after this pass, or HOST: DONE / STOP.`)
   }
 
   if (f.lastWorkerReply && !f.repass) {
     const excerpt = f.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 500)
-    lines.push(``, `Worker last message (excerpt):`, `"""${excerpt}"""`)
+    lines.push(``, `Worker last chat message (excerpt only — session dump is authoritative):`, `"""${excerpt}"""`)
   }
 
-  lines.push(``, `Investigate with tools as needed, then write ${p.handoffFile}.`)
+  lines.push(``, `Probe anything listed in MATERIALS.md. When ready, write ${p.handoffFile}.`)
   return lines.join("\n")
 }
 
@@ -277,21 +280,26 @@ export function systemFactNotes(args: {
 }): string[] {
   const p = args.paths
   return [
+    `materials_index: ${p.materialsFile}`,
     `mission: ${p.missionFile}`,
-    `dialogue: ${p.dialogueFile} (prefer latest entries; file is append-only)`,
+    `dialogue: ${p.dialogueFile} (append-only work history)`,
     `standards: ${p.standardsFile} (optional lead notes — you may edit)`,
-    `handoff: ${p.handoffFile} (engineer assignment — lead overwrites each cycle)`,
-    `worker_session_dump: ${p.workerSessionFile} (FULL OpenCode worker session — open this)`,
+    `handoff: ${p.handoffFile} (write next engineer assignment)`,
+    `handoff_history: ${p.handoffHistoryFile}`,
+    `worker_session_dump: ${p.workerSessionFile} (FULL worker OpenCode session — open this)`,
     `memory: ${p.memoryFile}`,
+    `metrics: ${p.metricsFile}`,
+    `events: ${p.eventsLogFile}`,
     `project: ${p.project}`,
     `worker_worktree: ${p.workerWorktree}`,
     `worker_session_id: ${args.workerSessionID}`,
     `integration: ${p.integrationBranch}`,
+    `worker_branch: ${p.workerBranch}`,
     `empty_commit_streak: ${args.emptyCommitStreak}`,
     `last_host_signal: ${args.lastVerdict || "(none — default continue/merge)"}`,
     `cycle: ${args.cycle}`,
     args.lastWorkerProbe
-      ? `worker_probe: messages=${args.lastWorkerProbe.messageCount} tools=${args.lastWorkerProbe.toolCalls} errors=${args.lastWorkerProbe.toolErrors} status=${args.lastWorkerProbe.status}`
+      ? `worker_probe: messages=${args.lastWorkerProbe.messageCount} tools=${args.lastWorkerProbe.toolCalls} errors=${args.lastWorkerProbe.toolErrors} status=${args.lastWorkerProbe.status} chars=${args.lastWorkerProbe.chars}`
       : `worker_probe: (none yet — first cycle)`,
     args.lastShip
       ? `last_ship: cycle=${args.lastShip.cycle} committed=${args.lastShip.committed} ahead=${args.lastShip.ahead} verify=${args.lastShip.verify ? (args.lastShip.verify.ok ? "PASS" : "FAIL") : "n/a"}`

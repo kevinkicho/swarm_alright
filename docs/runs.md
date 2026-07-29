@@ -17,8 +17,10 @@
   - `MISSION.md` — the mission (directive, or system-inferred)
   - `DIALOGUE.md` — durable append-only conversation log (system + worker)
   - `STANDARDS.md` — optional lead notes (system may edit across cycles)
+  - `MATERIALS.md` — host inventory of worker artifacts, history, and repo/git pointers
   - `HANDOFF.md` — engineer assignment (system overwrites each cycle; worker prompt source)
-  - `WORKER_SESSION.md` — full OpenCode dump of the worker session (host-written)
+  - `HANDOFF_HISTORY.md` — prior handoffs (append-only)
+  - `WORKER_SESSION.md` — full OpenCode dump of the worker session (host-written; up to ~200k chars)
   - `MEMORY.md` — host sensors + short pointers to the session dump + git/verify
   - `metrics.jsonl` — append-only cycle trajectory (signal, merge, ship, probe, duration)
   - `events.log` — every phase, tool call, reply, and error

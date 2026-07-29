@@ -39,6 +39,12 @@ export type RunPaths = {
   workerSessionFile: string
   /** First-class engineer assignment written by the system lead. */
   handoffFile: string
+  /** Append-only prior handoffs (work history). */
+  handoffHistoryFile: string
+  /** Host inventory map for system investigation. */
+  materialsFile: string
+  metricsFile: string
+  eventsLogFile: string
   memoryFile: string
   baseBranch: string
   integrationBranch: string

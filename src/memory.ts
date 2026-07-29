@@ -18,6 +18,8 @@ export type RunPaths = {
   dialogue?: string
   mission?: string
   handoff?: string
+  materials?: string
+  handoffHistory?: string
 }
 
 export function memoryPath(runDir: string): string {
@@ -90,10 +92,12 @@ export function buildMemoryDoc(input: {
     `- user branch (never touch): ${input.paths.baseBranch}`,
   ]
   if (input.paths.workerWorktree) lines.push(`- worker worktree: ${input.paths.workerWorktree}`)
+  if (input.paths.materials) lines.push(`- materials index (start here): ${input.paths.materials}`)
   if (input.paths.mission) lines.push(`- mission: ${input.paths.mission}`)
   if (input.paths.dialogue) lines.push(`- dialogue: ${input.paths.dialogue}`)
   if (input.paths.standards) lines.push(`- standards: ${input.paths.standards}`)
   if (input.paths.handoff) lines.push(`- handoff (write engineer assignment here): ${input.paths.handoff}`)
+  if (input.paths.handoffHistory) lines.push(`- handoff history: ${input.paths.handoffHistory}`)
   lines.push(
     "",
     "## Host notes (sensors)",
@@ -102,16 +106,17 @@ export function buildMemoryDoc(input: {
   )
   if (input.reviewSections?.length) {
     lines.push("## Review pack (host)")
-    lines.push("Git summary, optional verify, and worker session trace. Facts only.")
+    lines.push("Git summary, optional verify, and worker session pointer. Facts only.")
+    lines.push("Open the full WORKER_SESSION dump and real files for informed review.")
     lines.push("")
     for (const s of input.reviewSections) lines.push(s, "")
   }
   lines.push(
     "## How to use (system lead)",
-    "- These are facts, not instructions. Investigate with tools; decide quality and next work yourself.",
+    "- Open MATERIALS.md for the full inventory of worker artifacts, history, and repo pointers.",
+    "- Take as long as you need: session dump, git, and real files under the worktree.",
     "- Overwrite HANDOFF.md with the engineer assignment (worker sees only that file).",
-    "- Host merges by default after you review; optional reply lines: HOST: DONE | STOP | REPASS.",
-    "- You may edit STANDARDS.md to remember quality bars across cycles.",
+    "- Host merges by default after you review; optional: HOST: DONE | STOP | REPASS.",
     "",
   )
   return lines.join("\n")

@@ -152,8 +152,9 @@ export async function captureWorkerSession(
     sessionID: worker.sessionID,
     directory: worker.directory,
     dumpPath: deps.workerSessionFile,
-    maxChars: 120_000,
-    messageLimit: 100,
+    // Prefer fuller dumps so the system lead can review thinking + tools in depth.
+    maxChars: 200_000,
+    messageLimit: 150,
   })
   deps.log(
     `  [host:session] worker probe: messages=${meta.messageCount} tools=${meta.toolCalls} errors=${meta.toolErrors} status=${meta.status} → ${meta.dumpPath}` +

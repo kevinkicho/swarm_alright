@@ -47,6 +47,10 @@ async function main() {
     standardsFile: path.join(tmp, "STANDARDS.md"),
     workerSessionFile: path.join(tmp, "WORKER_SESSION.md"),
     handoffFile: path.join(tmp, "HANDOFF.md"),
+    handoffHistoryFile: path.join(tmp, "HANDOFF_HISTORY.md"),
+    materialsFile: path.join(tmp, "MATERIALS.md"),
+    metricsFile: path.join(tmp, "metrics.jsonl"),
+    eventsLogFile: path.join(tmp, "events.log"),
     memoryFile: path.join(tmp, "MEMORY.md"),
     baseBranch: "main",
     integrationBranch: "swarm/t/base",
@@ -60,7 +64,7 @@ async function main() {
     assert.match(id, /technical lead/i)
   })
 
-  check("sitrep is materials-only (no dual-audience template)", () => {
+  check("sitrep points at materials inventory (no dual-audience template)", () => {
     const sit = prompts.buildSystemSitrep({
       cycle: 2,
       hasReviewPack: true,
@@ -71,8 +75,8 @@ async function main() {
       paths,
     })
     assert.equal(/Craft ### TO_WORKER|Reply shape|### HOST/i.test(sit), false)
-    assert.match(sit, /worker_session:/)
-    assert.match(sit, /empty_commit_streak/)
+    assert.match(sit, /MATERIALS\.md|empty_commit_streak/)
+    assert.match(sit, /WORKER_SESSION|worker thinking/i)
   })
 
   check("parseHostSignal empty / DONE / VERDICT / REPASS", () => {
@@ -220,6 +224,50 @@ async function main() {
     const sc = scorecard.scoreTrajectory([], { runId: "x", project: tmp, runDir: tmp })
     assert.equal(sc.cycles, 0)
     assert.match(sc.flags.join(" "), /no metrics/i)
+  })
+
+  const materials = await load("materials.ts")
+
+  check("MATERIALS index lists session, history, and repo paths", () => {
+    const p = paths
+    materials.writeMaterialsIndex({
+      paths: p,
+      cycle: 2,
+      phase: "system",
+      emptyCommitStreak: 0,
+      lastShip: { cycle: 1, committed: true, ahead: 1, rehomed: 0 },
+      lastWorkerProbe: {
+        role: "worker",
+        sessionID: "s1",
+        directory: tmp,
+        messageCount: 3,
+        toolCalls: 2,
+        toolErrors: 0,
+        status: "idle",
+        dumpPath: p.workerSessionFile,
+        chars: 1000,
+      },
+      lastSyncOk: true,
+      lastSyncDetail: "",
+    })
+    const body = fs.readFileSync(p.materialsFile, "utf8")
+    assert.match(body, /WORKER_SESSION|worker_session|session dump/i)
+    assert.match(body, /worktree/i)
+    assert.match(body, /HANDOFF_HISTORY|handoff history/i)
+    assert.match(body, /git log/)
+    materials.appendHandoffHistory(
+      p.handoffHistoryFile,
+      2,
+      "Implement the foo module with unit tests and a clear definition of done.",
+    )
+    assert.match(fs.readFileSync(p.handoffHistoryFile, "utf8"), /foo module/)
+  })
+
+  check("system identity enables full probe (not time pressure)", () => {
+    const id = prompts.buildSystemIdentity(paths)
+    assert.match(id, /as long as you need|Investigate freely/i)
+    assert.match(id, /session dump|WORKER_SESSION|workerSessionFile/i)
+    assert.match(id, /MATERIALS|materialsFile/i)
   })
 
   // cleanup

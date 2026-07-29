@@ -48,6 +48,14 @@ import {
   type CycleMetric,
 } from "./metrics.ts"
 import {
+  writeMaterialsIndex,
+  appendHandoffHistory,
+  materialsPath,
+  handoffHistoryPath,
+  metricsFilePath,
+  eventsLogPath,
+} from "./materials.ts"
+import {
   hostSyncWorker,
   hostCommitWorker,
   buildReviewPack,
@@ -120,6 +128,10 @@ export class Run {
       standardsFile: this.standardsFile,
       workerSessionFile: this.workerSessionFile,
       handoffFile: this.handoffFile,
+      handoffHistoryFile: handoffHistoryPath(this.runDir),
+      materialsFile: materialsPath(this.runDir),
+      metricsFile: metricsFilePath(this.runDir),
+      eventsLogFile: eventsLogPath(this.runDir),
       memoryFile: memoryPath(this.runDir),
       baseBranch: this.baseBranch,
       integrationBranch: this.integrationBranch,
@@ -490,12 +502,29 @@ export class Run {
         dialogue: p.dialogueFile,
         standards: p.standardsFile,
         handoff: p.handoffFile,
+        materials: p.materialsFile,
+        handoffHistory: p.handoffHistoryFile,
       },
       hostNotes,
       reviewSections,
     })
     writeMemory(p.memoryFile, body)
     this.log(`  [host:memory] wrote ${p.memoryFile} (${phase})`)
+  }
+
+  /** Host inventory so the lead can probe worker artifacts, history, and repo output. */
+  private writeMaterials(phase: string): void {
+    writeMaterialsIndex({
+      paths: this.paths(),
+      cycle: this.cycle,
+      phase,
+      emptyCommitStreak: this.emptyCommitStreak,
+      lastShip: this.lastShip,
+      lastWorkerProbe: this.lastWorkerProbe,
+      lastSyncOk: this.lastSyncOk,
+      lastSyncDetail: this.lastSyncDetail,
+    })
+    this.log(`  [host:materials] wrote ${this.paths().materialsFile} (${phase})`)
   }
 
   /**
@@ -532,6 +561,7 @@ export class Run {
     opts: { anyCommits: boolean; reviewSections: string[]; repass?: boolean },
   ): Promise<{ text: string; secs: number; signal: HostSignal; handoff: string; handoffFromReply: boolean }> {
     const identity = buildSystemIdentity(this.paths())
+    this.writeMaterials(opts.repass ? "system-repass" : "system")
     this.writeHostMemory(
       opts.repass ? "system-repass" : "system",
       systemFactNotes({
@@ -546,7 +576,7 @@ export class Run {
       opts.reviewSections,
     )
 
-    // One deep lead turn — host does not truncate review time.
+    // One deep lead turn — host never caps review time; materials are all on disk.
     let systemTurn = await runTurn(
       deps,
       system,
@@ -590,6 +620,11 @@ export class Run {
       handoff = readHandoffFile(this.handoffFile)
       if (needsHandoffRewrite(handoff) && resolved.body.length >= 40) handoff = resolved.body
       handoffFromReply = handoffFromReply || resolved.fromReply
+    }
+
+    // Preserve assignment history for multi-cycle informed review.
+    if (!needsHandoffRewrite(handoff)) {
+      appendHandoffHistory(this.paths().handoffHistoryFile, this.cycle, handoff)
     }
 
     const signal = parseHostSignal(systemTurn.text)
