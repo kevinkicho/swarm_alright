@@ -145,6 +145,61 @@ async function main() {
     assert.notEqual(cfg.DEFAULT_MODELS.system, cfg.DEFAULT_MODELS.worker)
   })
 
+  const scorecard = await load("scorecard.ts")
+
+  check("scoreTrajectory ship rate and flags", () => {
+    const rows = [
+      {
+        ts: new Date().toISOString(),
+        runId: "t",
+        cycle: 1,
+        secs: 30,
+        phase_end: "idle",
+        signal: "CONTINUE",
+        signal_default: true,
+        empty_commit_streak: 0,
+        any_commits_reviewed: false,
+        merged: false,
+        handoff_chars: 80,
+        handoff_from_reply: false,
+        repass: false,
+        worker_ships: 1,
+        last_ship: { committed: true, ahead: 1, rehomed: 0, verify: "PASS" },
+        worker_probe: { messages: 4, tools: 10, errors: 0, status: "idle" },
+      },
+      {
+        ts: new Date().toISOString(),
+        runId: "t",
+        cycle: 2,
+        secs: 40,
+        phase_end: "idle",
+        signal: "CONTINUE",
+        signal_default: true,
+        empty_commit_streak: 0,
+        any_commits_reviewed: true,
+        merged: true,
+        handoff_chars: 90,
+        handoff_from_reply: false,
+        repass: false,
+        worker_ships: 1,
+        last_ship: { committed: true, ahead: 1, rehomed: 0, verify: "PASS" },
+        worker_probe: { messages: 5, tools: 8, errors: 1, status: "idle" },
+      },
+    ]
+    const sc = scorecard.scoreTrajectory(rows, { runId: "t", project: tmp, runDir: tmp })
+    assert.equal(sc.cycles, 2)
+    assert.equal(sc.ship_commits, 2)
+    assert.equal(sc.merges, 1)
+    assert.equal(sc.ship_rate, 100)
+    assert.ok(sc.flags.length >= 1)
+  })
+
+  check("scorecard empty metrics flag", () => {
+    const sc = scorecard.scoreTrajectory([], { runId: "x", project: tmp, runDir: tmp })
+    assert.equal(sc.cycles, 0)
+    assert.match(sc.flags.join(" "), /no metrics/i)
+  })
+
   // cleanup
   try {
     fs.rmSync(tmp, { recursive: true, force: true })

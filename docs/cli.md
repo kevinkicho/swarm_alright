@@ -45,7 +45,7 @@ Start an autonomous run on a project folder. Runs forever until the system says
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--directive "..."` | _(none)_ | Mission for the run. Without it, the system infers the mission from the project itself |
-| `--system-model M` | `deepseek-v4-flash` | System / human-lead agent |
+| `--system-model M` | `deepseek-v4-pro` | System / human-lead agent (stronger principal) |
 | `--worker-model M` | `deepseek-v4-flash` | Worker / implementer agent |
 | `--model M` | — | Shorthand: same model for both roles |
 | `--api-key K` | env | Ollama Cloud key (else `OLLAMA_API_KEY`, `.env`, or `~/.swarm/.env`) |
@@ -79,7 +79,8 @@ process is gone).
 
 ## swarm tally [run-id]
 
-Situation tally from `events.log` (offline; no OpenCode server).
+Situation tally from `events.log` (offline; no OpenCode server). When
+`metrics.jsonl` exists, also prints a **trajectory scorecard** per run.
 
 | Flag | Description |
 | --- | --- |
@@ -91,8 +92,20 @@ Situation tally from `events.log` (offline; no OpenCode server).
 Also available as `swarm doctor --tally [run-id]`.
 
 Reports: per-run snapshot, grand funnel (CONTINUE/DONE/STOP/skip/maxBuffer/…),
-fail reason tallies, streaks, ahead-at-outcome, turn times, and situation codes
-(S1–S10).
+fail reason tallies, streaks, ahead-at-outcome, turn times, situation codes
+(S1–S10), and trajectory scorecards from `metrics.jsonl`.
+
+## swarm scorecard [run-id]
+
+Trajectory scorecard from `metrics.jsonl` only (ship rate, merge rate, signals,
+verify, tool errors, handoff size, operator flags). Offline; no OpenCode server.
+
+| Flag | Description |
+| --- | --- |
+| _(no id)_ | Score the **N most recent** registry runs (default 5) |
+| `[run-id]` | One run only |
+| `--recent N` | How many recent runs when no id (default 5) |
+| `--json` | Machine-readable JSON |
 
 ## swarm watch [run-id]
 

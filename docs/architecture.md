@@ -117,6 +117,7 @@ Restart **reuses the same run id**, worktrees, and run folder.
 | `run-host-git.ts` | Sync, re-home, commit, accept (default merge), review pack |
 | `run-turn.ts` | OpenCode turn + optional `system` identity + stall/rotate + session capture |
 | `metrics.ts` | Append-only `metrics.jsonl` trajectory rows |
+| `scorecard.ts` | Aggregate trajectories → ship/merge rates + operator flags |
 | `session-probe.ts` | Full worker OpenCode dump → WORKER_SESSION.md |
 | `opencode.ts` | SDK server/client/EventBus |
 | `git.ts` | Git primitives |

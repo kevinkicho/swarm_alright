@@ -7,6 +7,7 @@ import path from "node:path"
 import * as Registry from "./registry.ts"
 import { frameBox } from "./pick.ts"
 import { Style } from "./style.ts"
+import { formatScorecardLines, scorecardFromRecord } from "./scorecard.ts"
 
 export type SituationCounts = {
   cycle_start: number
@@ -453,6 +454,16 @@ export function printTally(opts?: { runId?: string; recent?: number; json?: bool
   console.log(frameBox("cycle fail reasons", reasonLines("fail", fails), width).join("\n"))
   console.log()
 
+  // Trajectory scorecards (metrics.jsonl) — modern eval-side view
+  for (const t of runs) {
+    const rec = Registry.load(t.id) ?? Registry.loadFromDisk(t.project, t.id)
+    if (!rec) continue
+    const sc = scorecardFromRecord(rec)
+    if (!sc.cycles) continue
+    console.log(frameBox(`trajectory — ${t.id}`, formatScorecardLines(sc), width).join("\n"))
+    console.log()
+  }
+
   // Per-run detail
   for (const t of runs) {
     const lines: string[] = [
@@ -490,7 +501,7 @@ export function printTally(opts?: { runId?: string; recent?: number; json?: bool
         "S5 fetch hang  S6 cold start  S7 CONTINUE loop  S8 rehome skip",
         "S9 Bad Request/overflow  S10 unaudited pile-up",
         "",
-        Style.tip("swarm tally [run-id]   |   swarm tally --recent 10   |   swarm tally --json"),
+        Style.tip("swarm tally [run-id]   |   swarm scorecard [run-id]   |   --json"),
       ],
       width,
     ).join("\n"),

@@ -22,6 +22,7 @@ Usage:
   swarm doctor [folder]          Diagnose branch mess, dirty root, dead worktrees, tips
   swarm doctor --tally [run-id]  Situation tally from events.log (recent 5, or one run)
   swarm tally [run-id]           Same as doctor --tally (--recent N, --json)
+  swarm scorecard [run-id]       Trajectory scorecard from metrics.jsonl (--recent N, --json)
   swarm run <folder> [options]  Start a run on a project folder
   swarm restart [run-id]         Resume a past run (reuses same run id, worktrees, run folder)
                                 --yes keeps models
@@ -45,8 +46,8 @@ run options:
   --max-cycles N       Stop after N cycles
   --detach             Background (survives terminal close)
 
-Pattern: system (human lead) messages the worker → worker works until idle →
-host commits → system reads dialogue + session trace + git summary → loop.
+Pattern: materials sitrep → lead writes HANDOFF.md → default merge → worker →
+host commits + probes WORKER_SESSION + metrics.jsonl → loop.
 No team chat or multi-agent contracts. Restart reuses the same run id + worktrees.
 `
 
@@ -327,6 +328,15 @@ async function main(): Promise<void> {
     case "tally": {
       const { printTally } = await import("./tally.ts")
       printTally({
+        runId: args.positional[0],
+        recent: args.flags.recent ? Number(args.flags.recent) : 5,
+        json: args.flags.json === "true" || !!args.flags.json,
+      })
+      break
+    }
+    case "scorecard": {
+      const { printScorecard } = await import("./scorecard.ts")
+      printScorecard({
         runId: args.positional[0],
         recent: args.flags.recent ? Number(args.flags.recent) : 5,
         json: args.flags.json === "true" || !!args.flags.json,

@@ -418,6 +418,22 @@ export class Run {
           failures++
           const msg = err instanceof Error ? err.message : String(err)
           this.log(`cycle ${this.cycle} failed (${failures} in a row): ${msg.slice(0, 500)}`)
+          // Trajectory still records failed cycles for offline evals.
+          this.recordCycleMetric({
+            secs: 0,
+            phase_end: "errored",
+            signal: (this.lastVerdict as HostSignal) || "CONTINUE",
+            signal_default: false,
+            empty_commit_streak: this.emptyCommitStreak,
+            any_commits_reviewed: false,
+            merged: false,
+            handoff_chars: 0,
+            handoff_from_reply: false,
+            repass: false,
+            worker_ships: 0,
+            last_ship: shipMetricSlice(this.lastShip),
+            worker_probe: probeMetricSlice(this.lastWorkerProbe),
+          })
           if (failures >= 5) throw new Error(`too many consecutive failures, giving up`)
           await sleep(15_000)
         }

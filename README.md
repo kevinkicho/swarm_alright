@@ -46,7 +46,7 @@ Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.
 | `swarm` | Interactive hub |
 | `swarm run <folder>` | Start a run |
 | `swarm restart [id]` | Resume same id / worktrees |
-| `swarm status` / `doctor` / `tally` | Ops snapshots |
+| `swarm status` / `doctor` / `tally` / `scorecard` | Ops snapshots + trajectory evals |
 | `swarm watch` / `logs` / `tui` | Live view / attach |
 | `swarm stop` / `clean` | Shutdown / prune |
 

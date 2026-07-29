@@ -9,6 +9,7 @@ import { dirtyPaths, findLatestSwarmBase, listSwarmRunIds, commitsAhead, branchE
 import { connectClient, sessionStatus } from "./opencode.ts"
 import { frameBox } from "./pick.ts"
 import { Style } from "./style.ts"
+import { scorecardOneLiner } from "./scorecard.ts"
 
 function lastLogLines(runDir: string, n = 8): string[] {
   try {
@@ -91,10 +92,10 @@ export async function printStatus(runId?: string): Promise<void> {
     )
     if (rehome) lines.push(Style.kv("log:", Style.logLine(rehome.replace(/\s+/g, " ").slice(0, 100))))
     try {
-      const mpath = path.join(r.runDir, "metrics.jsonl")
-      if (fs.existsSync(mpath)) {
-        const n = fs.readFileSync(mpath, "utf8").split(/\r?\n/).filter((l) => l.trim()).length
-        lines.push(Style.kv("metrics:", `${n} cycle row(s) in metrics.jsonl`))
+      const one = scorecardOneLiner(r.runDir)
+      if (one) lines.push(Style.kv("trajectory:", Style.muted(one)))
+      else if (fs.existsSync(path.join(r.runDir, "metrics.jsonl"))) {
+        lines.push(Style.kv("metrics:", Style.muted("file present but empty")))
       }
     } catch {}
 
