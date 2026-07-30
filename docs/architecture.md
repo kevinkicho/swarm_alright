@@ -72,12 +72,12 @@ Project root is **not** under `.swarm/worktrees/`. Only run artifacts live in `.
 
 ## Cycle
 
-1. Sense — git `baseline..HEAD` + session materials  
+1. Sense — git `baseline..HEAD` + session materials (recent probe window)  
 2. System turn — deep review; write HANDOFF  
-3. Accept baseline (unless STOP/HOLD)  
-4. Worker on project root → host commit → probe/archive  
-5. Metrics + MEMORY  
-6. Loop  
+3. Host commits any **lead dirty** files, then accepts baseline (unless STOP/HOLD)  
+4. Worker on project root → host commit → probe/archive; rotate worker on empty ship or saturated session  
+5. Metrics + `cycle_summary` + MEMORY  
+6. Loop (sessions/ pruned to newest ~48 dumps)  
 
 ## Git
 

@@ -53,6 +53,7 @@ import {
   appendShipLog,
   writeSessionIndex,
   archiveMemorySnapshot,
+  pruneSessionArchives,
   sessionsDir,
   sessionIndexPath,
   shipLogPath,
@@ -60,13 +61,21 @@ import {
 import {
   hostSyncWorker,
   hostCommitWorker,
+  hostCommitIfDirty,
   buildReviewPack,
   hostApplyVerdict,
   writeBaseline,
   readBaseline,
   type HostGitCtx,
 } from "./run-host-git.ts"
-import { runTurn, captureWorkerSession, isWorkerProbeFresh, type TurnDeps } from "./run-turn.ts"
+import {
+  runTurn,
+  captureWorkerSession,
+  isWorkerProbeFresh,
+  rotateSession,
+  shouldRotateWorker,
+  type TurnDeps,
+} from "./run-turn.ts"
 
 export type { RunOptions } from "./run-types.ts"
 
@@ -102,6 +111,9 @@ export class Run {
   private lastShip: ShipResult | null = null
   private lastWorkerProbe: SessionProbeMeta | null = null
   private readonly stallMs = 20 * 60_000
+  /** Dedupe rapid duplicate tool log lines from OpenCode event fan-out. */
+  private lastToolLogKey = ""
+  private lastToolLogAt = 0
 
   constructor(opts: RunOptions) {
     this.id = opts.resumeFrom ?? Registry.newId()
@@ -243,8 +255,39 @@ export class Run {
       meta,
     })
     writeSessionIndex(this.runDir)
+    const pruned = pruneSessionArchives(this.runDir, 48)
+    if (pruned.removed) this.log(`  [host:log] pruned ${pruned.removed} old session archive(s)`)
     if (dest) this.log(`  [host:log] archived worker session (${tag}) → ${dest}`)
     return meta
+  }
+
+  /** If system (or anyone) dirtied the project root, commit so DONE never leaves work untracked. */
+  private async commitSystemDirtyIfNeeded(label: string): Promise<boolean> {
+    const r = await hostCommitIfDirty(this.gitCtx(), "system", label)
+    if (r.committed) {
+      this.lastShip = {
+        cycle: this.cycle,
+        committed: true,
+        ahead: r.ahead,
+        rehomed: 0,
+      }
+    }
+    return r.committed
+  }
+
+  private async maybeRotateWorker(
+    deps: TurnDeps,
+    worker: AgentRef,
+    reason: string,
+  ): Promise<void> {
+    this.log(`  [host] rotating worker session — ${reason}`)
+    try {
+      await rotateSession(deps, worker)
+    } catch (err) {
+      this.log(
+        `  [host] worker rotate failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
+      )
+    }
   }
 
   log(msg: string): void {
@@ -282,6 +325,9 @@ export class Run {
       const part = p.part
       const tool = part.tool ?? "tool"
       const title = part.state?.title ?? ""
+      const status = String(part.state?.status ?? "")
+      // Skip intermediate spam; log completed/error (and bare starts without status).
+      if (status && status !== "completed" && status !== "error" && status !== "running") return
       const input = part.state?.input ?? part.input
       let detail = String(title || tool).replace(/\s+/g, " ").trim()
       if (tool === "bash" || /bash|shell|cmd/i.test(String(tool))) {
@@ -296,6 +342,11 @@ export class Run {
         const pathHint = input.path ?? input.filePath ?? input.file ?? input.target
         if (pathHint) detail = `${tool} ${String(pathHint)}`
       }
+      const key = `${tool}|${detail}|${status}`.slice(0, 420)
+      const now = Date.now()
+      if (key === this.lastToolLogKey && now - this.lastToolLogAt < 800) return
+      this.lastToolLogKey = key
+      this.lastToolLogAt = now
       this.log(`  [tool] ${detail.slice(0, 400)}`)
     } else if (evt.type === "session.error") {
       const msg = p?.error?.data?.message ?? p?.error?.message ?? JSON.stringify(p?.error ?? p)
@@ -716,11 +767,20 @@ export class Run {
     label: string,
   ): Promise<void> {
     this.heartbeat("worker")
-    this.log(`[cycle ${this.cycle}] host sync worker from integration...`)
+    this.log(`[cycle ${this.cycle}] host prepare root workspace...`)
     const sync = await hostSyncWorker(this.gitCtx())
     this.lastSyncOk = sync.ok
     this.lastSyncDetail = sync.detail
     this.throwIfStopped()
+
+    // Rotate before the turn if last probe already at capacity (fresh episode).
+    if (shouldRotateWorker(this.lastWorkerProbe, false, this.emptyCommitStreak)) {
+      await this.maybeRotateWorker(
+        deps,
+        worker,
+        `probe messages=${this.lastWorkerProbe?.messageCount ?? 0} (cap threshold)`,
+      )
+    }
 
     this.log(`[cycle ${this.cycle}] worker${label}...`)
     const workerId = buildWorkerIdentity(this.paths())
@@ -739,6 +799,7 @@ export class Run {
     this.log(`[cycle ${this.cycle}] host auto-commit dirty project root...`)
     const ship = await hostCommitWorker(this.gitCtx())
     this.lastShip = { cycle: this.cycle, ...ship }
+    if (ship.committed) this.emptyCommitStreak = 0
     this.throwIfStopped()
     appendShipLog({
       runDir: this.runDir,
@@ -762,6 +823,18 @@ export class Run {
         : `worker_probe: (failed)`,
       `worker_reply_excerpt: ${this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 400)}`,
     ])
+
+    // After empty ship or saturated probe: rotate so the next cycle is a fresh episode.
+    const streakIfEmpty = this.emptyCommitStreak + (!ship.committed ? 1 : 0)
+    if (shouldRotateWorker(this.lastWorkerProbe, !ship.committed, streakIfEmpty)) {
+      await this.maybeRotateWorker(
+        deps,
+        worker,
+        !ship.committed
+          ? `empty ship (streak will be ${streakIfEmpty})`
+          : `post-ship probe messages=${this.lastWorkerProbe?.messageCount ?? 0}`,
+      )
+    }
   }
 
   private recordCycleMetric(partial: Omit<CycleMetric, "ts" | "runId" | "cycle" | "models">): void {
@@ -829,34 +902,40 @@ export class Run {
     const mergePlan = effectiveMergeSignal(sys.signal, defaultMerge)
     if (sys.handoffFromReply) handoffFromReply = true
 
-    // Merge after review when policy allows (default merge or explicit continue family).
-    if (this.cycle > 1) {
-      if (anyCommits) {
-        this.emptyCommitStreak = 0
-        this.heartbeat("merge")
-        const reason = sys.text.replace(/\s+/g, " ").slice(0, 200)
-        this.log(
-          `  [host] signal: ${mergePlan.signal}${mergePlan.defaulted ? " (default)" : ""} merge=${mergePlan.merge} — ${reason || "(no text)"}`,
-        )
-        this.lastVerdict = mergePlan.signal
-        const apply = await hostApplyVerdict(this.gitCtx(), mergePlan.signal, reason, {
-          doMerge: mergePlan.merge,
-        })
-        merged = apply.merged
-        if (sys.signal === "DONE" || sys.signal === "STOP") {
-          this.log(`[cycle ${this.cycle}] system said ${sys.signal} — stopping after this cycle`)
-          this.stopping = true
-        }
-      } else {
-        this.emptyCommitStreak++
-        this.log(
-          `[cycle ${this.cycle}] no commits last cycle [metric] empty_commit_streak=${this.emptyCommitStreak}`,
-        )
-        this.lastVerdict = mergePlan.signal
-        if (sys.signal === "DONE" || sys.signal === "STOP") {
-          this.log(`[cycle ${this.cycle}] system said ${sys.signal} (no commits) — stopping`)
-          this.stopping = true
-        }
+    // Flush lead edits so DONE/STOP never leaves accepted work only on disk.
+    this.heartbeat("commit-system")
+    const systemDirtyCommitted = await this.commitSystemDirtyIfNeeded(
+      `swarm ${this.id} system: cycle ${this.cycle} (lead edits)`,
+    )
+    if (systemDirtyCommitted) anyCommits = true
+
+    // Accept baseline after review when policy allows (default merge or explicit continue family).
+    // Runs whenever there are commits since baseline — including system-only edits on cycle 1.
+    if (anyCommits) {
+      this.emptyCommitStreak = 0
+      this.heartbeat("merge")
+      const reason = sys.text.replace(/\s+/g, " ").slice(0, 200)
+      this.log(
+        `  [host] signal: ${mergePlan.signal}${mergePlan.defaulted ? " (default)" : ""} merge=${mergePlan.merge} — ${reason || "(no text)"}`,
+      )
+      this.lastVerdict = mergePlan.signal
+      const apply = await hostApplyVerdict(this.gitCtx(), mergePlan.signal, reason, {
+        doMerge: mergePlan.merge,
+      })
+      merged = apply.merged
+      if (sys.signal === "DONE" || sys.signal === "STOP") {
+        this.log(`[cycle ${this.cycle}] system said ${sys.signal} — stopping after this cycle`)
+        this.stopping = true
+      }
+    } else if (this.cycle > 1) {
+      this.emptyCommitStreak++
+      this.log(
+        `[cycle ${this.cycle}] no commits last cycle [metric] empty_commit_streak=${this.emptyCommitStreak}`,
+      )
+      this.lastVerdict = mergePlan.signal
+      if (sys.signal === "DONE" || sys.signal === "STOP") {
+        this.log(`[cycle ${this.cycle}] system said ${sys.signal} (no commits) — stopping`)
+        this.stopping = true
       }
     } else if (sys.signal === "DONE" || sys.signal === "STOP") {
       this.lastVerdict = sys.signal
@@ -886,6 +965,9 @@ export class Run {
         last_ship: shipMetricSlice(this.lastShip),
         worker_probe: probeMetricSlice(this.lastWorkerProbe),
       })
+      this.log(
+        `[cycle ${this.cycle}] [metric] cycle_summary secs=${secs} signal=${mergePlan.signal} merged=${merged} ships=0 empty_streak=${this.emptyCommitStreak} probe_msgs=${this.lastWorkerProbe?.messageCount ?? 0} system_dirty=${systemDirtyCommitted}`,
+      )
       this.log(
         `[cycle ${this.cycle}] complete in ${secs}s (no worker — ${sys.signal || "stop"} / host end)`,
       )
@@ -934,9 +1016,14 @@ export class Run {
         reviewSections: pack.sections,
         repass: true,
       })
+      // Flush lead edits from re-pass review before accept / second worker.
+      const repassDirty = await this.commitSystemDirtyIfNeeded(
+        `swarm ${this.id} system: cycle ${this.cycle} re-pass (lead edits)`,
+      )
+      const repassHasCommits = pack.anyCommits || repassDirty
       if (repass.signal === "DONE" || repass.signal === "STOP") {
         this.lastVerdict = repass.signal
-        if (repass.signal === "DONE" && pack.anyCommits) {
+        if (repass.signal === "DONE" && repassHasCommits) {
           const apply = await hostApplyVerdict(
             this.gitCtx(),
             "DONE",
@@ -950,7 +1037,7 @@ export class Run {
         }
         this.stopping = true
       } else {
-        if (pack.anyCommits) {
+        if (repassHasCommits) {
           const apply = await hostApplyVerdict(
             this.gitCtx(),
             repass.signal || "CONTINUE",
@@ -973,10 +1060,11 @@ export class Run {
     }
 
     const secs = Math.round((Date.now() - t0) / 1000)
+    const endSignal = (this.lastVerdict as HostSignal) || mergePlan.signal
     this.recordCycleMetric({
       secs,
       phase_end: "idle",
-      signal: (this.lastVerdict as HostSignal) || mergePlan.signal,
+      signal: endSignal,
       signal_default: mergePlan.defaulted,
       empty_commit_streak: this.emptyCommitStreak,
       any_commits_reviewed: anyCommits,
@@ -989,6 +1077,9 @@ export class Run {
       last_ship: shipMetricSlice(this.lastShip),
       worker_probe: probeMetricSlice(this.lastWorkerProbe),
     })
+    this.log(
+      `[cycle ${this.cycle}] [metric] cycle_summary secs=${secs} signal=${endSignal} merged=${merged} ships=${workerShips} empty_streak=${this.emptyCommitStreak} probe_msgs=${this.lastWorkerProbe?.messageCount ?? 0} repass=${didRepass}`,
+    )
     this.log(`[cycle ${this.cycle}] complete in ${secs}s`)
     this.heartbeat("idle")
     await sleep(1500)

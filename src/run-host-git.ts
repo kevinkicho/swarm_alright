@@ -59,8 +59,45 @@ export async function writeBaseline(runDir: string, project: string, sha?: strin
 /** No separate worker tree — stay on project root / base branch. */
 export async function hostSyncWorker(ctx: HostGitCtx): Promise<{ ok: boolean; detail: string }> {
   await ensureOnBranch(ctx.project, ctx.baseBranch)
-  ctx.log(`  [host:git] root mode: workspace is project root (no worktree sync)`)
-  return { ok: true, detail: "root mode — no separate worker branch" }
+  ctx.log(`  [host:git] root workspace ready (noop sync)`)
+  return { ok: true, detail: "root mode — project directory" }
+}
+
+/**
+ * Commit any dirty project root changes (e.g. system lead wrote files during review).
+ * Used so DONE/STOP never leaves accepted work only on disk.
+ */
+export async function hostCommitIfDirty(
+  ctx: HostGitCtx,
+  who: "system" | "worker" | "host",
+  note?: string,
+): Promise<{ committed: boolean; ahead: number; sha: string }> {
+  const baseline = readBaseline(ctx.runDir) || "HEAD"
+  const msg =
+    note?.trim() ||
+    `swarm ${ctx.runId} ${who}: cycle ${ctx.cycle}${who === "system" ? " (lead edits)" : ""}`
+  try {
+    const result = await commitWorktree(ctx.project, msg)
+    let ahead = 0
+    try {
+      ahead = await commitsAhead(ctx.project, baseline, "HEAD")
+    } catch {
+      ahead = result.committed ? 1 : 0
+    }
+    if (result.committed) {
+      ctx.log(
+        `  [host:git] commit ${who}: committed ${result.sha.slice(0, 7)} — ${result.detail}` +
+          ` [metric] commits_ahead=${ahead}`,
+      )
+    } else {
+      ctx.log(`  [host:git] commit ${who}: clean — nothing to commit`)
+    }
+    return { committed: result.committed, ahead, sha: result.sha }
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err)
+    ctx.log(`  [host:git] commit ${who} FAILED: ${m.slice(0, 300)}`)
+    return { committed: false, ahead: 0, sha: "" }
+  }
 }
 
 export async function hostCommitWorker(

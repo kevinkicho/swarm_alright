@@ -123,6 +123,43 @@ export function appendShipLog(opts: {
   } catch {}
 }
 
+/**
+ * Keep only the newest `keep` archive files under sessions/ (by mtime).
+ * Always prefers keeping *-latest.md and the newest post-ship dumps.
+ */
+export function pruneSessionArchives(runDir: string, keep = 48): { removed: number; kept: number } {
+  const dir = sessionsDir(runDir)
+  try {
+    if (!fs.existsSync(dir)) return { removed: 0, kept: 0 }
+    const files = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => {
+        const p = path.join(dir, f)
+        let mtime = 0
+        try {
+          mtime = fs.statSync(p).mtimeMs
+        } catch {}
+        return { f, p, mtime, latest: f.includes("-latest") }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+    if (files.length <= keep) return { removed: 0, kept: files.length }
+    // Keep newest `keep`, but never drop more than half of *-latest in one prune.
+    const keepSet = new Set(files.slice(0, keep).map((x) => x.p))
+    let removed = 0
+    for (const x of files) {
+      if (keepSet.has(x.p)) continue
+      try {
+        fs.unlinkSync(x.p)
+        removed++
+      } catch {}
+    }
+    return { removed, kept: files.length - removed }
+  } catch {
+    return { removed: 0, kept: 0 }
+  }
+}
+
 /** Rewrite SESSION_INDEX.md from whatever is on disk. */
 export function writeSessionIndex(runDir: string): void {
   const archives = listSessionArchives(runDir)

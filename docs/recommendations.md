@@ -41,9 +41,9 @@ Operating and evolving swarm_alright. These are **operator guidance**, not host-
 1. **Preflight (offline)**: `npm run preflight` — host parsers, git worktree smoke, nested selfcheck. Optional: `npm run preflight -- C:\path\to\project`.
 2. **First live smoke**: `--max-cycles 1` (or 2) with a tiny directive before multi-hour detach.
 3. **Detach long runs**: `swarm run … --detach` then `swarm watch` / `swarm tui`.
-4. **Restart same id**: `swarm restart` reuses worktrees, HANDOFF history, sessions archives — don’t start a new run to “continue.”
+4. **Restart same id**: `swarm restart` reuses run folder, HANDOFF history, sessions archives — don’t start a new run to “continue.”
 5. **When stuck**: `swarm doctor`, `swarm scorecard <id>`, open `MATERIALS.md` + latest `sessions/` dump — same surface the lead uses.
-6. **Disk**: `sessions/` and `memory/` grow; prune dead runs with `swarm clean --worktrees` when needed.
+6. **Disk**: host keeps ~48 newest session archives per run; prune dead runs with `swarm clean` / `swarm clean --worktrees` for legacy trees.
 7. **Model 404**: if default system model is unavailable on the account, pass `--system-model deepseek-v4-flash`.
 
 ## Reading a run (human or future tooling)
@@ -59,14 +59,25 @@ Suggested order (mirrors MATERIALS.md):
 
 ## Future work (prioritized)
 
+### Done (host upgrades)
+
+| Item | Notes |
+| --- | --- |
+| **Dirty-on-DONE** | Host commits lead/system dirty files after system turn before accept/stop |
+| **Worker rotate** | Empty ship or probe ≥120 messages → fresh worker session |
+| **Recent session window** | Probe keeps last ~80 messages / 150k chars (end-prefer truncate); filter sibling sessions by run id |
+| **Tool log dedupe** | Rapid duplicate OpenCode tool events collapsed in events.log |
+| **cycle_summary** | One metrics line per cycle in events.log + metrics.jsonl |
+| **sessions/ prune** | Keep newest ~48 archives after each dump |
+
 ### High value
 
 | Item | Notes |
 | --- | --- |
-| **Retention / prune policy** for `sessions/` and `memory/` | e.g. keep last N cycle dumps; optional zip archive |
 | **System session archive** (optional) | Same as worker dumps, for post-mortems of lead behavior |
 | **Scorecard alerts in doctor** | Promote thin-handoff / zero-ship flags into doctor tips |
 | **Eval fixtures** | Tiny repo + synthetic `metrics.jsonl` + golden scorecard in CI |
+| **memory/ prune** | Mirror sessions retention for MEMORY snapshots |
 
 ### Medium value
 

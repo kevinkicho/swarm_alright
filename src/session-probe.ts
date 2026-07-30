@@ -137,18 +137,21 @@ export async function probeSession(
     sessionID: string
     directory: string
     dumpPath: string
-    /** Soft cap on written file size (chars). */
+    /** Soft cap on written file size (chars). Prefer recent content when truncating. */
     maxChars?: number
-    /** Max messages to pull from SDK (newest-focused if API supports limit). */
+    /** Max *recent* messages to include in the dump (newest last). */
     messageLimit?: number
+    /** When set, only list sibling sessions whose title contains this run id. */
+    runId?: string
   },
 ): Promise<{ markdown: string; meta: SessionProbeMeta }> {
-  const maxChars = opts.maxChars ?? 120_000
+  const maxChars = opts.maxChars ?? 150_000
   const lines: string[] = []
   const counters = { tools: 0, errors: 0 }
   let messageCount = 0
   let statusLabel = "unknown"
   let probeError: string | undefined
+  let truncatedRecent = false
 
   lines.push(`# ${opts.role.toUpperCase()} SESSION PROBE`)
   lines.push("")
@@ -156,6 +159,7 @@ export async function probeSession(
   lines.push(`sessionID: ${opts.sessionID}`)
   lines.push(`directory: ${opts.directory}`)
   lines.push(`dump: ${opts.dumpPath}`)
+  if (opts.runId) lines.push(`runId: ${opts.runId}`)
   lines.push("")
 
   // Status map for this directory
@@ -176,16 +180,23 @@ export async function probeSession(
     lines.push("")
   }
 
-  // List sibling sessions in the worker directory (context for multi-session)
+  // Sibling sessions for *this run only* (avoid pollution from older swarm runs).
   try {
     const listed = await sessionList(client, opts.directory)
-    lines.push(`## Sessions in directory (${listed.length})`)
-    for (const s of listed.slice(0, 20)) {
+    const filtered = opts.runId
+      ? listed.filter((s) => {
+          const title = String(s.title ?? "")
+          return title.includes(opts.runId!) || String(s.id) === opts.sessionID
+        })
+      : listed
+    lines.push(`## Sessions for this run (${filtered.length}${opts.runId ? ` of ${listed.length} in dir` : ""})`)
+    for (const s of filtered.slice(0, 20)) {
       const id = String(s.id ?? s.sessionID ?? "?")
       const title = String(s.title ?? "")
       const mark = id === opts.sessionID ? " ← this worker" : ""
       lines.push(`- ${id.slice(0, 24)} ${title.slice(0, 60)}${mark}`)
     }
+    if (!filtered.length) lines.push(`- (none matched run id filter)`)
     lines.push("")
   } catch {
     // optional
@@ -243,12 +254,13 @@ export async function probeSession(
     }
     if (!Array.isArray(messages)) messages = []
 
-    // Prefer recent window if huge
+    // Prefer *recent* window so the lead sees the latest episode, not only the oldest tail of a full dump.
     const limit = opts.messageLimit ?? 80
     const slice = messages.length > limit ? messages.slice(-limit) : messages
     messageCount = messages.length
+    truncatedRecent = messages.length > slice.length
 
-    lines.push(`## Messages (${messageCount} total, showing ${slice.length})`)
+    lines.push(`## Messages (${messageCount} total, showing last ${slice.length}${truncatedRecent ? " — recent window" : ""})`)
     lines.push("")
 
     let i = 0
@@ -298,10 +310,18 @@ export async function probeSession(
   )
 
   let markdown = lines.join("\n")
+  // Prefer keeping the *end* (recent messages) when over cap.
   if (markdown.length > maxChars) {
+    const head = markdown.slice(0, 2_500)
+    const tail = markdown.slice(-(maxChars - 3_000))
     markdown =
-      markdown.slice(0, maxChars) +
-      `\n\n… (WORKER_SESSION dump truncated at ${maxChars} chars; ${messageCount} messages, ${counters.tools} tools)\n`
+      head +
+      `\n\n… (middle omitted; dump prefers recent activity; ${messageCount} messages total, ${counters.tools} tools in window)\n\n` +
+      tail +
+      `\n`
+  }
+  if (truncatedRecent) {
+    markdown += `\n\n(Note: only the last ${opts.messageLimit ?? 80} messages were rendered; full session may be larger — host may rotate when messageCount is high.)\n`
   }
 
   try {

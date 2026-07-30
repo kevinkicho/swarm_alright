@@ -116,6 +116,48 @@ async function main() {
     assert.equal(turn.isWorkerProbeFresh(worker, null, dump), false)
   })
 
+  check("shouldRotateWorker on empty ship streak and message cap", async () => {
+    const turn = await load("run-turn.ts")
+    assert.equal(turn.shouldRotateWorker(null, false, 0), false)
+    assert.equal(turn.shouldRotateWorker(null, true, 1), true)
+    assert.equal(turn.shouldRotateWorker(null, true, 0), false)
+    const sat = {
+      role: "worker",
+      sessionID: "s",
+      directory: tmp,
+      messageCount: turn.WORKER_ROTATE_MSG_THRESHOLD,
+      toolCalls: 0,
+      toolErrors: 0,
+      status: "idle",
+      dumpPath: path.join(tmp, "x.md"),
+      chars: 1,
+    }
+    assert.equal(turn.shouldRotateWorker(sat, false, 0), true)
+    assert.equal(
+      turn.shouldRotateWorker({ ...sat, messageCount: turn.WORKER_ROTATE_MSG_THRESHOLD - 1 }, false, 0),
+      false,
+    )
+  })
+
+  check("pruneSessionArchives keeps newest N", async () => {
+    const log = await load("run-log.ts")
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-prune-"))
+    const sessions = path.join(runDir, "sessions")
+    fs.mkdirSync(sessions, { recursive: true })
+    for (let i = 0; i < 10; i++) {
+      const p = path.join(sessions, `worker-c${i}-post-ship.md`)
+      fs.writeFileSync(p, `# ${i}\n`)
+      // Stagger mtimes so prune order is deterministic
+      const t = new Date(Date.now() - (10 - i) * 60_000)
+      fs.utimesSync(p, t, t)
+    }
+    const r = log.pruneSessionArchives(runDir, 4)
+    assert.equal(r.removed, 6)
+    assert.equal(r.kept, 4)
+    const left = fs.readdirSync(sessions).filter((f) => f.endsWith(".md")).sort()
+    assert.equal(left.length, 4)
+  })
+
   check("handoff file round-trip", () => {
     prompts.writeHandoff(paths.handoffFile, "Implement foo with tests.")
     assert.equal(prompts.readHandoffFile(paths.handoffFile), "Implement foo with tests.")

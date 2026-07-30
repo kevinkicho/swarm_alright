@@ -114,9 +114,9 @@ export function buildMemoryDoc(input: {
   lines.push(
     "## How to use (system lead)",
     "- Open MATERIALS.md for the full inventory of worker artifacts, history, and repo pointers.",
-    "- Take as long as you need: session dump, git, and real files under the worktree.",
+    "- Take as long as you need: session dump, git, and real files under the project root.",
     "- Overwrite HANDOFF.md with the engineer assignment (worker sees only that file).",
-    "- Host merges by default after you review; optional: HOST: DONE | STOP | REPASS.",
+    "- Host auto-commits dirty project root (including your edits) and accepts baseline by default; optional: HOST: DONE | STOP | REPASS.",
     "",
   )
   return lines.join("\n")
