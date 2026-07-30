@@ -94,6 +94,7 @@ async function main() {
     dialogueFile: path.join(tmp, "DIALOGUE.md"),
     standardsFile: path.join(tmp, "STANDARDS.md"),
     workerSessionFile: path.join(tmp, "WORKER_SESSION.md"),
+    systemSessionFile: path.join(tmp, "SYSTEM_SESSION.md"),
     handoffFile: path.join(tmp, "HANDOFF.md"),
     handoffHistoryFile: path.join(tmp, "HANDOFF_HISTORY.md"),
     materialsFile: path.join(tmp, "MATERIALS.md"),

@@ -4,6 +4,8 @@ All commands run as `node src/cli.ts <command>` (shown here as `swarm <command>`
 
 ## Global install (any directory)
 
+### Windows
+
 From the repo root, once:
 
 ```powershell
@@ -19,6 +21,16 @@ Sets user `SWARM_HOME` to the repo and prepends `bin\` to your user `Path`:
 
 Works in PowerShell and Command Prompt. Remove with
 `.\scripts\install-path.ps1 -Uninstall`.
+
+### Unix / macOS
+
+```bash
+export SWARM_HOME=/path/to/swarm_alright
+export PATH="$SWARM_HOME/bin:$PATH"
+chmod +x "$SWARM_HOME/bin/swarm" "$SWARM_HOME/bin/swarm-tui"
+```
+
+`bin/swarm` and `bin/swarm-tui` are bash shims (same as `bin/swarm.cmd` on Windows).
 
 ## swarm
 
@@ -76,6 +88,30 @@ Refuses to restart a run that's still alive — `swarm stop` it first.
 All runs, newest first: `id  status  cycle  project — directive`.
 Statuses: `alive`, `stopped`, `errored`, `crashed` (record says running but the
 process is gone).
+
+## swarm scorecard [run-id]
+
+Trajectory from `metrics.jsonl`: ship rate, merges, verify, tool errors, flags.
+
+| Flag | Description |
+| --- | --- |
+| `--recent N` | When no id, last N registry runs (default 5) |
+| `--json` | Machine-readable scorecards |
+
+## swarm postmortem [run-id]
+
+Offline postmortem: scorecard + MATERIALS surface + session/memory counts +
+host tips from events.log. Prefer this after a closed run.
+
+| Flag | Description |
+| --- | --- |
+| `--json` | Full report object |
+| `--out <file>` | Also write a plain markdown summary |
+
+## swarm materials [run-id]
+
+Print `MATERIALS.md` path, live session dumps, and the newest session archives —
+same inventory the lead uses each cycle.
 
 ## swarm tally [run-id]
 

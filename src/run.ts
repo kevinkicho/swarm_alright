@@ -50,10 +50,11 @@ import {
 } from "./materials.ts"
 import {
   archiveWorkerSessionDump,
+  archiveSystemSessionDump,
   appendShipLog,
   writeSessionIndex,
   archiveMemorySnapshot,
-  pruneSessionArchives,
+  retainRunArchives,
   sessionsDir,
   sessionIndexPath,
   shipLogPath,
@@ -71,6 +72,7 @@ import {
 import {
   runTurn,
   captureWorkerSession,
+  captureSystemSession,
   isWorkerProbeFresh,
   rotateSession,
   shouldRotateWorker,
@@ -87,6 +89,7 @@ export class Run {
   private dialogueFile: string
   private standardsFile: string
   private workerSessionFile: string
+  private systemSessionFile: string
   private handoffFile: string
   private logFile: string
   private stopFile: string
@@ -110,6 +113,7 @@ export class Run {
   private lastActivityAt = Date.now()
   private lastShip: ShipResult | null = null
   private lastWorkerProbe: SessionProbeMeta | null = null
+  private lastSystemProbe: SessionProbeMeta | null = null
   private readonly stallMs = 20 * 60_000
   /** Dedupe rapid duplicate tool log lines from OpenCode event fan-out. */
   private lastToolLogKey = ""
@@ -127,6 +131,7 @@ export class Run {
     this.dialogueFile = path.join(runDir, "DIALOGUE.md")
     this.standardsFile = path.join(runDir, "STANDARDS.md")
     this.workerSessionFile = path.join(runDir, "WORKER_SESSION.md")
+    this.systemSessionFile = path.join(runDir, "SYSTEM_SESSION.md")
     this.handoffFile = path.join(runDir, "HANDOFF.md")
     this.logFile = path.join(runDir, "events.log")
     this.stopFile = path.join(runDir, "STOP")
@@ -142,6 +147,7 @@ export class Run {
       dialogueFile: this.dialogueFile,
       standardsFile: this.standardsFile,
       workerSessionFile: this.workerSessionFile,
+      systemSessionFile: this.systemSessionFile,
       handoffFile: this.handoffFile,
       handoffHistoryFile: handoffHistoryPath(this.runDir),
       materialsFile: materialsPath(this.runDir),
@@ -180,6 +186,7 @@ export class Run {
       stallMs: this.stallMs,
       runId: this.id,
       workerSessionFile: this.workerSessionFile,
+      systemSessionFile: this.systemSessionFile,
       isStopping: () => this.stopping || this.stopRequested(),
       markActivity: () => this.markActivity(),
       lastActivityAt: () => this.lastActivityAt,
@@ -201,6 +208,7 @@ export class Run {
               stallMs: this.stallMs,
               runId: this.id,
               workerSessionFile: this.workerSessionFile,
+              systemSessionFile: this.systemSessionFile,
               isStopping: () => this.stopping || this.stopRequested(),
               markActivity: () => this.markActivity(),
               lastActivityAt: () => this.lastActivityAt,
@@ -239,6 +247,19 @@ export class Run {
     }
   }
 
+  private retainArchivesAfterWrite(): void {
+    const r = retainRunArchives(this.runDir, { keep: 48, keepUncompressed: 16, memoryKeep: 48 })
+    if (r.sessions.compressed) {
+      this.log(`  [host:log] compressed ${r.sessions.compressed} older session archive(s) to .md.gz`)
+    }
+    if (r.sessions.removed) {
+      this.log(`  [host:log] pruned ${r.sessions.removed} old session archive(s)`)
+    }
+    if (r.memory.removed) {
+      this.log(`  [host:log] pruned ${r.memory.removed} old MEMORY snapshot(s)`)
+    }
+  }
+
   /** Probe worker, archive dump, refresh session index — durable surface for the lead. */
   private async captureAndArchiveWorker(
     deps: TurnDeps,
@@ -255,10 +276,39 @@ export class Run {
       meta,
     })
     writeSessionIndex(this.runDir)
-    const pruned = pruneSessionArchives(this.runDir, 48)
-    if (pruned.removed) this.log(`  [host:log] pruned ${pruned.removed} old session archive(s)`)
+    this.retainArchivesAfterWrite()
     if (dest) this.log(`  [host:log] archived worker session (${tag}) → ${dest}`)
     return meta
+  }
+
+  /** Probe system/lead after a turn — postmortem surface (not required for worker). */
+  private async captureAndArchiveSystem(
+    deps: TurnDeps,
+    system: AgentRef,
+    tag: string,
+  ): Promise<void> {
+    try {
+      const meta = await captureSystemSession(deps, system)
+      if (!meta) return
+      this.lastSystemProbe = meta
+      const dest = archiveSystemSessionDump({
+        runDir: this.runDir,
+        cycle: this.cycle,
+        tag,
+        sourcePath: this.systemSessionFile,
+        meta,
+      })
+      writeSessionIndex(this.runDir)
+      this.retainArchivesAfterWrite()
+      if (dest) this.log(`  [host:log] archived system session (${tag}) → ${dest}`)
+    } catch (err) {
+      this.log(
+        `  [host:log] system probe/archive failed: ${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          200,
+        ),
+      )
+    }
   }
 
   /** If system (or anyone) dirtied the project root, commit so DONE never leaves work untracked. */
@@ -633,6 +683,10 @@ export class Run {
     writeMemory(p.memoryFile, body)
     this.log(`  [host:memory] wrote ${p.memoryFile} (${phase})`)
     archiveMemorySnapshot(this.runDir, this.cycle, phase, p.memoryFile)
+    const memPrune = retainRunArchives(this.runDir, { keep: 48, keepUncompressed: 16, memoryKeep: 48 })
+    if (memPrune.memory.removed) {
+      this.log(`  [host:log] pruned ${memPrune.memory.removed} old MEMORY snapshot(s)`)
+    }
   }
 
   /** Host inventory so the lead can probe worker artifacts, history, and repo output. */
@@ -724,6 +778,9 @@ export class Run {
       this.cycle,
       systemTurn.text,
     )
+
+    // Archive lead session for postmortems (does not block handoff path).
+    await this.captureAndArchiveSystem(deps, system, opts.repass ? "post-system-repass" : "post-system")
 
     let resolved = this.resolveHandoff(systemTurn.text)
     let handoff = resolved.body

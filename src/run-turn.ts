@@ -14,6 +14,7 @@ export type TurnDeps = {
   stallMs: number
   runId: string
   workerSessionFile: string
+  systemSessionFile?: string
   isStopping: () => boolean
   markActivity: () => void
   lastActivityAt: () => number
@@ -169,6 +170,29 @@ export async function captureWorkerSession(
   })
   deps.log(
     `  [host:session] worker probe: messages=${meta.messageCount} tools=${meta.toolCalls} errors=${meta.toolErrors} status=${meta.status} → ${meta.dumpPath}` +
+      (meta.error ? ` (${meta.error.slice(0, 120)})` : ""),
+  )
+  return meta
+}
+
+/** Probe system/lead session for postmortem archives (not required for worker handoff). */
+export async function captureSystemSession(
+  deps: TurnDeps,
+  system: AgentRef,
+): Promise<SessionProbeMeta | null> {
+  const dumpPath = deps.systemSessionFile
+  if (!dumpPath) return null
+  const { meta } = await probeSession(deps.api.client, {
+    role: "system",
+    sessionID: system.sessionID,
+    directory: system.directory,
+    dumpPath,
+    maxChars: 120_000,
+    messageLimit: 60,
+    runId: deps.runId,
+  })
+  deps.log(
+    `  [host:session] system probe: messages=${meta.messageCount} tools=${meta.toolCalls} errors=${meta.toolErrors} status=${meta.status} → ${meta.dumpPath}` +
       (meta.error ? ` (${meta.error.slice(0, 120)})` : ""),
   )
   return meta

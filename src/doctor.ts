@@ -9,7 +9,7 @@ import { dirtyPaths, findLatestSwarmBase, listSwarmRunIds, commitsAhead, branchE
 import { connectClient, sessionStatus } from "./opencode.ts"
 import { frameBox } from "./pick.ts"
 import { Style } from "./style.ts"
-import { scorecardOneLiner } from "./scorecard.ts"
+import { scorecardOneLiner, scorecardFromRecord } from "./scorecard.ts"
 
 function lastLogLines(runDir: string, n = 8): string[] {
   try {
@@ -209,12 +209,31 @@ export async function printDoctor(projectArg?: string): Promise<void> {
   if (sample) {
     const skip = metricHint(sample.runDir)
     if (skip) lines.push(Style.kv("signal:", Style.logLine(skip)))
+    try {
+      const sc = scorecardFromRecord(sample)
+      const alertFlags = sc.flags.filter((f) => !/healthy \(sensor-side\)/i.test(f))
+      if (alertFlags.length && sc.cycles > 0) {
+        lines.push("")
+        lines.push(Style.bold("trajectory alerts (scorecard):"))
+        for (const f of alertFlags.slice(0, 6)) {
+          lines.push(`  ${Style.warning("·")} ${f}`)
+        }
+        lines.push(
+          `  ${Style.muted("full:")} ${Style.cyan(`swarm scorecard ${sample.id}`)}  ·  ${Style.cyan(`swarm postmortem ${sample.id}`)}`,
+        )
+      } else if (sc.cycles > 0) {
+        lines.push(Style.kv("trajectory:", Style.success("scorecard flags clear") + Style.muted(` (${sc.cycles} cycles)`)))
+      }
+    } catch {}
   }
 
   lines.push("")
   lines.push(`${Style.bold("OpenCode:")} attach with ${Style.cyan("swarm tui <run-id>")} (same serve URL + opencode attach)`)
   lines.push(
     `${Style.bold("Reliability:")} one project → one alive run (singleFlight). Continue lineage, don't fork endlessly.`,
+  )
+  lines.push(
+    `${Style.bold("Surface:")} ${Style.cyan("swarm materials <id>")}  ·  ${Style.cyan("swarm postmortem <id>")}`,
   )
 
   console.log(frameBox("swarm doctor", lines, width).join("\n"))

@@ -23,6 +23,9 @@ Usage:
   swarm doctor --tally [run-id]  Situation tally from events.log (recent 5, or one run)
   swarm tally [run-id]           Same as doctor --tally (--recent N, --json)
   swarm scorecard [run-id]       Trajectory scorecard from metrics.jsonl (--recent N, --json)
+  swarm postmortem [run-id]      Offline postmortem (scorecard + materials + log tips)
+                                --json  --out <file>
+  swarm materials [run-id]       MATERIALS.md path + newest session archives
   swarm run <folder> [options]  Start a run on a project folder (agents use project root)
   swarm restart [run-id]         Resume a past run (same run id + run folder)
                                 --yes keeps models
@@ -372,6 +375,20 @@ async function main(): Promise<void> {
         recent: args.flags.recent ? Number(args.flags.recent) : 5,
         json: args.flags.json === "true" || !!args.flags.json,
       })
+      break
+    }
+    case "postmortem": {
+      const { printPostmortem } = await import("./postmortem.ts")
+      printPostmortem({
+        runId: args.positional[0],
+        json: args.flags.json === "true" || !!args.flags.json,
+        out: args.flags.out,
+      })
+      break
+    }
+    case "materials": {
+      const { printMaterialsSurface } = await import("./postmortem.ts")
+      printMaterialsSurface({ runId: args.positional[0] })
       break
     }
     case "stop":

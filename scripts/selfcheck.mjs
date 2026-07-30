@@ -46,6 +46,7 @@ async function main() {
     dialogueFile: path.join(tmp, "DIALOGUE.md"),
     standardsFile: path.join(tmp, "STANDARDS.md"),
     workerSessionFile: path.join(tmp, "WORKER_SESSION.md"),
+    systemSessionFile: path.join(tmp, "SYSTEM_SESSION.md"),
     handoffFile: path.join(tmp, "HANDOFF.md"),
     handoffHistoryFile: path.join(tmp, "HANDOFF_HISTORY.md"),
     materialsFile: path.join(tmp, "MATERIALS.md"),
@@ -156,6 +157,91 @@ async function main() {
     assert.equal(r.kept, 4)
     const left = fs.readdirSync(sessions).filter((f) => f.endsWith(".md")).sort()
     assert.equal(left.length, 4)
+  })
+
+  check("pruneMemorySnapshots + compressOldSessionArchives", async () => {
+    const log = await load("run-log.ts")
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-mem-"))
+    const mem = path.join(runDir, "memory")
+    const sessions = path.join(runDir, "sessions")
+    fs.mkdirSync(mem, { recursive: true })
+    fs.mkdirSync(sessions, { recursive: true })
+    for (let i = 0; i < 8; i++) {
+      const p = path.join(mem, `MEMORY-c${i}-system.md`)
+      fs.writeFileSync(p, `# mem ${i}\n`)
+      const t = new Date(Date.now() - (8 - i) * 60_000)
+      fs.utimesSync(p, t, t)
+    }
+    const m = log.pruneMemorySnapshots(runDir, 3)
+    assert.equal(m.removed, 5)
+    assert.equal(m.kept, 3)
+    for (let i = 0; i < 6; i++) {
+      const p = path.join(sessions, `worker-c${i}-post-ship.md`)
+      fs.writeFileSync(p, "x".repeat(200) + `\n# ${i}\n`)
+      const t = new Date(Date.now() - (6 - i) * 60_000)
+      fs.utimesSync(p, t, t)
+    }
+    const c = log.compressOldSessionArchives(runDir, 2)
+    assert.ok(c.compressed >= 1)
+    const gz = fs.readdirSync(sessions).filter((f) => f.endsWith(".md.gz"))
+    assert.ok(gz.length >= 1)
+  })
+
+  check("archiveSystemSessionDump writes system- prefix", async () => {
+    const log = await load("run-log.ts")
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-sys-"))
+    const src = path.join(runDir, "SYSTEM_SESSION.md")
+    fs.writeFileSync(src, "# SYSTEM SESSION\n\n" + "lead review notes\n".repeat(10))
+    const dest = log.archiveSystemSessionDump({
+      runDir,
+      cycle: 2,
+      tag: "post-system",
+      sourcePath: src,
+      meta: {
+        role: "system",
+        sessionID: "syssess123456",
+        directory: runDir,
+        messageCount: 3,
+        toolCalls: 1,
+        toolErrors: 0,
+        status: "idle",
+        dumpPath: src,
+        chars: 200,
+      },
+    })
+    assert.ok(dest && dest.includes("system-c2-"))
+    assert.ok(fs.existsSync(path.join(runDir, "sessions", "system-c2-latest.md")))
+  })
+
+  check("eval fixtures scorecard golden values", async () => {
+    const scorecard = await load("scorecard.ts")
+    const healthyPath = path.join(root, "fixtures", "eval", "metrics-healthy.jsonl")
+    const stuckPath = path.join(root, "fixtures", "eval", "metrics-stuck.jsonl")
+    assert.ok(fs.existsSync(healthyPath), "fixtures/eval/metrics-healthy.jsonl")
+    assert.ok(fs.existsSync(stuckPath), "fixtures/eval/metrics-stuck.jsonl")
+    const readRows = (p) =>
+      fs
+        .readFileSync(p, "utf8")
+        .split(/\r?\n/)
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l))
+    const healthy = scorecard.scoreTrajectory(readRows(healthyPath), {
+      runId: "fixture-healthy",
+      project: "/tmp/p",
+      runDir: "/tmp/p",
+    })
+    assert.equal(healthy.cycles, 3)
+    assert.equal(healthy.ship_commits, 3)
+    assert.ok(healthy.ship_rate >= 99)
+    assert.ok(healthy.flags.some((f) => /healthy/i.test(f)))
+    const stuck = scorecard.scoreTrajectory(readRows(stuckPath), {
+      runId: "fixture-stuck",
+      project: "/tmp/p",
+      runDir: "/tmp/p",
+    })
+    assert.equal(stuck.ship_commits, 0)
+    assert.ok(stuck.empty_streak_max >= 3)
+    assert.ok(stuck.flags.some((f) => /no commits shipped|empty_commit_streak|thin handoff/i.test(f)))
   })
 
   check("handoff file round-trip", () => {
@@ -306,6 +392,7 @@ async function main() {
     })
     const body = fs.readFileSync(p.materialsFile, "utf8")
     assert.match(body, /WORKER_SESSION|worker_session|session dump/i)
+    assert.match(body, /SYSTEM_SESSION|system\/lead dump/i)
     assert.match(body, /project root|root mode/i)
     assert.match(body, /HANDOFF_HISTORY|handoff history/i)
     assert.match(body, /git log|BASELINE/i)

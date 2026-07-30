@@ -62,7 +62,7 @@ Omitting host lines = **continue + accept** when `defaultMerge` is true.
 .swarm/runs/<id>/
   MISSION.md, DIALOGUE.md, STANDARDS.md
   MATERIALS.md, HANDOFF.md, HANDOFF_HISTORY.md
-  WORKER_SESSION.md, SESSION_INDEX.md, sessions/
+  WORKER_SESSION.md, SYSTEM_SESSION.md, SESSION_INDEX.md, sessions/
   SHIP_LOG.md, ships/, MEMORY.md, memory/
   BASELINE.sha         review range anchor (root mode)
   metrics.jsonl, events.log, run.json, STOP

@@ -37,6 +37,8 @@ export type RunPaths = {
   dialogueFile: string
   standardsFile: string
   workerSessionFile: string
+  /** Live system/lead OpenCode dump (postmortem + optional lead self-check). */
+  systemSessionFile: string
   /** First-class engineer assignment written by the system lead. */
   handoffFile: string
   /** Append-only prior handoffs (work history). */
@@ -46,7 +48,7 @@ export type RunPaths = {
   metricsFile: string
   eventsLogFile: string
   memoryFile: string
-  /** Directory of archived WORKER_SESSION dumps. */
+  /** Directory of archived WORKER_SESSION / SYSTEM_SESSION dumps. */
   sessionsDir: string
   sessionIndexFile: string
   shipLogFile: string

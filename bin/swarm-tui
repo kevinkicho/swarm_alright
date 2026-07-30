@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Unix/macOS TUI attach wrapper.
+set -euo pipefail
+ROOT="${SWARM_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
+CLI="$ROOT/src/cli.ts"
+if [[ ! -f "$CLI" ]]; then
+  echo "swarm-tui: cannot find $CLI" >&2
+  exit 1
+fi
+exec node --experimental-strip-types "$CLI" tui "$@"

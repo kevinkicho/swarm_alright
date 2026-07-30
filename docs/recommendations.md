@@ -70,22 +70,19 @@ Suggested order (mirrors MATERIALS.md):
 | **cycle_summary** | One metrics line per cycle in events.log + metrics.jsonl |
 | **sessions/ prune** | Keep newest ~48 archives after each dump |
 
-### High value
+### Done (operator surface + retention)
 
 | Item | Notes |
 | --- | --- |
-| **System session archive** (optional) | Same as worker dumps, for post-mortems of lead behavior |
-| **Scorecard alerts in doctor** | Promote thin-handoff / zero-ship flags into doctor tips |
-| **Eval fixtures** | Tiny repo + synthetic `metrics.jsonl` + golden scorecard in CI |
-| **memory/ prune** | Mirror sessions retention for MEMORY snapshots |
-
-### Medium value
-
-| Item | Notes |
-| --- | --- |
-| Cap archive size / compress old dumps | Host cost only; never shrink live lead review |
-| `swarm materials <id>` | Print MATERIALS path + last archive one-liner |
-| Document per-provider stall rates | Ops, not prompt law |
+| **System session archive** | `SYSTEM_SESSION.md` + `sessions/system-cN-*` after each system turn |
+| **Scorecard alerts in doctor** | Trajectory flags promoted into `swarm doctor` tips |
+| **Eval fixtures** | `fixtures/eval/*.jsonl` + selfcheck golden scorecard |
+| **memory/ prune** | Keep newest ~48 MEMORY snapshots |
+| **Compress old dumps** | Sessions older than newest 16 → `.md.gz`; prune to ~48 total |
+| **`swarm materials <id>`** | MATERIALS path + newest archives |
+| **`swarm postmortem <id>`** | Offline scorecard + materials + log tips (`--json` / `--out`) |
+| **Stall ops notes** | [ops-stall.md](./ops-stall.md) — operator-facing only |
+| **Unix swarm shim** | `bin/swarm` + `bin/swarm-tui` (bash; set `SWARM_HOME` or install path) |
 
 ### Avoid unless needed
 

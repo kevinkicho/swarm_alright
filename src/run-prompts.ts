@@ -284,6 +284,7 @@ export function systemFactNotes(args: {
     `handoff: ${p.handoffFile} (write next engineer assignment)`,
     `handoff_history: ${p.handoffHistoryFile}`,
     `worker_session_dump: ${p.workerSessionFile} (live FULL dump — open this)`,
+    `system_session_dump: ${p.systemSessionFile} (lead session archive for postmortems)`,
     `session_archives: ${p.sessionsDir}`,
     `session_index: ${p.sessionIndexFile}`,
     `ship_log: ${p.shipLogFile}`,

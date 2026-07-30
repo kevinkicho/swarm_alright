@@ -11,7 +11,7 @@ by [opencode](https://opencode.ai) + [Ollama Cloud](https://ollama.com/cloud).
 2. It overwrites **`HANDOFF.md`** with the engineer assignment.  
 3. **Host** advances **`BASELINE.sha`** when accepting last work (unless `HOST: STOP`).  
 4. **Worker** receives the handoff and edits the **project root** (no nested worktrees).  
-5. **Host** commits dirty files on that branch, probes/archives the worker session, updates MEMORY / metrics.  
+5. **Host** commits dirty files (including lead edits), probes/archives worker + system sessions, updates MEMORY / metrics.  
 6. Loop until `HOST: DONE` / `STOP`, or you `swarm stop`.
 
 No nested `.swarm/worktrees`, no team chat, no third “auditor” — two OpenCode sessions on the same project folder.
@@ -34,11 +34,14 @@ node src/cli.ts run C:\path\to\project --directive "make this app durable" --det
 node src/cli.ts watch
 node src/cli.ts tui      # attach into system or worker
 node src/cli.ts stop
-node src/cli.ts restart  # same run id + worktrees
+node src/cli.ts restart  # same run id + run folder
 node src/cli.ts scorecard
+node src/cli.ts postmortem
+node src/cli.ts materials
 ```
 
-Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.
+Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.  
+Unix/macOS: `export PATH="$SWARM_HOME/bin:$PATH"` (bash shims in `bin/swarm`).
 
 ## Commands
 
@@ -46,8 +49,10 @@ Optional path install: `.\scripts\install-path.ps1` → `swarm` from anywhere.
 | --- | --- |
 | `swarm` | Interactive hub |
 | `swarm run <folder>` | Start a run |
-| `swarm restart [id]` | Resume same id / worktrees |
+| `swarm restart [id]` | Resume same id + run folder |
 | `swarm status` / `doctor` / `tally` / `scorecard` | Ops snapshots + trajectory evals |
+| `swarm postmortem [id]` | Offline postmortem (scorecard + materials + tips) |
+| `swarm materials [id]` | MATERIALS.md path + newest session archives |
 | `swarm watch` / `logs` / `tui` | Live view / attach |
 | `swarm stop` / `clean` | Shutdown / prune |
 
@@ -74,7 +79,8 @@ node src/cli.ts run C:\path\to\project --max-cycles 1 --directive "tiny smoke ch
 ## Docs
 
 - [Architecture](docs/architecture.md) — loop, run folder, modules  
-- [Recommendations](docs/recommendations.md) — ops guidance + future work  
+- [Recommendations](docs/recommendations.md) — ops guidance  
+- [Ops / stalls](docs/ops-stall.md) — interpreting stalls (operator notes only)  
 - [CLI](docs/cli.md) · [Runs](docs/runs.md) · [Configuration](docs/configuration.md) · [UI](docs/ui.md)
 
 ## License

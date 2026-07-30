@@ -72,11 +72,12 @@ export function writeMaterialsIndex(input: {
     ``,
     `## Worker thinking & tool history`,
     `- live session dump (latest probe): ${p.workerSessionFile}`,
+    `- live system/lead dump (postmortem): ${p.systemSessionFile}`,
     `- session archive index: ${p.sessionIndexFile}`,
-    `- session archives dir: ${p.sessionsDir}`,
+    `- session archives dir: ${p.sessionsDir} (worker-* and system-* dumps)`,
     probe
-      ? `- last probe: session=${probe.sessionID} messages=${probe.messageCount} tools=${probe.toolCalls} errors=${probe.toolErrors} status=${probe.status} chars=${probe.chars}`
-      : `- last probe: (none yet — kickoff cycle or not shipped)`,
+      ? `- last worker probe: session=${probe.sessionID} messages=${probe.messageCount} tools=${probe.toolCalls} errors=${probe.toolErrors} status=${probe.status} chars=${probe.chars}`
+      : `- last worker probe: (none yet — kickoff cycle or not shipped)`,
     `- engineer workspace (project root): ${p.workerWorktree}`,
     `- branch: ${p.baseBranch}`,
     ``,
@@ -103,7 +104,7 @@ export function writeMaterialsIndex(input: {
     `- \`git diff --stat HEAD~N\` or open MEMORY review pack`,
     `- open changed files under ${p.project}`,
     ``,
-    `## Session archives (prior worker dumps)`,
+    `## Session archives (prior worker + system dumps)`,
   ]
 
   const archives = listSessionArchives(p.runDir)
