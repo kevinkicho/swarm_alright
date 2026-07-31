@@ -83,6 +83,7 @@ Suggested order (mirrors MATERIALS.md):
 | **`swarm postmortem <id>`** | Offline scorecard + materials + log tips (`--json` / `--out`) |
 | **Stall ops notes** | [ops-stall.md](./ops-stall.md) — operator-facing only |
 | **Unix swarm shim** | `bin/swarm` + `bin/swarm-tui` (bash; set `SWARM_HOME` or install path) |
+| **External Aborted recovery** | Re-prompt same session (no rotate thrash); worker process-safety identity; host warn on mass node kill |
 
 ### Avoid unless needed
 

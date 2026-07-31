@@ -35,11 +35,25 @@ as SLAs; re-measure on your runs with `swarm scorecard` / `swarm tally`.
 | High `tool_error_rate` on scorecard | Inspect `WORKER_SESSION.md` tools — environment, paths, permissions |
 | Empty ships while tools “succeed” | Files not written under project root, or edits only under `.swarm/` |
 
+## External abort (human / TUI)
+
+| Pattern | Meaning |
+| --- | --- |
+| `turn error … Aborted` | OpenCode cancelled the session (Esc, concurrent prompt on same session, or external abort) |
+| `external abort … re-prompt same session (no rotate)` | Host recovers without rotating — preserves mid-turn context |
+
+**While host owns a turn:** prefer not messaging or Esc-aborting that role’s session in TUI. Chatting with the *other* role is usually fine; rewriting HANDOFF mid-worker still confuses the engineer.
+
+## Mass process kill
+
+If events.log shows `Stop-Process -Name node` / `pkill node` / `taskkill … node.exe`, the worker may have killed **OpenCode + the swarm host** (both are Node). Host logs `[host:warn] mass node/process kill detected`. Worker identity instructs PID-scoped cleanup only.
+
 ## Related host controls
 
 - Worker rotate: empty ship streak or probe message count ≥ 120
 - Session dump: recent window (~80 msgs / 150k chars)
 - Lead edits: committed after system turn (dirty-on-DONE)
+- External `Aborted`: re-prompt same session (no rotate thrash)
 
 ## Commands
 

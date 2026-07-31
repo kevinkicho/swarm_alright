@@ -266,7 +266,18 @@ async function main() {
   check("worker identity is short and sticky-shaped", () => {
     const w = prompts.buildWorkerIdentity(paths)
     assert.match(w, /engineer/i)
-    assert.ok(w.length < 800)
+    assert.match(w, /never kill all node|Stop-Process|process safety/i)
+    assert.match(w, /PID|pid/)
+    assert.ok(w.length < 1200)
+  })
+
+  check("isExternalAbortError classifies Aborted vs stall", async () => {
+    const turn = await load("run-turn.ts")
+    assert.equal(turn.isExternalAbortError("Aborted"), true)
+    assert.equal(turn.isExternalAbortError("session aborted by user"), true)
+    assert.equal(turn.isExternalAbortError("cancelled"), true)
+    assert.equal(turn.isExternalAbortError("stall: no OpenCode activity for 20m on worker"), false)
+    assert.equal(turn.isExternalAbortError("Bad Request context too large"), false)
   })
 
   check("metrics append + read", () => {

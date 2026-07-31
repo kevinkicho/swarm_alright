@@ -28,6 +28,14 @@ function isContextSizeError(msg: string): boolean {
   return /bad request|context.?overflow|context.?length|too large|token|413\b|payload/i.test(msg)
 }
 
+/**
+ * OpenCode session aborted by human (TUI Esc), concurrent prompt on same session,
+ * or external cancel — not a size/stall fault. Prefer re-prompt same session once.
+ */
+export function isExternalAbortError(msg: string): boolean {
+  return /\babort(ed|ing)?\b|\bcancell?ed\b|\binterrupted\b/i.test(msg) && !/stall:/i.test(msg)
+}
+
 export async function lastAssistantText(api: Api, agent: AgentRef): Promise<string> {
   try {
     const messages = await api.sessionMessages(agent.directory, agent.sessionID)
@@ -129,6 +137,23 @@ export async function runTurn(
       if (deps.isStopping() || /stopped/i.test(msg)) throw lastErr
 
       deps.log(`  [host] turn error attempt ${attempt}/${maxAttempts}: ${msg.slice(0, 300)}`)
+
+      // External abort: session already cancelled — do not thrash with another abort/rotate.
+      // Re-prompt the same session so mid-turn work can continue after human TUI interference.
+      if (isExternalAbortError(msg)) {
+        deps.log(
+          `  [host] external abort on ${agent.role} (human interrupt / concurrent session use) — wait idle, re-prompt same session (no rotate)`,
+        )
+        try {
+          await waitUntilNotBusy(deps.api, agent.directory, agent.sessionID, deps.isStopping)
+        } catch {}
+        if (attempt < maxAttempts) {
+          await sleep(1_500 * attempt)
+          continue
+        }
+        break
+      }
+
       await deps.api.abort(agent.directory, agent.sessionID)
       try {
         await waitUntilNotBusy(deps.api, agent.directory, agent.sessionID, deps.isStopping)
@@ -141,6 +166,7 @@ export async function runTurn(
         continue
       }
 
+      // Other errors: rotate only on the last retry, not every failure.
       if (attempt === maxAttempts - 1) {
         await rotateSession(deps, agent)
       } else if (attempt < maxAttempts) {

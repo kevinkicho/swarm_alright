@@ -398,6 +398,17 @@ export class Run {
       this.lastToolLogKey = key
       this.lastToolLogAt = now
       this.log(`  [tool] ${detail.slice(0, 400)}`)
+      // Host + OpenCode are Node; mass-killing node ends the run (rms9gthvpprb postmortem).
+      if (
+        (tool === "bash" || /bash|shell|cmd/i.test(String(tool))) &&
+        /Stop-Process[^\n]*-Name\s+['"]?node|Get-Process[^\n]*-Name\s+['"]?node[^\n]*Stop-Process|pkill\s+(-9\s+)?node|killall\s+node|taskkill[^\n]*node\.exe/i.test(
+          detail,
+        )
+      ) {
+        this.log(
+          `  [host:warn] mass node/process kill detected — this can terminate OpenCode and the swarm host; prefer killing only the PID you started`,
+        )
+      }
     } else if (evt.type === "session.error") {
       const msg = p?.error?.data?.message ?? p?.error?.message ?? JSON.stringify(p?.error ?? p)
       this.log(`  [error] ${String(msg).slice(0, 300)}`)
