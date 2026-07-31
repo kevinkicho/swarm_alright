@@ -63,6 +63,7 @@ import {
   hostSyncWorker,
   hostCommitWorker,
   hostCommitIfDirty,
+  hostCommitIfDirtySync,
   buildReviewPack,
   hostApplyVerdict,
   writeBaseline,
@@ -422,11 +423,14 @@ export class Run {
     })
     process.on("uncaughtException", (err) => {
       this.log(`[FATAL] uncaught exception: ${err.message}`)
+      this.salvageDirtySync("uncaughtException")
       void this.markCrashed(`uncaughtException: ${err.message}`)
       this.stopping = true
     })
     process.on("exit", () => {
       if (this.record?.status === "running") {
+        // Last-chance salvage — async commit may not run; sync git only.
+        this.salvageDirtySync("process.exit")
         this.record.status = "crashed"
         this.record.lastHeartbeat = new Date().toISOString()
         this.record.phase = "crashed: process exit while running"
@@ -589,7 +593,7 @@ export class Run {
     if (this.opts.maxCycles) this.log(`(test mode: will stop after ${this.opts.maxCycles} cycle(s))`)
 
     process.on("SIGINT", () => {
-      this.log("SIGINT received — stopping gracefully...")
+      this.log("SIGINT received — stopping gracefully (will salvage dirty root)...")
       this.stopping = true
     })
 
@@ -929,6 +933,15 @@ export class Run {
     let handoffFromReply = false
     const handoffBefore = readHandoffFile(this.handoffFile)
 
+    // Salvage uncommitted work from a prior crash/mid-turn death so the lead reviews it.
+    this.heartbeat("salvage")
+    const salvaged = await this.commitSystemDirtyIfNeeded(
+      `swarm ${this.id} host: cycle ${this.cycle} pre-review salvage (dirty root)`,
+    )
+    if (salvaged) {
+      this.log(`  [host] salvaged dirty project root before review — lead will see new commits`)
+    }
+
     this.heartbeat("system")
     let anyCommits = false
     let reviewSections: string[] = []
@@ -1167,10 +1180,46 @@ export class Run {
     Registry.saveLocal(this.record)
   }
 
+  /** Best-effort sync commit when the process is dying (no await). */
+  private salvageDirtySync(reason: string): void {
+    try {
+      if (!this.opts?.project || !this.id) return
+      const r = hostCommitIfDirtySync(
+        this.opts.project,
+        this.id,
+        this.cycle,
+        "host",
+        `swarm ${this.id} host: cycle ${this.cycle} sync salvage (${reason})`,
+      )
+      if (r.committed) {
+        this.log(`  [host:git] sync salvage (${reason}): ${r.detail}`)
+      }
+    } catch {}
+  }
+
   private async shutdown(status: "stopped" | "errored" | "crashed"): Promise<void> {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = undefined
+    }
+    // Flush dirty root so stop/crash never discards mid-turn engineer work.
+    try {
+      const r = await hostCommitIfDirty(
+        this.gitCtx(),
+        "host",
+        `swarm ${this.id} host: cycle ${this.cycle} flush on ${status}`,
+      )
+      if (r.committed) {
+        this.log(`  [host:git] flushed dirty root on ${status}: ${r.sha.slice(0, 7)}`)
+      }
+    } catch (err) {
+      this.log(
+        `  [host:git] flush on ${status} failed: ${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          200,
+        ),
+      )
+      this.salvageDirtySync(status)
     }
     this.log(`run ${this.id} ${status} — cleaning up (project root + run folder kept; no nested worktrees)`)
     if (this.record) {

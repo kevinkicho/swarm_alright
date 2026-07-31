@@ -6,11 +6,14 @@ scorecards; they are **not** prompt law and are not wired into agents.
 ## What the host treats as a stall
 
 - **Definition:** no OpenCode bus activity for `stallMs` (default **20 minutes**)
-  on the active agent session.
-- **Response:** abort the busy session, wait until not busy, **rotate** the
-  session (fresh context), retry the turn (up to 3 attempts).
-- **Not a stall:** long healthy tools (big builds, multi-file edits) that still
-  emit bus events. The host deliberately does **not** wall-clock-kill busy tools.
+  **and** session status is not busy/working/retry.
+- **Response:**
+  1. First stall → abort + **re-prompt same session** (soft recover)
+  2. Repeated stall → **rotate** session, retry
+  3. Up to 3 attempts total
+- **Not a stall:** session still `busy` / long tools — host polls status every 15s
+  and treats busy as activity even without bus part events.
+- Host also **salvages dirty git** on cycle start, shutdown, and process exit.
 
 ## Signals in events.log
 

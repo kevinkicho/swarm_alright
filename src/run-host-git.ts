@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process"
 import {
   ensureOnBranch,
   commitWorktree,
+  commitWorktreeSync,
   commitsAhead,
   shortLog,
   rangeDiff,
@@ -98,6 +99,22 @@ export async function hostCommitIfDirty(
     ctx.log(`  [host:git] commit ${who} FAILED: ${m.slice(0, 300)}`)
     return { committed: false, ahead: 0, sha: "" }
   }
+}
+
+/**
+ * Sync salvage commit for SIGINT / uncaughtException / process.exit.
+ * Best-effort — never throws.
+ */
+export function hostCommitIfDirtySync(
+  project: string,
+  runId: string,
+  cycle: number,
+  who: "host" | "system" | "worker" = "host",
+  note?: string,
+): { committed: boolean; sha: string; detail: string } {
+  const msg =
+    note?.trim() || `swarm ${runId} ${who}: cycle ${cycle} (sync salvage on shutdown/crash)`
+  return commitWorktreeSync(project, msg)
 }
 
 export async function hostCommitWorker(

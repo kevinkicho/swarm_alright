@@ -228,7 +228,7 @@ export function buildWorkerIdentity(
     `Mission file (read if needed): ${paths.missionFile}`,
     `When done, blocked, or needing a decision — say so clearly and stop. Prefer real file changes over plans.`,
     // Host + OpenCode are Node processes; mass-killing node ends the entire swarm run.
-    `Process safety: never kill all node/java processes (no Stop-Process -Name node, pkill node, taskkill /IM node.exe /F, killall). Dev servers: start detached, record PID, smoke-test, stop only that PID. Do not block your turn on a forever server — background it, verify, then finish.`,
+    `Process safety: never kill all node/java processes (no Stop-Process -Name node, pkill node, taskkill /IM node.exe /F, killall). Dev servers: start detached, record PID, smoke-test briefly (≤15s wait), stop only that PID. Prefer npm run build/lint over leaving dev servers running. Do not block your turn on a forever server.`,
   ].join("\n")
 }
 

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { execFile, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 
@@ -378,6 +378,48 @@ export async function commitWorktree(
     throw new Error(`commit failed: ${result.stderr || result.stdout}`.slice(0, 400))
   }
   return { committed: true, sha, detail: `committed ${sha.slice(0, 7)}` }
+}
+
+/**
+ * Sync commit for crash/exit handlers (async work may not finish).
+ * Best-effort; never throws.
+ */
+export function commitWorktreeSync(
+  worktree: string,
+  message: string,
+): { committed: boolean; sha: string; detail: string } {
+  try {
+    const st = spawnSync("git", ["-C", worktree, "status", "--porcelain"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    })
+    if (st.error) return { committed: false, sha: "", detail: st.error.message }
+    if (!(st.stdout || "").trim()) {
+      const head = spawnSync("git", ["-C", worktree, "rev-parse", "HEAD"], {
+        encoding: "utf8",
+        timeout: 10_000,
+      })
+      return { committed: false, sha: (head.stdout || "").trim(), detail: "clean" }
+    }
+    spawnSync("git", ["-C", worktree, "add", "-A"], { encoding: "utf8", timeout: 60_000 })
+    const commit = spawnSync("git", ["-C", worktree, "commit", "-m", message], {
+      encoding: "utf8",
+      timeout: 60_000,
+    })
+    const head = spawnSync("git", ["-C", worktree, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    })
+    const sha = (head.stdout || "").trim()
+    if (commit.status !== 0) {
+      const err = `${commit.stdout || ""}${commit.stderr || ""}`
+      if (/nothing to commit/i.test(err)) return { committed: false, sha, detail: "nothing to commit" }
+      return { committed: false, sha, detail: err.slice(0, 200) }
+    }
+    return { committed: true, sha, detail: `committed ${sha.slice(0, 7)}` }
+  } catch (err) {
+    return { committed: false, sha: "", detail: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /** How many commits workerBranch is ahead of integrationBranch (0 = empty review). */

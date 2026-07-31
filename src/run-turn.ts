@@ -114,6 +114,18 @@ export async function runTurn(
         while (!finished) {
           await sleep(15_000)
           if (finished || deps.isStopping()) return
+          // Long tools may emit no bus events; if OpenCode still says busy, refresh activity.
+          try {
+            const statuses = await deps.api.sessionStatus(agent.directory)
+            const st = statuses[agent.sessionID]
+            const t = st?.type
+            if (t === "busy" || t === "retry" || t === "working") {
+              deps.markActivity()
+              continue
+            }
+          } catch {
+            // status poll failed — fall through to bus-idle timer
+          }
           const idleFor = Date.now() - deps.lastActivityAt()
           if (idleFor >= deps.stallMs) {
             throw new Error(
@@ -159,8 +171,23 @@ export async function runTurn(
         await waitUntilNotBusy(deps.api, agent.directory, agent.sessionID, deps.isStopping)
       } catch {}
 
-      if (/stall:/i.test(msg) || isContextSizeError(msg)) {
-        deps.log(`  [host] rotating session after ${/stall:/i.test(msg) ? "stall" : "size/Bad Request"}`)
+      // Stall: first recovery re-prompts same session (keep context); later stalls rotate.
+      if (/stall:/i.test(msg)) {
+        if (attempt === 1) {
+          deps.log(
+            `  [host] stall soft-recover on ${agent.role} — re-prompt same session (no rotate yet)`,
+          )
+          await sleep(2_000)
+          continue
+        }
+        deps.log(`  [host] rotating session after repeated stall`)
+        await rotateSession(deps, agent)
+        await sleep(1_000)
+        continue
+      }
+
+      if (isContextSizeError(msg)) {
+        deps.log(`  [host] rotating session after size/Bad Request`)
         await rotateSession(deps, agent)
         await sleep(1_000)
         continue

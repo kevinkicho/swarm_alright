@@ -280,6 +280,24 @@ async function main() {
     assert.equal(turn.isExternalAbortError("Bad Request context too large"), false)
   })
 
+  check("commitWorktreeSync no-op on clean temp repo", async () => {
+    const gitMod = await load("git.ts")
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-sync-"))
+    const { execFileSync } = await import("node:child_process")
+    execFileSync("git", ["init"], { cwd: dir })
+    execFileSync("git", ["config", "user.email", "t@t.com"], { cwd: dir })
+    execFileSync("git", ["config", "user.name", "t"], { cwd: dir })
+    fs.writeFileSync(path.join(dir, "a.txt"), "hi\n")
+    execFileSync("git", ["add", "a.txt"], { cwd: dir })
+    execFileSync("git", ["commit", "-m", "init"], { cwd: dir })
+    const clean = gitMod.commitWorktreeSync(dir, "noop")
+    assert.equal(clean.committed, false)
+    fs.writeFileSync(path.join(dir, "b.txt"), "x\n")
+    const dirty = gitMod.commitWorktreeSync(dir, "salvage")
+    assert.equal(dirty.committed, true)
+    assert.ok(dirty.sha)
+  })
+
   check("metrics append + read", () => {
     metrics.appendCycleMetric(tmp, {
       ts: new Date().toISOString(),

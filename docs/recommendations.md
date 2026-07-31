@@ -84,6 +84,9 @@ Suggested order (mirrors MATERIALS.md):
 | **Stall ops notes** | [ops-stall.md](./ops-stall.md) — operator-facing only |
 | **Unix swarm shim** | `bin/swarm` + `bin/swarm-tui` (bash; set `SWARM_HOME` or install path) |
 | **External Aborted recovery** | Re-prompt same session (no rotate thrash); worker process-safety identity; host warn on mass node kill |
+| **Busy ≠ stall** | Stall watch polls OpenCode status; busy/working tools refresh activity |
+| **Soft stall** | First stall re-prompts same session; rotate only on repeat |
+| **Dirty salvage** | Commit dirty root on cycle start, shutdown, and process exit (sync) |
 
 ### Avoid unless needed
 
