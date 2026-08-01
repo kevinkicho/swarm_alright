@@ -41,8 +41,11 @@ export class SystemWatch {
   private stopped = false
   private readonly injectIntervalMs: number
   private readonly activeWatchCooldownMs: number
+  private readonly opts: SystemWatchOpts
 
-  constructor(private opts: SystemWatchOpts) {
+  constructor(opts: SystemWatchOpts) {
+    // No TS parameter properties — Node strip-only mode rejects them.
+    this.opts = opts
     this.injectIntervalMs = opts.injectIntervalMs ?? 25_000
     this.activeWatchCooldownMs = opts.activeWatchCooldownMs ?? 8 * 60_000
   }
