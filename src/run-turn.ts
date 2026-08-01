@@ -162,24 +162,32 @@ export async function runTurn(
         while (!finished) {
           await sleep(15_000)
           if (finished || deps.isStopping()) return
-          // SDK truth: running tools (events), status busy, or child sessions busy.
+          // SDK truth: running tools (events) = still active.
           if (deps.bus.hasRunningTools(agent.sessionID)) {
             deps.markActivity()
             continue
           }
+          // Session status busy without any bus events for stallMs = stuck generation (not healthy).
+          const lastBus = Math.max(deps.bus.lastActivityFor(agent.sessionID), deps.lastActivityAt())
+          const quietMs = Date.now() - lastBus
           try {
             const act = await deps.api.sessionIsActive(agent.directory, agent.sessionID)
-            if (act.active) {
+            if (act.active && quietMs < deps.stallMs) {
               deps.markActivity()
               continue
             }
-          } catch {
+            if (act.active && quietMs >= deps.stallMs) {
+              throw new Error(
+                `stall: session busy but no OpenCode bus events for ${Math.round(quietMs / 60_000)}m on ${agent.role} (${act.detail})`,
+              )
+            }
+          } catch (err) {
+            if (err instanceof Error && /^stall:/.test(err.message)) throw err
             // status poll failed — fall through to bus-idle timer
           }
-          const idleFor = Date.now() - deps.lastActivityAt()
-          if (idleFor >= deps.stallMs) {
+          if (quietMs >= deps.stallMs) {
             throw new Error(
-              `stall: no OpenCode activity for ${Math.round(idleFor / 60_000)}m on ${agent.role} (threshold ${Math.round(deps.stallMs / 60_000)}m)`,
+              `stall: no OpenCode activity for ${Math.round(quietMs / 60_000)}m on ${agent.role} (threshold ${Math.round(deps.stallMs / 60_000)}m)`,
             )
           }
         }

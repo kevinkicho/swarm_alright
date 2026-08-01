@@ -6,6 +6,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { loadApiKey, opencodeConfig, bareModel, modelLimit } from "./config.ts"
 import { startServer, Api, EventBus, type ServerHandle, type SwarmEvent } from "./opencode.ts"
+import {
+  publishBusEvent,
+  writeBusSnapshot,
+  loadBusRingFromDisk,
+  busMdPath,
+  busJsonlPath,
+  recentBusSummaries,
+} from "./event-bus-surface.ts"
 import { ensureRepo, ensureOnBranch } from "./git.ts"
 import * as Registry from "./registry.ts"
 import { Style } from "./style.ts"
@@ -127,6 +135,9 @@ export class Run {
   private lastRotateSummary = ""
   private healthTimer?: ReturnType<typeof setInterval>
   private healthFailStreak = 0
+  private busSnapshotTimer?: ReturnType<typeof setInterval>
+  /** Last time we published a "busy but quiet" alert on the bus. */
+  private lastBusyQuietPublishAt = 0
 
   constructor(opts: RunOptions) {
     this.id = opts.resumeFrom ?? Registry.newId()
@@ -162,6 +173,8 @@ export class Run {
       materialsFile: materialsPath(this.runDir),
       metricsFile: metricsFilePath(this.runDir),
       eventsLogFile: eventsLogPath(this.runDir),
+      busFile: busMdPath(this.runDir),
+      busJsonlFile: busJsonlPath(this.runDir),
       memoryFile: memoryPath(this.runDir),
       sessionsDir: sessionsDir(this.runDir),
       sessionIndexFile: sessionIndexPath(this.runDir),
@@ -377,6 +390,7 @@ export class Run {
 
   private onEvent(evt: SwarmEvent): void {
     const p = evt.properties as any
+    const sessionID = String(p?.sessionID ?? p?.info?.sessionID ?? "")
     if (
       evt.type === "message.part.updated" ||
       evt.type === "message.updated" ||
@@ -386,6 +400,21 @@ export class Run {
     ) {
       this.markActivity()
     }
+
+    // Pub: session lifecycle → durable BUS (lead can open BUS.md anytime).
+    if (evt.type === "session.status" || evt.type === "session.idle" || evt.type === "session.error") {
+      const st = p?.status?.type ?? (evt.type === "session.idle" ? "idle" : evt.type)
+      const err =
+        evt.type === "session.error"
+          ? String(p?.error?.data?.message ?? p?.error?.message ?? p?.error ?? "").slice(0, 200)
+          : ""
+      publishBusEvent(this.runDir, {
+        type: evt.type,
+        sessionID: sessionID || undefined,
+        summary: err ? `${st}: ${err}` : String(st),
+      })
+    }
+
     if (evt.type === "message.part.updated" && p?.part?.type === "tool") {
       const part = p.part
       const tool = part.tool ?? "tool"
@@ -413,6 +442,11 @@ export class Run {
       this.lastToolLogKey = key
       this.lastToolLogAt = now
       this.log(`  [tool] ${detail.slice(0, 400)}`)
+      publishBusEvent(this.runDir, {
+        type: "tool",
+        sessionID: sessionID || undefined,
+        summary: `${status || "tool"}: ${detail.slice(0, 300)}`,
+      })
       // Host + OpenCode are Node; mass-killing node ends the run (rms9gthvpprb postmortem).
       if (
         (tool === "bash" || /bash|shell|cmd/i.test(String(tool))) &&
@@ -423,11 +457,73 @@ export class Run {
         this.log(
           `  [host:warn] mass node/process kill detected — this can terminate OpenCode and the swarm host; prefer killing only the PID you started`,
         )
+        publishBusEvent(this.runDir, {
+          type: "warn",
+          sessionID: sessionID || undefined,
+          summary: "mass node kill pattern in tool command",
+          detail: detail.slice(0, 200),
+        })
       }
     } else if (evt.type === "session.error") {
       const msg = p?.error?.data?.message ?? p?.error?.message ?? JSON.stringify(p?.error ?? p)
       this.log(`  [error] ${String(msg).slice(0, 300)}`)
     }
+  }
+
+  /** Refresh BUS.md with live session.status (pub side for lead). */
+  private async refreshBusSnapshot(): Promise<void> {
+    if (!this.api || this.stopping) return
+    const statusLines: string[] = []
+    try {
+      const st = await this.api.sessionStatus(this.opts.project)
+      const agents = this.record?.agents ?? []
+      for (const a of agents) {
+        const s = st[a.sessionID]
+        const busLast = this.bus?.lastActivityFor(a.sessionID) ?? 0
+        const age = busLast ? `${Math.round((Date.now() - busLast) / 1000)}s ago` : "never"
+        const tools = this.bus?.hasRunningTools(a.sessionID) ? " tools=running" : ""
+        statusLines.push(
+          `${a.role} ses=${a.sessionID.slice(0, 12)}… status=${s?.type ?? "idle"} last_event=${age}${tools}`,
+        )
+      }
+      if (!agents.length) {
+        for (const [id, v] of Object.entries(st)) {
+          statusLines.push(`${id.slice(0, 14)}…=${v?.type}`)
+        }
+      }
+    } catch (err) {
+      statusLines.push(`status poll failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    // Busy-but-quiet sensor: publish alert so lead materials stay current even mid-worker.
+    try {
+      const worker = this.record?.agents?.find((a) => a.role === "worker")
+      if (worker && this.bus) {
+        const act = await this.api.sessionIsActive(this.opts.project, worker.sessionID)
+        const last = this.bus.lastActivityFor(worker.sessionID) || this.lastActivityAt
+        const quietMs = Date.now() - last
+        if (act.active && quietMs >= 10 * 60_000 && Date.now() - this.lastBusyQuietPublishAt > 5 * 60_000) {
+          this.lastBusyQuietPublishAt = Date.now()
+          const mins = Math.round(quietMs / 60_000)
+          publishBusEvent(this.runDir, {
+            type: "alert",
+            sessionID: worker.sessionID,
+            role: "worker",
+            summary: `busy but no bus events for ~${mins}m (${act.detail})`,
+            detail: "Host still waiting; lead can review BUS.md / WORKER_SESSION when next turn runs",
+          })
+          this.log(`  [host:bus] alert: worker busy but quiet ~${mins}m`)
+        }
+      }
+    } catch {}
+
+    writeBusSnapshot(this.runDir, {
+      runId: this.id,
+      cycle: this.cycle,
+      phase: this.record?.phase,
+      statusLines,
+      note: recentBusSummaries(5).join(" · ") || undefined,
+    })
   }
 
   async start(): Promise<void> {
@@ -616,6 +712,17 @@ export class Run {
     this.healthTimer = setInterval(() => {
       void this.pollOpenCodeHealth()
     }, 45_000)
+    // Pub/sub surface for lead: refresh BUS.md status while worker turns run.
+    loadBusRingFromDisk(this.runDir, 120)
+    writeBusSnapshot(this.runDir, {
+      runId: this.id,
+      cycle: this.cycle,
+      phase: "boot",
+      statusLines: ["(waiting for first OpenCode events)"],
+    })
+    this.busSnapshotTimer = setInterval(() => {
+      void this.refreshBusSnapshot()
+    }, 20_000)
 
     let failures = 0
     try {
@@ -1395,6 +1502,10 @@ export class Run {
     if (this.healthTimer) {
       clearInterval(this.healthTimer)
       this.healthTimer = undefined
+    }
+    if (this.busSnapshotTimer) {
+      clearInterval(this.busSnapshotTimer)
+      this.busSnapshotTimer = undefined
     }
     // Flush dirty root so stop/crash never discards mid-turn engineer work.
     try {

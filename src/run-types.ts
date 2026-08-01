@@ -47,6 +47,9 @@ export type RunPaths = {
   materialsFile: string
   metricsFile: string
   eventsLogFile: string
+  /** Live OpenCode event pub surface (host publishes; lead reads). */
+  busFile: string
+  busJsonlFile: string
   memoryFile: string
   /** Directory of archived WORKER_SESSION / SYSTEM_SESSION dumps. */
   sessionsDir: string

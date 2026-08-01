@@ -42,7 +42,8 @@ Legacy `swarm clean --worktrees` still removes old nested worktrees if present.
 4. Durable logs under `.swarm/runs/<id>/`  
 5. No time pressure on the lead  
 6. **One workspace = project root**  
-7. **Exceptions escalate to system** — host salvages sensors/git; lead decides CONTINUE / STOP / DONE / REPASS via `EXCEPTION.md`
+7. **Exceptions escalate to system** — host salvages sensors/git; lead decides CONTINUE / STOP / DONE / REPASS via `EXCEPTION.md`  
+8. **Event bus pub/sub** — only host calls OpenCode `event.subscribe`; publishes `BUS.md` / `BUS.jsonl` for the lead to re-open anytime
 
 See [recommendations.md](./recommendations.md).
 
@@ -65,6 +66,7 @@ Omitting host lines = **continue + accept** when `defaultMerge` is true.
   MATERIALS.md, HANDOFF.md, HANDOFF_HISTORY.md
   WORKER_SESSION.md, SYSTEM_SESSION.md, SESSION_INDEX.md, sessions/
   SHIP_LOG.md, ships/, MEMORY.md, memory/
+  BUS.md, BUS.jsonl    live OpenCode event pub surface (host → lead)
   BASELINE.sha         review range anchor (root mode)
   metrics.jsonl, events.log, run.json, STOP
 ```

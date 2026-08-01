@@ -52,6 +52,8 @@ async function main() {
     materialsFile: path.join(tmp, "MATERIALS.md"),
     metricsFile: path.join(tmp, "metrics.jsonl"),
     eventsLogFile: path.join(tmp, "events.log"),
+    busFile: path.join(tmp, "BUS.md"),
+    busJsonlFile: path.join(tmp, "BUS.jsonl"),
     memoryFile: path.join(tmp, "MEMORY.md"),
     sessionsDir: path.join(tmp, "sessions"),
     sessionIndexFile: path.join(tmp, "SESSION_INDEX.md"),
@@ -111,6 +113,26 @@ async function main() {
     const out = probe.redactSecrets("OLLAMA_API_KEY=abc.defGHIJ and Bearer sk-abcdefg1234567890")
     assert.match(out, /REDACTED/)
     assert.equal(/abc\.defGHIJ/.test(out), false)
+  })
+
+  check("event bus surface publish + snapshot", async () => {
+    const bus = await load("event-bus-surface.ts")
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-bus-"))
+    bus.publishBusEvent(runDir, { type: "tool", sessionID: "ses_abc", summary: "bash: npm run build" })
+    bus.publishBusEvent(runDir, { type: "session.status", sessionID: "ses_abc", summary: "busy" })
+    bus.writeBusSnapshot(runDir, {
+      runId: "t",
+      cycle: 1,
+      phase: "worker",
+      statusLines: ["worker ses=ses_abc… status=busy last_event=2s ago"],
+    })
+    assert.ok(fs.existsSync(bus.busJsonlPath(runDir)))
+    assert.ok(fs.existsSync(bus.busMdPath(runDir)))
+    const md = fs.readFileSync(bus.busMdPath(runDir), "utf8")
+    assert.match(md, /npm run build/)
+    assert.match(md, /status=busy/)
+    const n = bus.loadBusRingFromDisk(runDir, 50)
+    assert.ok(n >= 2)
   })
 
   check("sitrep points at materials inventory (no dual-audience template)", () => {

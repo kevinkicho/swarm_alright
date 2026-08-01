@@ -125,17 +125,24 @@ export function writeMaterialsIndex(input: {
     `## Run telemetry`,
     `- metrics trajectory: ${p.metricsFile}`,
     `- host events log: ${p.eventsLogFile}`,
+    p.busFile
+      ? `- live event bus (host pub / you read): ${p.busFile}`
+      : `- live event bus: ${path.join(p.runDir, "BUS.md")}`,
+    p.busJsonlFile
+      ? `- event bus history (jsonl): ${p.busJsonlFile}`
+      : `- event bus history: ${path.join(p.runDir, "BUS.jsonl")}`,
     `- host EXCEPTION (if escalated): ${path.join(p.runDir, "EXCEPTION.md")}`,
     `- this materials map: ${p.materialsFile}`,
     `- MEMORY snapshots: ${path.join(p.runDir, "memory")}`,
     `- run dir: ${p.runDir}`,
     ``,
     `## Suggested investigation order (optional)`,
-    `1. Open ${p.workerSessionFile} (or a sessions/ archive) — worker thinking, tools, errors.`,
-    `2. Open MEMORY / ${p.shipLogFile} / git commands — what landed on the branch.`,
-    `3. Open real files under ${p.project} — claims vs tree.`,
-    `4. Read ${p.dialogueFile} / ${p.handoffHistoryFile} / older session archives for multi-cycle context.`,
-    `5. Write the next engineer assignment to ${p.handoffFile}.`,
+    `1. Open ${p.busFile ?? path.join(p.runDir, "BUS.md")} — live OpenCode tools/status (host publishes continuously).`,
+    `2. Open ${p.workerSessionFile} (or a sessions/ archive) — worker thinking, tools, errors.`,
+    `3. Open MEMORY / ${p.shipLogFile} / git commands — what landed on the branch.`,
+    `4. Open real files under ${p.project} — claims vs tree.`,
+    `5. Read ${p.dialogueFile} / ${p.handoffHistoryFile} / older session archives for multi-cycle context.`,
+    `6. Write the next engineer assignment to ${p.handoffFile}.`,
     ``,
   )
 
