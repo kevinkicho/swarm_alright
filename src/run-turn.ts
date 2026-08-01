@@ -167,33 +167,40 @@ export async function runTurn(
         while (!finished) {
           await sleep(15_000)
           if (finished || deps.isStopping()) return
-          // SDK truth: running tools (events) = still active.
-          if (deps.bus.hasRunningTools(agent.sessionID)) {
+          // Prefer last *session* bus event for quiet; do not let global markActivity hide silence.
+          const lastBus = deps.bus.lastActivityFor(agent.sessionID) || deps.lastActivityAt()
+          const quietMs = Date.now() - lastBus
+          // Stuck tool accounting: no events for half stall window → drop "running" flag.
+          if (deps.bus.clearStaleRunningTools(agent.sessionID, Math.min(deps.stallMs / 2, 10 * 60_000))) {
+            deps.log(
+              `  [host] cleared stale running-tool flag on ${agent.role} (no bus events ≥${Math.round(Math.min(deps.stallMs / 2, 10 * 60_000) / 60_000)}m)`,
+            )
+          }
+          // Fresh running tools with recent events = healthy.
+          if (deps.bus.hasRunningTools(agent.sessionID) && quietMs < 2 * 60_000) {
             deps.markActivity()
             continue
           }
-          // Session status busy without any bus events for stallMs = stuck generation (not healthy).
-          const lastBus = Math.max(deps.bus.lastActivityFor(agent.sessionID), deps.lastActivityAt())
-          const quietMs = Date.now() - lastBus
+          // Quiet too long: stall even if status still busy (stuck generation / hung bash).
+          if (quietMs >= deps.stallMs) {
+            let detail = "no bus events"
+            try {
+              const act = await deps.api.sessionIsActive(agent.directory, agent.sessionID)
+              detail = act.active ? `status still ${act.detail}` : act.detail
+            } catch {}
+            throw new Error(
+              `stall: no OpenCode bus events for ${Math.round(quietMs / 60_000)}m on ${agent.role} (${detail}; threshold ${Math.round(deps.stallMs / 60_000)}m)`,
+            )
+          }
+          // Still within window and session busy with some recent event — keep waiting.
           try {
             const act = await deps.api.sessionIsActive(agent.directory, agent.sessionID)
-            if (act.active && quietMs < deps.stallMs) {
-              deps.markActivity()
+            if (act.active) {
+              // do not markActivity — that would reset quiet and block stall forever
               continue
             }
-            if (act.active && quietMs >= deps.stallMs) {
-              throw new Error(
-                `stall: session busy but no OpenCode bus events for ${Math.round(quietMs / 60_000)}m on ${agent.role} (${act.detail})`,
-              )
-            }
-          } catch (err) {
-            if (err instanceof Error && /^stall:/.test(err.message)) throw err
-            // status poll failed — fall through to bus-idle timer
-          }
-          if (quietMs >= deps.stallMs) {
-            throw new Error(
-              `stall: no OpenCode activity for ${Math.round(quietMs / 60_000)}m on ${agent.role} (threshold ${Math.round(deps.stallMs / 60_000)}m)`,
-            )
+          } catch {
+            // status poll failed
           }
         }
       })()

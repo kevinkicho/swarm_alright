@@ -66,11 +66,32 @@ export function writeBusSnapshot(
     runId?: string
     statusLines?: string[]
     note?: string
+    /** ms since last OpenCode event for primary (worker) session */
+    lastEventAgeMs?: number
+    /** worker still reported busy/active by SDK */
+    workerActive?: boolean
   },
 ): void {
+  const hostTick = new Date().toISOString()
+  const ageMs = opts?.lastEventAgeMs
+  const ageMin = ageMs != null ? Math.round(ageMs / 60_000) : null
+  // Host tick ≠ work. STALE when quiet ≥10m while worker still "active".
+  const workStale =
+    opts?.workerActive === true && ageMs != null && ageMs >= 10 * 60_000
+  const workHealth =
+    ageMs == null
+      ? "UNKNOWN"
+      : workStale
+        ? "STALE"
+        : ageMs >= 5 * 60_000
+          ? "QUIET"
+          : "OK"
+
   const lines = [
     `# BUS — live OpenCode event surface`,
-    `Updated: ${new Date().toISOString()}`,
+    `host_tick: ${hostTick}  ← host process rewrite only (NOT proof of worker progress)`,
+    `last_opencode_event_age: ${ageMin != null ? `~${ageMin}m` : "n/a"}`,
+    `work_health: **${workHealth}**${workStale ? " — worker busy/active but no bus events ≥10m" : ""}`,
     opts?.runId ? `run: ${opts.runId}` : null,
     opts?.cycle != null ? `cycle: ${opts.cycle}` : null,
     opts?.phase ? `phase: ${opts.phase}` : null,
@@ -78,8 +99,18 @@ export function writeBusSnapshot(
     `Host is the only subscriber to OpenCode \`event.subscribe\`.`,
     `This file is the pub side for the system lead — open it anytime with tools.`,
     `Append-only history: ${busJsonlPath(runDir)}`,
+    `Trust work_health / last_opencode_event_age — not host_tick alone.`,
     ``,
   ].filter((l) => l != null) as string[]
+
+  if (workStale) {
+    lines.push(
+      `## ⚠ WORK STALE`,
+      `Worker appears active to OpenCode but the event bus has been silent ≥10 minutes.`,
+      `Host should alert system watch. Prefer lint/build over long-lived npm run dev.`,
+      ``,
+    )
+  }
 
   if (opts?.note) {
     lines.push(`## Host note`, opts.note, ``)

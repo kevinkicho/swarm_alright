@@ -483,17 +483,33 @@ export class Run {
   private async refreshBusSnapshot(): Promise<void> {
     if (!this.api || this.stopping) return
     const statusLines: string[] = []
+    let workerEventAgeMs: number | undefined
+    let workerActive = false
     try {
       const st = await this.api.sessionStatus(this.opts.project)
       const agents = this.record?.agents ?? []
       for (const a of agents) {
         const s = st[a.sessionID]
         const busLast = this.bus?.lastActivityFor(a.sessionID) ?? 0
-        const age = busLast ? `${Math.round((Date.now() - busLast) / 1000)}s ago` : "never"
+        // Drop stuck running-tool flags before status display.
+        if (this.bus && busLast) {
+          this.bus.clearStaleRunningTools(a.sessionID, 10 * 60_000)
+        }
+        const ageMs = busLast ? Date.now() - busLast : undefined
+        const age = ageMs != null ? `${Math.round(ageMs / 1000)}s ago` : "never"
         const tools = this.bus?.hasRunningTools(a.sessionID) ? " tools=running" : ""
         statusLines.push(
           `${a.role} ses=${a.sessionID.slice(0, 12)}… status=${s?.type ?? "idle"} last_event=${age}${tools}`,
         )
+        if (a.role === "worker") {
+          workerEventAgeMs = ageMs
+          try {
+            const act = await this.api.sessionIsActive(this.opts.project, a.sessionID)
+            workerActive = act.active
+          } catch {
+            workerActive = !!(s && s.type !== "idle")
+          }
+        }
       }
       if (!agents.length) {
         for (const [id, v] of Object.entries(st)) {
@@ -504,25 +520,30 @@ export class Run {
       statusLines.push(`status poll failed: ${err instanceof Error ? err.message : String(err)}`)
     }
 
-    // Busy-but-quiet sensor: publish alert so lead materials stay current even mid-worker.
+    // Busy-but-quiet: alert + force a system-watch digest heartbeat (not silent host_tick only).
     try {
       const worker = this.record?.agents?.find((a) => a.role === "worker")
-      if (worker && this.bus) {
-        const act = await this.api.sessionIsActive(this.opts.project, worker.sessionID)
-        const last = this.bus.lastActivityFor(worker.sessionID) || this.lastActivityAt
-        const quietMs = Date.now() - last
-        if (act.active && quietMs >= 10 * 60_000 && Date.now() - this.lastBusyQuietPublishAt > 5 * 60_000) {
+      if (worker && this.bus && workerEventAgeMs != null) {
+        const quietMs = workerEventAgeMs
+        if (workerActive && quietMs >= 2 * 60_000) {
+          // Heartbeat every ~2m of silence so lead session is not empty during quiet.
+          this.systemWatch?.observe(
+            `heartbeat: worker still ${workerActive ? "active" : "?"} , bus quiet ~${Math.round(quietMs / 60_000)}m (host_tick is not progress)`,
+            "note",
+          )
+        }
+        if (workerActive && quietMs >= 10 * 60_000 && Date.now() - this.lastBusyQuietPublishAt > 5 * 60_000) {
           this.lastBusyQuietPublishAt = Date.now()
           const mins = Math.round(quietMs / 60_000)
           publishBusEvent(this.runDir, {
             type: "alert",
             sessionID: worker.sessionID,
             role: "worker",
-            summary: `busy but no bus events for ~${mins}m (${act.detail})`,
-            detail: "Active system watch will be notified; lead can HOST: STOP on watch turn",
+            summary: `busy but no bus events for ~${mins}m`,
+            detail: "STALE work_health; active system watch notified — STOP aborts turn only, DONE ends mission",
           })
-          this.log(`  [host:bus] alert: worker busy but quiet ~${mins}m`)
-          this.systemWatch?.observe(`worker busy but quiet ~${mins}m (${act.detail})`, "alert")
+          this.log(`  [host:bus] alert: worker busy but quiet ~${mins}m (work_health=STALE)`)
+          this.systemWatch?.observe(`worker busy but quiet ~${mins}m — consider HOST: STOP to unstick turn`, "alert")
         }
       }
     } catch {}
@@ -533,6 +554,8 @@ export class Run {
       phase: this.record?.phase,
       statusLines,
       note: recentBusSummaries(5).join(" · ") || undefined,
+      lastEventAgeMs: workerEventAgeMs,
+      workerActive,
     })
   }
 
@@ -1206,17 +1229,24 @@ export class Run {
             "use lint/build smoke only. HOST: DONE only if mission goals are truly met; " +
             "HOST: STOP only to end the entire run.",
         })
-        if (esc.signal === "DONE" || esc.signal === "STOP") {
-          this.lastVerdict = esc.signal
+        // After watch abort, only DONE ends the mission. STOP here would re-kill the mission
+        // the lead just tried to save — treat STOP as continue with recovery handoff.
+        if (esc.signal === "DONE") {
+          this.lastVerdict = "DONE"
           this.stopping = true
-          if (esc.signal === "DONE" && this.lastShip?.committed) {
+          if (this.lastShip?.committed) {
             await hostApplyVerdict(this.gitCtx(), "DONE", "recovery escalate DONE", { doMerge: true })
           }
           return
         }
+        if (esc.signal === "STOP") {
+          this.log(
+            `  [host:watch] recovery escalate said STOP — ignoring as end-run (use STOP file or next-cycle STOP to end mission)`,
+          )
+        }
         activeHandoff =
           esc.handoff.trim() || readHandoffFile(this.handoffFile) || activeHandoff
-        this.lastVerdict = esc.signal || "CONTINUE"
+        this.lastVerdict = "CONTINUE"
         this.log(`[cycle ${this.cycle}] worker${label}-recover after watch abort...`)
         this.systemWatch = new SystemWatch({
           api: this.api!,

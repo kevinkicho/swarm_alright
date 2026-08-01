@@ -125,14 +125,34 @@ async function main() {
       cycle: 1,
       phase: "worker",
       statusLines: ["worker ses=ses_abc… status=busy last_event=2s ago"],
+      lastEventAgeMs: 2_000,
+      workerActive: true,
     })
     assert.ok(fs.existsSync(bus.busJsonlPath(runDir)))
     assert.ok(fs.existsSync(bus.busMdPath(runDir)))
     const md = fs.readFileSync(bus.busMdPath(runDir), "utf8")
     assert.match(md, /npm run build/)
     assert.match(md, /status=busy/)
+    assert.match(md, /host_tick/)
+    assert.match(md, /work_health:\s*\*\*OK\*\*/)
     const n = bus.loadBusRingFromDisk(runDir, 50)
     assert.ok(n >= 2)
+  })
+
+  check("BUS.md STALE when quiet and worker active", async () => {
+    const bus = await load("event-bus-surface.ts")
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-stale-"))
+    bus.writeBusSnapshot(runDir, {
+      runId: "t",
+      cycle: 1,
+      phase: "worker",
+      statusLines: ["worker busy last_event=700s ago"],
+      lastEventAgeMs: 12 * 60_000,
+      workerActive: true,
+    })
+    const md = fs.readFileSync(bus.busMdPath(runDir), "utf8")
+    assert.match(md, /work_health:\s*\*\*STALE\*\*/)
+    assert.match(md, /WORK STALE/)
   })
 
   check("SystemWatch queues observes", async () => {

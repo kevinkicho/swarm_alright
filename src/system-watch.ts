@@ -47,7 +47,9 @@ export class SystemWatch {
     // No TS parameter properties — Node strip-only mode rejects them.
     this.opts = opts
     this.injectIntervalMs = opts.injectIntervalMs ?? 25_000
+    // First alert can fire immediately; later alerts spaced by this cooldown.
     this.activeWatchCooldownMs = opts.activeWatchCooldownMs ?? 8 * 60_000
+    // lastActiveWatchAt starts at 0 so first alert is not blocked by cooldown.
   }
 
   stop(): void {
@@ -92,12 +94,12 @@ export class SystemWatch {
       await sleep(5_000)
       if (isWorkerDone() || this.stopped) break
 
-      // Continuous listen: flush digests into system context.
+      // Continuous listen: flush digests (including quiet heartbeats) into system context.
       if (this.pending.length && Date.now() - this.lastInjectAt >= this.injectIntervalMs) {
         await this.flushInject()
       }
 
-      // Active listen: short lead turn on alert (cooldown).
+      // Active listen: short lead turn on alert (cooldown). First alert fires ASAP (cooldown 0).
       if (
         this.alertPending &&
         Date.now() - this.lastActiveWatchAt >= this.activeWatchCooldownMs &&
@@ -106,6 +108,10 @@ export class SystemWatch {
         this.alertPending = false
         this.lastActiveWatchAt = Date.now()
         activeWatches++
+        // Ensure alert text is in the pending batch for the watch prompt.
+        if (!this.pending.some((l) => /alert:/i.test(l))) {
+          this.pending.push(`[${new Date().toISOString().slice(11, 19)}] alert: (see prior injects / BUS.md STALE)`)
+        }
         const r = await this.activeWatchTurn(deps)
         if (r.signal === "STOP" || r.signal === "DONE") {
           stopWorker = true

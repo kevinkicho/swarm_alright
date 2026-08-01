@@ -394,6 +394,19 @@ export class EventBus {
     return (this.runningTools.get(sessionID) ?? 0) > 0
   }
 
+  /**
+   * Clear stuck "running tool" counters when no bus events for maxQuietMs.
+   * OpenCode sometimes never emits completed for long Start-Process tools —
+   * that used to block stall forever.
+   */
+  clearStaleRunningTools(sessionID: string, maxQuietMs: number): boolean {
+    if (!this.hasRunningTools(sessionID)) return false
+    const last = this.lastEventAt.get(sessionID) ?? 0
+    if (!last || Date.now() - last < maxQuietMs) return false
+    this.runningTools.delete(sessionID)
+    return true
+  }
+
   private bumpRunning(sessionID: string, delta: number): void {
     const n = Math.max(0, (this.runningTools.get(sessionID) ?? 0) + delta)
     if (n === 0) this.runningTools.delete(sessionID)
