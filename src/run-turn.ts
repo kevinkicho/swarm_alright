@@ -25,6 +25,11 @@ export type TurnDeps = {
   archiveWorkerBeforeRotate?: (agent: AgentRef) => void | Promise<void>
   /** Optional last summary text to inject into a fresh session after rotate. */
   lastRotateSummary?: { get: () => string; set: (s: string) => void }
+  /**
+   * When true, external Aborted is terminal (no re-prompt).
+   * Used when system watch deliberately aborts a stuck worker.
+   */
+  suppressExternalAbortRetry?: () => boolean
 }
 
 function isContextSizeError(msg: string): boolean {
@@ -210,7 +215,14 @@ export async function runTurn(
 
       // External abort: session already cancelled — do not thrash with another abort/rotate.
       // Re-prompt the same session so mid-turn work can continue after human TUI interference.
+      // Exception: deliberate watch abort of a stuck worker — do not re-prompt (that undoes STOP).
       if (isExternalAbortError(msg)) {
+        if (deps.suppressExternalAbortRetry?.()) {
+          deps.log(
+            `  [host] external abort on ${agent.role} (watch/lead abort) — terminal, no re-prompt`,
+          )
+          throw lastErr
+        }
         deps.log(
           `  [host] external abort on ${agent.role} (human interrupt / concurrent session use) — wait idle, re-prompt same session (no rotate)`,
         )

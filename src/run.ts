@@ -141,6 +141,8 @@ export class Run {
   private lastBusyQuietPublishAt = 0
   /** Active lead watch while worker runs (host fans bus → system session). */
   private systemWatch: SystemWatch | null = null
+  /** When true, worker abort is intentional (watch) — do not soft re-prompt. */
+  private watchAbortInProgress = false
 
   constructor(opts: RunOptions) {
     this.id = opts.resumeFrom ?? Registry.newId()
@@ -229,6 +231,7 @@ export class Run {
           this.lastRotateSummary = s
         },
       },
+      suppressExternalAbortRetry: () => this.watchAbortInProgress,
       archiveWorkerBeforeRotate: async (agent) => {
         // Fresh probe of the session about to be discarded (not only last post-ship dump).
         try {
@@ -1126,16 +1129,23 @@ export class Run {
         () => finished || this.stopping || this.stopRequested(),
       )
       if (watch.stopWorker) {
-        this.lastVerdict = watch.stopSignal || "STOP"
+        const sig = watch.stopSignal || "STOP"
+        // DONE = mission complete. STOP = abort stuck worker only (mission continues).
+        this.watchAbortInProgress = true
         try {
           await this.api!.abort(worker.directory, worker.sessionID)
         } catch {}
-        this.log(`  [host:watch] aborted worker after system watch ${this.lastVerdict}`)
+        this.log(
+          `  [host:watch] aborted worker after system watch ${sig}` +
+            (sig === "DONE" ? " (end run)" : " (stuck turn only — mission continues)"),
+        )
         await turnP
+        this.watchAbortInProgress = false
         return {
-          text: turnResult?.text || "(worker stopped by lead watch)",
+          text: turnResult?.text || "(worker aborted by lead watch)",
           secs: turnResult?.secs ?? 0,
           stoppedByWatch: true,
+          watchSignal: sig,
         }
       }
       await turnP
@@ -1144,7 +1154,7 @@ export class Run {
       if (watch.activeWatches) {
         this.log(`  [host:watch] ${watch.activeWatches} active system watch turn(s) during worker`)
       }
-      return { ...turnResult, stoppedByWatch: false }
+      return { ...turnResult, stoppedByWatch: false, watchSignal: "" as HostSignal }
     }
 
     try {
@@ -1153,18 +1163,89 @@ export class Run {
       if (r.stoppedByWatch) {
         this.lastWorkerReply = workerTurn.text
         this.systemWatch = null
-        // Fall through to probe/commit with partial work.
         appendDialogue(this.dialogueFile, label ? `worker${label}` : "worker", this.cycle, workerTurn.text)
         this.heartbeat("probe-worker")
-        await this.captureAndArchiveWorker(deps, worker, label ? `post-ship${label}-watch-stop` : "post-ship-watch-stop")
+        await this.captureAndArchiveWorker(
+          deps,
+          worker,
+          label ? `post-ship${label}-watch-abort` : "post-ship-watch-abort",
+        )
         this.heartbeat("commit")
         const ship = await hostCommitWorker(this.gitCtx())
         this.lastShip = { cycle: this.cycle, ...ship }
-        if (this.lastVerdict === "DONE" && ship.committed) {
-          await hostApplyVerdict(this.gitCtx(), "DONE", "system watch DONE", { doMerge: true })
+        if (ship.committed) this.emptyCommitStreak = 0
+
+        // Mission-complete only on DONE from watch. STOP = unstick worker, keep mission alive.
+        if (r.watchSignal === "DONE") {
+          this.lastVerdict = "DONE"
+          this.stopping = true
+          if (ship.committed) {
+            await hostApplyVerdict(this.gitCtx(), "DONE", "system watch DONE — mission complete", {
+              doMerge: true,
+            })
+          }
+          this.log(`  [host:watch] DONE from watch — ending run after salvage`)
+          return
         }
-        if (this.lastVerdict === "STOP" || this.lastVerdict === "DONE") this.stopping = true
-        return
+
+        this.log(
+          `  [host:watch] worker turn aborted (stuck) — salvaged commits; asking lead for recovery handoff (run continues)`,
+        )
+        publishBusEvent(this.runDir, {
+          type: "alert",
+          role: "host",
+          summary: "watch aborted stuck worker; mission continues — recovery handoff",
+        })
+        // Same-cycle recovery: system rewrites HANDOFF, one more worker pass.
+        const esc = await this.escalateToSystem(deps, system, worker, {
+          kind: "worker_watch_aborted",
+          phase: "worker",
+          message:
+            "Active watch aborted a stuck worker turn (often blocking npm run dev / silent busy). " +
+            "Mission is NOT done. Rewrite HANDOFF to continue without long-lived dev servers; " +
+            "use lint/build smoke only. HOST: DONE only if mission goals are truly met; " +
+            "HOST: STOP only to end the entire run.",
+        })
+        if (esc.signal === "DONE" || esc.signal === "STOP") {
+          this.lastVerdict = esc.signal
+          this.stopping = true
+          if (esc.signal === "DONE" && this.lastShip?.committed) {
+            await hostApplyVerdict(this.gitCtx(), "DONE", "recovery escalate DONE", { doMerge: true })
+          }
+          return
+        }
+        activeHandoff =
+          esc.handoff.trim() || readHandoffFile(this.handoffFile) || activeHandoff
+        this.lastVerdict = esc.signal || "CONTINUE"
+        this.log(`[cycle ${this.cycle}] worker${label}-recover after watch abort...`)
+        this.systemWatch = new SystemWatch({
+          api: this.api!,
+          log: (m) => this.log(m),
+          isStopping: () => this.stopping || this.stopRequested(),
+          system,
+          busFile: p.busFile,
+          workerSessionFile: p.workerSessionFile,
+          handoffFile: p.handoffFile,
+          cycle: this.cycle,
+        })
+        const r2 = await runWorkerOnce(activeHandoff)
+        workerTurn = { text: r2.text, secs: r2.secs }
+        if (r2.stoppedByWatch && r2.watchSignal === "DONE") {
+          this.lastVerdict = "DONE"
+          this.stopping = true
+        }
+        // If second watch abort is STOP again, ship and return — next cycle system reviews.
+        if (r2.stoppedByWatch && r2.watchSignal !== "DONE") {
+          this.lastWorkerReply = workerTurn.text
+          appendDialogue(this.dialogueFile, `${label || ""}worker-recover`, this.cycle, workerTurn.text)
+          await this.captureAndArchiveWorker(deps, worker, "post-ship-watch-abort-2")
+          const ship2 = await hostCommitWorker(this.gitCtx())
+          this.lastShip = { cycle: this.cycle, ...ship2 }
+          this.systemWatch = null
+          this.log(`  [host:watch] second abort — leaving rest for next cycle (run still alive)`)
+          return
+        }
+        // Fall through to normal post-worker probe/commit for successful recovery ship.
       }
     } catch (err) {
       this.systemWatch?.stop()

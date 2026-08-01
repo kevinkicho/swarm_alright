@@ -84,7 +84,7 @@ export class SystemWatch {
         `Live bus file: ${this.opts.busFile}`,
         `Worker dump: ${this.opts.workerSessionFile}`,
         `You may rewrite ${this.opts.handoffFile} if priorities change.`,
-        `On a watch alert turn: HOST: STOP ends the worker after salvage; otherwise stay listening.`,
+        `On a watch alert: HOST: STOP aborts only the stuck worker turn (mission continues). HOST: DONE ends the entire run when mission goals are met.`,
       ].join("\n"),
     )
 
@@ -170,15 +170,17 @@ export class SystemWatch {
       ``,
       `Respond briefly:`,
       `- Stay listening (no HOST line), optionally rewrite HANDOFF if the worker needs a course correction.`,
-      `- HOST: STOP if the worker should end this turn after salvage.`,
-      `- HOST: DONE only if the mission is complete enough to stop the run.`,
-      `Optional JSON: { "signal": "CONTINUE" } or { "signal": "STOP" }`,
+      `- HOST: STOP — abort this stuck worker turn only (host will salvage + ask you for a recovery handoff; run CONTINUES).`,
+      `- HOST: DONE — only if mission goals are truly complete (ends the entire run).`,
+      `Do NOT use STOP to end the mission. STOP unsticks a hung sub; DONE closes the mission.`,
+      `Optional JSON: { "signal": "STOP" } or { "signal": "DONE" }`,
     ].join("\n")
 
     try {
       const identity = [
         `You are the technical lead on ACTIVE WATCH — listening to worker/sub activity via host digests.`,
         `Prefer short intervention. Do not re-do the full materials review unless needed.`,
+        `HOST: STOP = kill stuck worker turn only (mission continues). HOST: DONE = end run (mission complete).`,
         `Handoff file: ${this.opts.handoffFile}`,
       ].join("\n")
       const turn = await runTurn(deps, this.opts.system, prompt, { system: identity })
