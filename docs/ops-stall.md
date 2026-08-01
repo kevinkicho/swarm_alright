@@ -6,14 +6,14 @@ scorecards; they are **not** prompt law and are not wired into agents.
 ## What the host treats as a stall
 
 - **Definition:** no OpenCode bus activity for `stallMs` (default **20 minutes**)
-  **and** session status is not busy/working/retry.
+  **and** none of: session status busy/working/retry, **running tool parts**
+  (SDK events), or **child session** busy (`session.children` + status).
 - **Response:**
   1. First stall → abort + **re-prompt same session** (soft recover)
-  2. Repeated stall → **rotate** session, retry
+  2. Repeated stall → SDK **summarize** + new session + **noReply** inject of summary
   3. Up to 3 attempts total
-- **Not a stall:** session still `busy` / long tools — host polls status every 15s
-  and treats busy as activity even without bus part events.
-- Host also **salvages dirty git** on cycle start, shutdown, and process exit.
+- Host **salvages dirty git** on cycle start, shutdown, and process exit.
+- **OpenCode health** polled ~45s (`/global/health` or `session.list`); 3 fails → salvage + stop.
 
 ## Signals in events.log
 

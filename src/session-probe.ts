@@ -7,7 +7,14 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { OpencodeClient } from "@opencode-ai/sdk"
-import { sessionMessages, sessionStatus, sessionList } from "./opencode.ts"
+import {
+  sessionMessages,
+  sessionStatus,
+  sessionList,
+  sessionChildren,
+  sessionTodo,
+  sessionDiff,
+} from "./opencode.ts"
 import { clip } from "./memory.ts"
 
 export type SessionProbeMeta = {
@@ -21,6 +28,25 @@ export type SessionProbeMeta = {
   dumpPath: string
   chars: number
   error?: string
+  childCount?: number
+}
+
+/** Sensor-only redaction of common secret shapes in dumps (not a policy tree). */
+export function redactSecrets(text: string): string {
+  let s = text
+  // KEY=value / bearer tokens / long hex-ish secrets
+  s = s.replace(
+    /\b([A-Z][A-Z0-9_]*(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*[=:]\s*['"]?[^\s'"]+/gi,
+    "$1=***REDACTED***",
+  )
+  s = s.replace(/\b(Bearer)\s+[A-Za-z0-9._\-]+/gi, "$1 ***REDACTED***")
+  s = s.replace(
+    /\b(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g,
+    "***REDACTED***",
+  )
+  // Ollama-style keys seen in dumps: hex.suffix
+  s = s.replace(/\b([a-f0-9]{32})\.([A-Za-z0-9_-]{8,})\b/g, "***REDACTED***")
+  return s
 }
 
 function compactJson(v: unknown, max = 400): string {
@@ -143,15 +169,19 @@ export async function probeSession(
     messageLimit?: number
     /** When set, only list sibling sessions whose title contains this run id. */
     runId?: string
+    /** Redact common secret shapes in dump (default true). */
+    redact?: boolean
   },
 ): Promise<{ markdown: string; meta: SessionProbeMeta }> {
   const maxChars = opts.maxChars ?? 150_000
+  const doRedact = opts.redact !== false
   const lines: string[] = []
   const counters = { tools: 0, errors: 0 }
   let messageCount = 0
   let statusLabel = "unknown"
   let probeError: string | undefined
   let truncatedRecent = false
+  let childCount = 0
 
   lines.push(`# ${opts.role.toUpperCase()} SESSION PROBE`)
   lines.push("")
@@ -193,7 +223,7 @@ export async function probeSession(
     for (const s of filtered.slice(0, 20)) {
       const id = String(s.id ?? s.sessionID ?? "?")
       const title = String(s.title ?? "")
-      const mark = id === opts.sessionID ? " ← this worker" : ""
+      const mark = id === opts.sessionID ? " ← this session" : ""
       lines.push(`- ${id.slice(0, 24)} ${title.slice(0, 60)}${mark}`)
     }
     if (!filtered.length) lines.push(`- (none matched run id filter)`)
@@ -202,43 +232,46 @@ export async function probeSession(
     // optional
   }
 
-  // Optional: session.todo if available on SDK
+  // SDK session.children (subtasks)
   try {
-    const todoFn = (client as any).session?.todo
-    if (typeof todoFn === "function") {
-      const res = await todoFn.call(client.session, {
-        path: { id: opts.sessionID },
-        query: { directory: opts.directory },
-      })
-      const todos = res?.data ?? res
-      if (todos && (Array.isArray(todos) ? todos.length : true)) {
-        lines.push(`## Session todos`)
-        lines.push("```json")
-        lines.push(clip(JSON.stringify(todos, null, 2), 3000))
-        lines.push("```")
-        lines.push("")
+    const kids = await sessionChildren(client, opts.directory, opts.sessionID)
+    childCount = kids.length
+    if (kids.length) {
+      lines.push(`## Child sessions (SDK)`)
+      for (const ch of kids.slice(0, 20)) {
+        const id = String(ch?.id ?? ch?.sessionID ?? "?")
+        const title = String(ch?.title ?? "")
+        lines.push(`- ${id.slice(0, 24)} ${title.slice(0, 60)}`)
       }
+      lines.push("")
     }
   } catch {
     // optional
   }
 
-  // Optional: session.diff
+  // SDK session.todo
   try {
-    const diffFn = (client as any).session?.diff
-    if (typeof diffFn === "function") {
-      const res = await diffFn.call(client.session, {
-        path: { id: opts.sessionID },
-        query: { directory: opts.directory },
-      })
-      const diff = res?.data ?? res
-      if (diff) {
-        lines.push(`## Session diff (SDK)`)
-        lines.push("```")
-        lines.push(clip(typeof diff === "string" ? diff : JSON.stringify(diff, null, 2), 4000))
-        lines.push("```")
-        lines.push("")
-      }
+    const todos = await sessionTodo(client, opts.directory, opts.sessionID)
+    if (todos != null && (Array.isArray(todos) ? todos.length : true)) {
+      lines.push(`## Session todos (SDK)`)
+      lines.push("```json")
+      lines.push(clip(JSON.stringify(todos, null, 2), 3000))
+      lines.push("```")
+      lines.push("")
+    }
+  } catch {
+    // optional
+  }
+
+  // SDK session.diff
+  try {
+    const diff = await sessionDiff(client, opts.directory, opts.sessionID)
+    if (diff != null && !(Array.isArray(diff) && !diff.length)) {
+      lines.push(`## Session diff (SDK)`)
+      lines.push("```")
+      lines.push(clip(typeof diff === "string" ? diff : JSON.stringify(diff, null, 2), 4000))
+      lines.push("```")
+      lines.push("")
     }
   } catch {
     // optional
@@ -323,6 +356,7 @@ export async function probeSession(
   if (truncatedRecent) {
     markdown += `\n\n(Note: only the last ${opts.messageLimit ?? 80} messages were rendered; full session may be larger — host may rotate when messageCount is high.)\n`
   }
+  if (doRedact) markdown = redactSecrets(markdown)
 
   try {
     fs.mkdirSync(path.dirname(opts.dumpPath), { recursive: true })
@@ -344,6 +378,7 @@ export async function probeSession(
       dumpPath: opts.dumpPath,
       chars: markdown.length,
       error: probeError,
+      childCount,
     },
   }
 }

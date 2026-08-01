@@ -252,6 +252,8 @@ export async function buildReviewPack(
   ].join("\n")
   parts.push(s)
   sections.push(s)
+  // Optional OpenCode session.diff pointer already lives in WORKER_SESSION dump;
+  // keep git pack as the source of truth for baseline..HEAD.
   ctx.log(`  [host:git] review: ${ahead} commit(s) since baseline`)
   return { pack: parts.join("\n\n"), sections, anyCommits: true }
 }

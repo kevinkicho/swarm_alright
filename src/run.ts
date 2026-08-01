@@ -35,6 +35,7 @@ import {
   buildExceptionSitrep,
   writeExceptionFile,
   exceptionFilePath,
+  parseExceptionDecision,
 } from "./run-prompts.ts"
 import type { HostSignal } from "./run-types.ts"
 import {
@@ -122,6 +123,10 @@ export class Run {
   /** Dedupe rapid duplicate tool log lines from OpenCode event fan-out. */
   private lastToolLogKey = ""
   private lastToolLogAt = 0
+  /** Continuity text from last session.summarize (SDK) for rotate inject. */
+  private lastRotateSummary = ""
+  private healthTimer?: ReturnType<typeof setInterval>
+  private healthFailStreak = 0
 
   constructor(opts: RunOptions) {
     this.id = opts.resumeFrom ?? Registry.newId()
@@ -201,6 +206,12 @@ export class Run {
           if (rec) rec.sessionID = agent.sessionID
           this.saveRecord()
         }
+      },
+      lastRotateSummary: {
+        get: () => this.lastRotateSummary,
+        set: (s) => {
+          this.lastRotateSummary = s
+        },
       },
       archiveWorkerBeforeRotate: async (agent) => {
         // Fresh probe of the session about to be discarded (not only last post-ship dump).
@@ -600,6 +611,12 @@ export class Run {
       this.stopping = true
     })
 
+    // SDK liveness: if OpenCode is unreachable, salvage and stop cleanly (not mystery crash).
+    this.healthFailStreak = 0
+    this.healthTimer = setInterval(() => {
+      void this.pollOpenCodeHealth()
+    }, 45_000)
+
     let failures = 0
     try {
       while (!this.stopping && !this.stopRequested()) {
@@ -922,11 +939,12 @@ export class Run {
       `swarm ${this.id} system: cycle ${this.cycle} after exception (lead edits)`,
     )
 
-    const signal = parseHostSignal(turn.text)
+    const decision = parseExceptionDecision(turn.text)
+    const signal = decision.signal
     const resolved = this.resolveHandoff(turn.text)
     this.lastVerdict = signal || this.lastVerdict
     this.log(
-      `  [host] system exception response: signal=${signal || "(default continue)"} handoff=${resolved.body.length} chars`,
+      `  [host] system exception response: signal=${signal || "(default continue)"}${decision.fromJson ? " (json)" : ""} handoff=${resolved.body.length} chars`,
     )
     return { signal, handoff: resolved.body, text: turn.text }
   }
@@ -1331,10 +1349,52 @@ export class Run {
     } catch {}
   }
 
+  /** Poll OpenCode health (SDK/global/health or session.list). */
+  private async pollOpenCodeHealth(): Promise<void> {
+    if (this.stopping || !this.api) return
+    try {
+      const h = await this.api.health(this.opts.project)
+      if (h.ok) {
+        if (this.healthFailStreak > 0) {
+          this.log(`  [host] opencode health recovered (${h.detail})`)
+        }
+        this.healthFailStreak = 0
+        return
+      }
+      this.healthFailStreak++
+      this.log(
+        `  [host] opencode health fail ${this.healthFailStreak}/3: ${h.detail}`.slice(0, 220),
+      )
+      if (this.healthFailStreak >= 3) {
+        this.log(`[host] opencode unreachable — salvaging dirty root and stopping run`)
+        this.salvageDirtySync("opencode_unreachable")
+        void this.markCrashed(`opencode_unreachable: ${h.detail}`)
+        this.stopping = true
+      }
+    } catch (err) {
+      this.healthFailStreak++
+      this.log(
+        `  [host] opencode health error ${this.healthFailStreak}/3: ${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          200,
+        ),
+      )
+      if (this.healthFailStreak >= 3) {
+        this.salvageDirtySync("opencode_health_error")
+        void this.markCrashed("opencode_health_error")
+        this.stopping = true
+      }
+    }
+  }
+
   private async shutdown(status: "stopped" | "errored" | "crashed"): Promise<void> {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = undefined
+    }
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer)
+      this.healthTimer = undefined
     }
     // Flush dirty root so stop/crash never discards mid-turn engineer work.
     try {

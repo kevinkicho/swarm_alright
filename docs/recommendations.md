@@ -88,6 +88,7 @@ Suggested order (mirrors MATERIALS.md):
 | **Soft stall** | First stall re-prompts same session; rotate only on repeat |
 | **Dirty salvage** | Commit dirty root on cycle start, shutdown, and process exit (sync) |
 | **Exception → system** | Worker/cycle failures escalate to lead (`EXCEPTION.md` + sitrep); host does not invent recovery policy |
+| **SDK-first durability** | Busy=tools+status+children; health watchdog; summarize/noReply rotate; todo/diff in dumps; secret redaction; JSON exception signal |
 
 ### Avoid unless needed
 

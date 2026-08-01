@@ -31,6 +31,8 @@ export type ProjectConfig = {
   defaultMerge?: boolean
   /** Append cycle facts to metrics.jsonl for offline evals (default true). */
   metrics?: boolean
+  /** Redact common secret shapes in session dumps (default true). */
+  redactDumps?: boolean
 }
 
 export type ResolvedProjectConfig = {
@@ -39,6 +41,7 @@ export type ResolvedProjectConfig = {
   singleFlight: boolean
   defaultMerge: boolean
   metrics: boolean
+  redactDumps: boolean
 }
 
 export function loadProjectConfig(project: string): ResolvedProjectConfig {
@@ -66,6 +69,7 @@ export function loadProjectConfig(project: string): ResolvedProjectConfig {
   const singleFlight = raw.singleFlight !== false
   const defaultMerge = raw.defaultMerge !== false
   const metrics = raw.metrics !== false
+  const redactDumps = raw.redactDumps !== false
 
-  return { verify, linkDirs, singleFlight, defaultMerge, metrics }
+  return { verify, linkDirs, singleFlight, defaultMerge, metrics, redactDumps }
 }

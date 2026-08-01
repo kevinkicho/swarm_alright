@@ -97,6 +97,11 @@ export function buildExceptionSitrep(opts: {
     `- HOST: DONE — accept baseline if commits exist and end.`,
     `- HOST: REPASS — same-cycle second worker after you rewrite handoff.`,
     ``,
+    `If convenient, end with a JSON block the host can parse:`,
+    "```json",
+    `{ "signal": "CONTINUE", "handoff_updated": true }`,
+    "```",
+    ``,
     `Open the exception file and WORKER_SESSION / git if useful. Take as long as you need.`,
   )
   return lines.join("\n")
@@ -125,6 +130,11 @@ export function writeExceptionFile(opts: {
     ``,
     `Host sensors only. System lead decides CONTINUE / STOP / DONE / REPASS and HANDOFF.`,
     ``,
+    `Optional machine-readable block (host parses if present):`,
+    "```json",
+    `{ "signal": "CONTINUE|STOP|DONE|REPASS", "handoff_updated": true }`,
+    "```",
+    ``,
     ...(opts.extra?.length ? ["## Extra", ...opts.extra.map((e) => `- ${e}`), ``] : []),
   ].join("\n")
   try {
@@ -132,6 +142,46 @@ export function writeExceptionFile(opts: {
     fs.writeFileSync(dest, body)
   } catch {}
   return dest
+}
+
+/**
+ * Parse lead exception decision: prefer JSON block, fall back to HOST: lines.
+ * Host does not invent policy — only extracts signal.
+ */
+export function parseExceptionDecision(text: string): {
+  signal: HostSignal
+  fromJson: boolean
+  handoffUpdated?: boolean
+} {
+  const raw = text || ""
+  // fenced ```json ... ```
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidates = [fence?.[1], raw].filter(Boolean) as string[]
+  for (const c of candidates) {
+    const start = c.indexOf("{")
+    const end = c.lastIndexOf("}")
+    if (start < 0 || end <= start) continue
+    try {
+      const obj = JSON.parse(c.slice(start, end + 1)) as {
+        signal?: string
+        handoff_updated?: boolean
+        handoffUpdated?: boolean
+      }
+      const sig = String(obj.signal || "")
+        .toUpperCase()
+        .trim() as HostSignal
+      if (sig === "CONTINUE" || sig === "STOP" || sig === "DONE" || sig === "REPASS" || sig === "HOLD") {
+        return {
+          signal: sig === "CONTINUE" ? "" : sig,
+          fromJson: true,
+          handoffUpdated: obj.handoff_updated ?? obj.handoffUpdated,
+        }
+      }
+    } catch {
+      // try next
+    }
+  }
+  return { signal: parseHostSignal(raw), fromJson: false }
 }
 
 /**

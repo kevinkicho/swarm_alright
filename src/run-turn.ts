@@ -1,5 +1,6 @@
 /**
  * OpenCode turn execution: prompt, waitIdle, stall recovery, session rotate.
+ * Uses SDK status/events/summarize/noReply — no process-name heuristics.
  */
 import fs from "node:fs"
 import { PROVIDER_ID, bareModel } from "./config.ts"
@@ -22,6 +23,8 @@ export type TurnDeps = {
   onSessionRotated?: (agent: AgentRef) => void
   /** Probe+archive worker session before id changes (stall/size rotate). */
   archiveWorkerBeforeRotate?: (agent: AgentRef) => void | Promise<void>
+  /** Optional last summary text to inject into a fresh session after rotate. */
+  lastRotateSummary?: { get: () => string; set: (s: string) => void }
 }
 
 function isContextSizeError(msg: string): boolean {
@@ -75,9 +78,54 @@ export async function rotateSession(deps: TurnDeps, agent: AgentRef): Promise<vo
       await deps.archiveWorkerBeforeRotate(agent)
     } catch {}
   }
+
+  // SDK summarize before discard — official compression, not host-written memory.
+  let summaryNote = ""
+  try {
+    const ok = await deps.api.sessionSummarize(agent.directory, agent.sessionID, {
+      providerID: PROVIDER_ID,
+      modelID: bareModel(agent.model),
+    })
+    if (ok) {
+      summaryNote = await lastAssistantText(deps.api, agent)
+      if (summaryNote) {
+        deps.lastRotateSummary?.set(summaryNote.slice(0, 6_000))
+        deps.log(`  [host] session.summarize ok for ${agent.role} (${summaryNote.length} chars)`)
+      } else {
+        deps.log(`  [host] session.summarize accepted for ${agent.role}`)
+      }
+    }
+  } catch (err) {
+    deps.log(
+      `  [host] session.summarize skipped: ${err instanceof Error ? err.message : String(err)}`.slice(0, 160),
+    )
+  }
+
+  const prevSummary = deps.lastRotateSummary?.get() || summaryNote
   const session = await deps.api.createSession(agent.directory, `swarm ${deps.runId} ${agent.role} (rotated)`)
   agent.sessionID = session.id
   deps.onSessionRotated?.(agent)
+
+  // Seed new session with prior summary via SDK noReply (context only, no model turn).
+  if (prevSummary.trim()) {
+    try {
+      await deps.api.sessionInjectContext(
+        agent.directory,
+        agent.sessionID,
+        [
+          `[host] Prior ${agent.role} session was rotated. Continuity summary from OpenCode:`,
+          prevSummary.slice(0, 6_000),
+        ].join("\n\n"),
+        { providerID: PROVIDER_ID, modelID: bareModel(agent.model) },
+      )
+      deps.log(`  [host] injected rotate summary into new ${agent.role} session (noReply)`)
+    } catch (err) {
+      deps.log(
+        `  [host] noReply inject failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 160),
+      )
+    }
+  }
+
   deps.log(`  [host] rotated session for ${agent.role} (fresh context)`)
 }
 
@@ -114,12 +162,14 @@ export async function runTurn(
         while (!finished) {
           await sleep(15_000)
           if (finished || deps.isStopping()) return
-          // Long tools may emit no bus events; if OpenCode still says busy, refresh activity.
+          // SDK truth: running tools (events), status busy, or child sessions busy.
+          if (deps.bus.hasRunningTools(agent.sessionID)) {
+            deps.markActivity()
+            continue
+          }
           try {
-            const statuses = await deps.api.sessionStatus(agent.directory)
-            const st = statuses[agent.sessionID]
-            const t = st?.type
-            if (t === "busy" || t === "retry" || t === "working") {
+            const act = await deps.api.sessionIsActive(agent.directory, agent.sessionID)
+            if (act.active) {
               deps.markActivity()
               continue
             }
@@ -220,6 +270,7 @@ export async function captureWorkerSession(
     maxChars: 150_000,
     messageLimit: 80,
     runId: deps.runId,
+    redact: true,
   })
   deps.log(
     `  [host:session] worker probe: messages=${meta.messageCount} tools=${meta.toolCalls} errors=${meta.toolErrors} status=${meta.status} → ${meta.dumpPath}` +
@@ -243,6 +294,7 @@ export async function captureSystemSession(
     maxChars: 120_000,
     messageLimit: 60,
     runId: deps.runId,
+    redact: true,
   })
   deps.log(
     `  [host:session] system probe: messages=${meta.messageCount} tools=${meta.toolCalls} errors=${meta.toolErrors} status=${meta.status} → ${meta.dumpPath}` +

@@ -97,6 +97,22 @@ async function main() {
     assert.match(sit, /HANDOFF/)
   })
 
+  check("parseExceptionDecision prefers JSON block", () => {
+    const d = prompts.parseExceptionDecision('notes\n```json\n{"signal":"STOP","handoff_updated":false}\n```\n')
+    assert.equal(d.signal, "STOP")
+    assert.equal(d.fromJson, true)
+    const d2 = prompts.parseExceptionDecision("HOST: DONE\nlooks good")
+    assert.equal(d2.signal, "DONE")
+    assert.equal(d2.fromJson, false)
+  })
+
+  check("redactSecrets masks keys", async () => {
+    const probe = await load("session-probe.ts")
+    const out = probe.redactSecrets("OLLAMA_API_KEY=abc.defGHIJ and Bearer sk-abcdefg1234567890")
+    assert.match(out, /REDACTED/)
+    assert.equal(/abc\.defGHIJ/.test(out), false)
+  })
+
   check("sitrep points at materials inventory (no dual-audience template)", () => {
     const sit = prompts.buildSystemSitrep({
       cycle: 2,
@@ -354,6 +370,7 @@ async function main() {
     assert.equal(r.defaultMerge, true)
     assert.equal(r.metrics, true)
     assert.equal(r.singleFlight, true)
+    assert.equal(r.redactDumps, true)
   })
 
   check("principal/executor default models differ", () => {

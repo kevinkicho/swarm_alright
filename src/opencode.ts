@@ -168,11 +168,196 @@ export async function sessionList(client: OpencodeClient, directory: string): Pr
   return (unwrapData(res, "session.list") as any[]) ?? []
 }
 
+/** SDK session.children — subtask / nested sessions. */
+export async function sessionChildren(
+  client: OpencodeClient,
+  directory: string,
+  sessionID: string,
+): Promise<any[]> {
+  try {
+    const res = await client.session.children({
+      path: { id: sessionID },
+      query: { directory },
+    })
+    const data = (res as any)?.data ?? res
+    return Array.isArray(data) ? data : []
+  } catch {
+    return []
+  }
+}
+
+/** SDK session.todo — best-effort. */
+export async function sessionTodo(
+  client: OpencodeClient,
+  directory: string,
+  sessionID: string,
+): Promise<unknown | null> {
+  try {
+    const res = await client.session.todo({
+      path: { id: sessionID },
+      query: { directory },
+    })
+    return (res as any)?.data ?? res ?? null
+  } catch {
+    return null
+  }
+}
+
+/** SDK session.diff — best-effort list of file diffs. */
+export async function sessionDiff(
+  client: OpencodeClient,
+  directory: string,
+  sessionID: string,
+): Promise<unknown | null> {
+  try {
+    const res = await client.session.diff({
+      path: { id: sessionID },
+      query: { directory },
+    })
+    return (res as any)?.data ?? res ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * SDK session.summarize — official compression before rotate.
+ * Returns true if the server accepted the summarize call.
+ */
+export async function sessionSummarize(
+  client: OpencodeClient,
+  directory: string,
+  sessionID: string,
+  model: { providerID: string; modelID: string },
+): Promise<boolean> {
+  try {
+    const res = await client.session.summarize({
+      path: { id: sessionID },
+      query: { directory },
+      body: { providerID: model.providerID, modelID: model.modelID },
+    })
+    if ((res as any)?.error) return false
+    return (res as any)?.data !== false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Inject context without an AI reply (SDK prompt noReply).
+ * Used to seed a rotated session with a prior summary.
+ */
+export async function sessionInjectContext(
+  client: OpencodeClient,
+  directory: string,
+  sessionID: string,
+  text: string,
+  model?: { providerID: string; modelID: string },
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    noReply: true,
+    parts: [{ type: "text", text }],
+  }
+  if (model) body.model = model
+  try {
+    const res = await client.session.prompt({
+      path: { id: sessionID },
+      query: { directory },
+      body: body as any,
+    })
+    if ((res as any)?.error) throw sdkError("session.prompt(noReply)", (res as any).error)
+  } catch (err) {
+    // Best-effort — rotate still proceeds without inject.
+    if (err instanceof Error && /session\.prompt/.test(err.message)) throw err
+  }
+}
+
+/**
+ * Liveness probe for the OpenCode server.
+ * Prefers SDK global.health when present; falls back to HTTP /global/health and session.list.
+ */
+export async function serverHealth(
+  client: OpencodeClient,
+  baseUrl: string,
+  directory?: string,
+): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const g = (client as any).global
+    if (g && typeof g.health === "function") {
+      const res = await g.health({})
+      const data = res?.data ?? res
+      if (data?.healthy === true || data?.healthy === false) {
+        return {
+          ok: data.healthy === true,
+          detail: data.version ? `sdk health v=${data.version}` : "sdk health",
+        }
+      }
+    }
+  } catch (err) {
+    // try HTTP / list
+  }
+  try {
+    const url = baseUrl.replace(/\/$/, "") + "/global/health"
+    const res = await fetch(url, { signal: AbortSignal.timeout(5_000) })
+    if (res.ok) {
+      let version = ""
+      try {
+        const j = (await res.json()) as { version?: string; healthy?: boolean }
+        if (j.healthy === false) return { ok: false, detail: "global/health healthy=false" }
+        version = j.version ? ` v=${j.version}` : ""
+      } catch {}
+      return { ok: true, detail: `http /global/health${version}` }
+    }
+  } catch {}
+  try {
+    await sessionList(client, directory || process.cwd())
+    return { ok: true, detail: "session.list ok" }
+  } catch (err) {
+    return {
+      ok: false,
+      detail: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+    }
+  }
+}
+
+/**
+ * True when OpenCode still considers this session (or a child) active.
+ * Combines session.status + optional child sessions — no process-name heuristics.
+ */
+export async function sessionIsActive(
+  client: OpencodeClient,
+  directory: string,
+  sessionID: string,
+): Promise<{ active: boolean; detail: string }> {
+  try {
+    const statuses = await sessionStatus(client, directory)
+    const mine = statuses[sessionID]
+    if (mine && (mine.type === "busy" || mine.type === "retry" || mine.type === "working")) {
+      return { active: true, detail: `status=${mine.type}` }
+    }
+    const children = await sessionChildren(client, directory, sessionID)
+    for (const ch of children) {
+      const id = String(ch?.id ?? ch?.sessionID ?? "")
+      if (!id) continue
+      const st = statuses[id]
+      if (st && (st.type === "busy" || st.type === "retry" || st.type === "working")) {
+        return { active: true, detail: `child ${id.slice(0, 12)} status=${st.type}` }
+      }
+    }
+    return { active: false, detail: mine?.type ?? "idle" }
+  } catch (err) {
+    return {
+      active: false,
+      detail: err instanceof Error ? err.message.slice(0, 120) : "status failed",
+    }
+  }
+}
+
 type Waiter = { resolve: () => void; reject: (err: Error) => void }
 
 /**
  * Host wait helper on top of SDK event.subscribe + session.status.
- * Not a new OpenCode protocol — only orchestration.
+ * Tracks running tools from part events so long tools don't look "stalled".
  */
 export class EventBus {
   private client: OpencodeClient
@@ -182,6 +367,10 @@ export class EventBus {
   private started = false
   private abortCtrl?: AbortController
   private seenBusy = new Set<string>()
+  /** sessionID → count of tools currently in running/pending state (from events). */
+  private runningTools = new Map<string, number>()
+  private lastEventAt = new Map<string, number>()
+  private streamAliveAt = Date.now()
 
   constructor(client: OpencodeClient) {
     this.client = client
@@ -191,7 +380,28 @@ export class EventBus {
     this.handlers.add(handler)
   }
 
+  /** Last event time for a session (0 if never). */
+  lastActivityFor(sessionID: string): number {
+    return this.lastEventAt.get(sessionID) ?? 0
+  }
+
+  /** Whether event stream received anything recently (server connectivity proxy). */
+  streamFresh(maxAgeMs = 120_000): boolean {
+    return Date.now() - this.streamAliveAt < maxAgeMs
+  }
+
+  hasRunningTools(sessionID: string): boolean {
+    return (this.runningTools.get(sessionID) ?? 0) > 0
+  }
+
+  private bumpRunning(sessionID: string, delta: number): void {
+    const n = Math.max(0, (this.runningTools.get(sessionID) ?? 0) + delta)
+    if (n === 0) this.runningTools.delete(sessionID)
+    else this.runningTools.set(sessionID, n)
+  }
+
   private emit(evt: SwarmEvent): void {
+    this.streamAliveAt = Date.now()
     for (const handler of this.handlers) {
       try {
         handler(evt)
@@ -199,6 +409,22 @@ export class EventBus {
     }
     const sessionID = evt.properties?.sessionID ?? evt.properties?.info?.sessionID
     if (!sessionID) return
+    this.lastEventAt.set(sessionID, Date.now())
+
+    // Track tool lifecycle from message.part.updated — long bash stays "busy" for stall.
+    if (evt.type === "message.part.updated") {
+      const part = evt.properties?.part
+      if (part && (part.type === "tool" || part.tool)) {
+        const st = String(part.state?.status ?? "")
+        if (st === "running" || st === "pending") {
+          // Count unique transitions loosely: treat each running event as keep-alive.
+          if (!this.runningTools.has(sessionID)) this.runningTools.set(sessionID, 1)
+          this.seenBusy.add(sessionID)
+        } else if (st === "completed" || st === "error") {
+          this.bumpRunning(sessionID, -1)
+        }
+      }
+    }
 
     const statusType = evt.properties?.status?.type
     if (evt.type === "session.status") {
@@ -206,11 +432,13 @@ export class EventBus {
         this.seenBusy.add(sessionID)
       }
       if (statusType === "idle") {
+        this.runningTools.delete(sessionID)
         this.finishIdle(sessionID)
         return
       }
     }
     if (evt.type === "session.idle") {
+      this.runningTools.delete(sessionID)
       this.finishIdle(sessionID)
       return
     }
@@ -253,6 +481,7 @@ export class EventBus {
   async waitIdle(directory: string, sessionID: string, shouldStop?: () => boolean): Promise<void> {
     this.start()
     this.seenBusy.delete(sessionID)
+    this.runningTools.delete(sessionID)
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
@@ -278,20 +507,22 @@ export class EventBus {
           })
           return
         }
-        sessionStatus(this.client, directory).then(
-          (statuses) => {
-            const status = statuses[sessionID]
-            if (status && (status.type === "busy" || status.type === "retry" || status.type === "working")) {
+        // Still running a tool per events → not idle.
+        if (this.hasRunningTools(sessionID)) {
+          this.seenBusy.add(sessionID)
+          return
+        }
+        sessionIsActive(this.client, directory, sessionID).then(
+          (act) => {
+            if (act.active) {
               this.seenBusy.add(sessionID)
               return
             }
             if (!this.seenBusy.has(sessionID)) return
-            if (!status || status.type === "idle") {
-              settle(() => {
-                this.waiters.delete(sessionID)
-                resolve()
-              })
-            }
+            settle(() => {
+              this.waiters.delete(sessionID)
+              resolve()
+            })
           },
           (err) => {
             settle(() => {
@@ -428,5 +659,31 @@ export class Api {
   }
   sessionMessages(directory: string, sessionID: string) {
     return sessionMessages(this.client, directory, sessionID)
+  }
+  sessionChildren(directory: string, sessionID: string) {
+    return sessionChildren(this.client, directory, sessionID)
+  }
+  sessionTodo(directory: string, sessionID: string) {
+    return sessionTodo(this.client, directory, sessionID)
+  }
+  sessionDiff(directory: string, sessionID: string) {
+    return sessionDiff(this.client, directory, sessionID)
+  }
+  sessionSummarize(directory: string, sessionID: string, model: { providerID: string; modelID: string }) {
+    return sessionSummarize(this.client, directory, sessionID, model)
+  }
+  sessionInjectContext(
+    directory: string,
+    sessionID: string,
+    text: string,
+    model?: { providerID: string; modelID: string },
+  ) {
+    return sessionInjectContext(this.client, directory, sessionID, text, model)
+  }
+  health(directory?: string) {
+    return serverHealth(this.client, this.url, directory)
+  }
+  sessionIsActive(directory: string, sessionID: string) {
+    return sessionIsActive(this.client, directory, sessionID)
   }
 }
