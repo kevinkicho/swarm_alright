@@ -125,6 +125,7 @@ export function writeMaterialsIndex(input: {
     `## Run telemetry`,
     `- metrics trajectory: ${p.metricsFile}`,
     `- host events log: ${p.eventsLogFile}`,
+    `- host EXCEPTION (if escalated): ${path.join(p.runDir, "EXCEPTION.md")}`,
     `- this materials map: ${p.materialsFile}`,
     `- MEMORY snapshots: ${path.join(p.runDir, "memory")}`,
     `- run dir: ${p.runDir}`,

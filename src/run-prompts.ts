@@ -41,7 +41,97 @@ export function buildSystemIdentity(paths: RunPaths): string {
     `The worker receives only that file's body — not your private analysis.`,
     ``,
     `Git is host-owned: merges by default after you review. Optional reply lines: HOST: DONE | STOP | REPASS. Omit to continue.`,
+    `If the host surfaces an EXCEPTION (file + sitrep), you own recovery: rewrite HANDOFF and CONTINUE, or HOST: STOP / DONE / REPASS. Host will not invent craftsmanship policy — only sensors + your signal.`,
   ].join("\n")
+}
+
+/** Host exception escalation — facts only; lead decides recovery. */
+export function buildExceptionSitrep(opts: {
+  cycle: number
+  kind: string
+  message: string
+  phase: string
+  paths: RunPaths
+  emptyCommitStreak: number
+  lastWorkerProbe: SessionProbeMeta | null
+  lastShip: ShipResult | null
+  exceptionFile: string
+}): string {
+  const p = opts.paths
+  const lines = [
+    `HOST EXCEPTION — cycle ${opts.cycle} — your decision is required.`,
+    ``,
+    `The host recovered sensors as best it could, then escalated to you (lead).`,
+    `This is not a quality lecture — only what broke and where to look.`,
+    ``,
+    `Exception file (full write-up): ${opts.exceptionFile}`,
+    `Kind: ${opts.kind}`,
+    `Phase: ${opts.phase}`,
+    `Message: ${opts.message.slice(0, 800)}`,
+    ``,
+    `Materials / dumps:`,
+    `- ${p.materialsFile}`,
+    `- worker session: ${p.workerSessionFile}`,
+    `- system session: ${p.systemSessionFile}`,
+    `- MEMORY: ${p.memoryFile}`,
+    `- project root: ${p.project}`,
+    `- handoff (rewrite if continuing): ${p.handoffFile}`,
+    ``,
+    `Sensor facts: empty_commit_streak=${opts.emptyCommitStreak}`,
+  ]
+  if (opts.lastWorkerProbe) {
+    lines.push(
+      `worker_probe: messages=${opts.lastWorkerProbe.messageCount} tools=${opts.lastWorkerProbe.toolCalls} errors=${opts.lastWorkerProbe.toolErrors} status=${opts.lastWorkerProbe.status}`,
+    )
+  }
+  if (opts.lastShip) {
+    lines.push(
+      `last_ship: cycle=${opts.lastShip.cycle} committed=${opts.lastShip.committed} ahead=${opts.lastShip.ahead}`,
+    )
+  }
+  lines.push(
+    ``,
+    `Decide:`,
+    `- Overwrite HANDOFF.md with a recovery assignment and omit host lines (or HOST: CONTINUE) → host re-runs worker once this cycle if phase was worker.`,
+    `- HOST: STOP — end run after salvage (dirty root already committed if possible).`,
+    `- HOST: DONE — accept baseline if commits exist and end.`,
+    `- HOST: REPASS — same-cycle second worker after you rewrite handoff.`,
+    ``,
+    `Open the exception file and WORKER_SESSION / git if useful. Take as long as you need.`,
+  )
+  return lines.join("\n")
+}
+
+export function exceptionFilePath(runDir: string): string {
+  return path.join(runDir, "EXCEPTION.md")
+}
+
+export function writeExceptionFile(opts: {
+  runDir: string
+  cycle: number
+  kind: string
+  message: string
+  phase: string
+  extra?: string[]
+}): string {
+  const dest = exceptionFilePath(opts.runDir)
+  const body = [
+    `# HOST EXCEPTION — cycle ${opts.cycle}`,
+    `Updated: ${new Date().toISOString()}`,
+    ``,
+    `- kind: ${opts.kind}`,
+    `- phase: ${opts.phase}`,
+    `- message: ${opts.message.slice(0, 2000)}`,
+    ``,
+    `Host sensors only. System lead decides CONTINUE / STOP / DONE / REPASS and HANDOFF.`,
+    ``,
+    ...(opts.extra?.length ? ["## Extra", ...opts.extra.map((e) => `- ${e}`), ``] : []),
+  ].join("\n")
+  try {
+    fs.mkdirSync(opts.runDir, { recursive: true })
+    fs.writeFileSync(dest, body)
+  } catch {}
+  return dest
 }
 
 /**

@@ -66,6 +66,35 @@ async function main() {
     const id = prompts.buildSystemIdentity(paths)
     assert.match(id, /HANDOFF|handoff/)
     assert.match(id, /technical lead/i)
+    assert.match(id, /EXCEPTION|exception/i)
+  })
+
+  check("exception sitrep + file write", () => {
+    const dest = prompts.writeExceptionFile({
+      runDir: tmp,
+      cycle: 3,
+      kind: "worker_turn_failed",
+      message: "stall after retries",
+      phase: "worker",
+      extra: ["run_id: t"],
+    })
+    assert.ok(fs.existsSync(dest))
+    const body = fs.readFileSync(dest, "utf8")
+    assert.match(body, /worker_turn_failed/)
+    const sit = prompts.buildExceptionSitrep({
+      cycle: 3,
+      kind: "worker_turn_failed",
+      message: "stall after retries",
+      phase: "worker",
+      paths,
+      emptyCommitStreak: 1,
+      lastWorkerProbe: null,
+      lastShip: null,
+      exceptionFile: dest,
+    })
+    assert.match(sit, /HOST EXCEPTION/)
+    assert.match(sit, /HOST: STOP/)
+    assert.match(sit, /HANDOFF/)
   })
 
   check("sitrep points at materials inventory (no dual-audience template)", () => {

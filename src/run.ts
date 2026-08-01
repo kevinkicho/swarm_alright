@@ -32,6 +32,9 @@ import {
   writeHandoff,
   systemFactNotes,
   effectiveMergeSignal,
+  buildExceptionSitrep,
+  writeExceptionFile,
+  exceptionFilePath,
 } from "./run-prompts.ts"
 import type { HostSignal } from "./run-types.ts"
 import {
@@ -616,7 +619,6 @@ export class Run {
           failures++
           const msg = err instanceof Error ? err.message : String(err)
           this.log(`cycle ${this.cycle} failed (${failures} in a row): ${msg.slice(0, 500)}`)
-          // Trajectory still records failed cycles for offline evals.
           this.recordCycleMetric({
             secs: 0,
             phase_end: "errored",
@@ -632,8 +634,30 @@ export class Run {
             last_ship: shipMetricSlice(this.lastShip),
             worker_probe: probeMetricSlice(this.lastWorkerProbe),
           })
-          if (failures >= 5) throw new Error(`too many consecutive failures, giving up`)
-          await sleep(15_000)
+          // Escalate to system lead instead of blind sleep-retry.
+          try {
+            const system = agents.find((a) => a.role === "system")!
+            const worker = agents.find((a) => a.role === "worker")!
+            const esc = await this.escalateToSystem(this.turnDeps(), system, worker, {
+              kind: "cycle_failed",
+              phase: this.record?.phase || "cycle",
+              message: msg,
+            })
+            if (esc.signal === "STOP" || esc.signal === "DONE") {
+              this.stopping = true
+              this.lastVerdict = esc.signal
+              break
+            }
+          } catch (escErr) {
+            this.log(
+              `  [host] exception escalate failed: ${escErr instanceof Error ? escErr.message : String(escErr)}`.slice(
+                0,
+                300,
+              ),
+            )
+          }
+          if (failures >= 3) throw new Error(`too many consecutive failures after lead escalate, giving up`)
+          await sleep(5_000)
         }
       }
       await this.shutdown("stopped")
@@ -832,8 +856,84 @@ export class Run {
     }
   }
 
+  /**
+   * Escalate a host exception to the system lead (materials + EXCEPTION.md + sitrep).
+   * Host still salvages dirty root; lead owns CONTINUE/STOP/DONE/REPASS + HANDOFF.
+   */
+  private async escalateToSystem(
+    deps: TurnDeps,
+    system: AgentRef,
+    worker: AgentRef,
+    opts: { kind: string; phase: string; message: string },
+  ): Promise<{ signal: HostSignal; handoff: string; text: string }> {
+    this.heartbeat("exception-escalate")
+    this.log(
+      `  [host] escalating to system lead — kind=${opts.kind} phase=${opts.phase}: ${opts.message.slice(0, 200)}`,
+    )
+    await this.commitSystemDirtyIfNeeded(
+      `swarm ${this.id} host: cycle ${this.cycle} salvage before exception escalate`,
+    )
+    try {
+      await this.captureAndArchiveWorker(deps, worker, "exception")
+    } catch (err) {
+      this.log(
+        `  [host] exception probe failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200),
+      )
+    }
+    const exceptionFile = writeExceptionFile({
+      runDir: this.runDir,
+      cycle: this.cycle,
+      kind: opts.kind,
+      message: opts.message,
+      phase: opts.phase,
+      extra: [
+        `run_id: ${this.id}`,
+        `project: ${this.opts.project}`,
+        `empty_commit_streak: ${this.emptyCommitStreak}`,
+        this.lastWorkerProbe
+          ? `worker_probe: messages=${this.lastWorkerProbe.messageCount} tools=${this.lastWorkerProbe.toolCalls} errors=${this.lastWorkerProbe.toolErrors}`
+          : `worker_probe: (none)`,
+      ],
+    })
+    this.writeMaterials("exception")
+    this.writeHostMemory("exception", [
+      `kind: ${opts.kind}`,
+      `phase: ${opts.phase}`,
+      `message: ${opts.message.slice(0, 500)}`,
+      `exception_file: ${exceptionFile}`,
+    ])
+
+    const identity = buildSystemIdentity(this.paths())
+    const sitrep = buildExceptionSitrep({
+      cycle: this.cycle,
+      kind: opts.kind,
+      message: opts.message,
+      phase: opts.phase,
+      paths: this.paths(),
+      emptyCommitStreak: this.emptyCommitStreak,
+      lastWorkerProbe: this.lastWorkerProbe,
+      lastShip: this.lastShip,
+      exceptionFile,
+    })
+    const turn = await runTurn(deps, system, sitrep, { system: identity })
+    appendDialogue(this.dialogueFile, "system-exception", this.cycle, turn.text)
+    await this.captureAndArchiveSystem(deps, system, "post-exception")
+    await this.commitSystemDirtyIfNeeded(
+      `swarm ${this.id} system: cycle ${this.cycle} after exception (lead edits)`,
+    )
+
+    const signal = parseHostSignal(turn.text)
+    const resolved = this.resolveHandoff(turn.text)
+    this.lastVerdict = signal || this.lastVerdict
+    this.log(
+      `  [host] system exception response: signal=${signal || "(default continue)"} handoff=${resolved.body.length} chars`,
+    )
+    return { signal, handoff: resolved.body, text: turn.text }
+  }
+
   private async runWorkerShip(
     deps: TurnDeps,
+    system: AgentRef,
     worker: AgentRef,
     handoff: string,
     label: string,
@@ -856,9 +956,43 @@ export class Run {
 
     this.log(`[cycle ${this.cycle}] worker${label}...`)
     const workerId = buildWorkerIdentity(this.paths())
-    const workerTurn = await runTurn(deps, worker, buildWorkerPrompt(handoff, this.paths()), {
-      system: workerId,
-    })
+    let activeHandoff = handoff
+    let workerTurn: { text: string; secs: number }
+    try {
+      workerTurn = await runTurn(deps, worker, buildWorkerPrompt(activeHandoff, this.paths()), {
+        system: workerId,
+      })
+    } catch (err) {
+      if (this.stopping || this.stopRequested()) throw err
+      const msg = err instanceof Error ? err.message : String(err)
+      // Host already soft-recovered inside runTurn; remaining failure → system lead.
+      const esc = await this.escalateToSystem(deps, system, worker, {
+        kind: "worker_turn_failed",
+        phase: "worker",
+        message: msg,
+      })
+      if (esc.signal === "STOP" || esc.signal === "DONE") {
+        this.stopping = true
+        this.lastVerdict = esc.signal
+        // Still ship whatever is on disk after salvage.
+        this.heartbeat("commit")
+        const ship = await hostCommitWorker(this.gitCtx())
+        this.lastShip = { cycle: this.cycle, ...ship }
+        if (esc.signal === "DONE" && ship.committed) {
+          await hostApplyVerdict(this.gitCtx(), "DONE", "exception escalate DONE", { doMerge: true })
+        }
+        return
+      }
+      // Lead CONTINUE (or empty): one recovery worker pass with updated handoff.
+      activeHandoff =
+        esc.handoff.trim() ||
+        readHandoffFile(this.handoffFile) ||
+        activeHandoff
+      this.log(`[cycle ${this.cycle}] worker${label}-recover after lead exception handling...`)
+      workerTurn = await runTurn(deps, worker, buildWorkerPrompt(activeHandoff, this.paths()), {
+        system: workerId,
+      })
+    }
     this.lastWorkerReply = workerTurn.text
     this.throwIfStopped()
     appendDialogue(this.dialogueFile, label ? `worker${label}` : "worker", this.cycle, workerTurn.text)
@@ -1067,7 +1201,7 @@ export class Run {
       handoffFromReply = true
     }
 
-    await this.runWorkerShip(deps, worker, handoff, "")
+    await this.runWorkerShip(deps, system, worker, handoff, "")
     workerShips++
 
     // Optional same-cycle re-pass: one extra lead materials → handoff → worker → commit.
@@ -1134,7 +1268,7 @@ export class Run {
         }
         this.throwIfStopped()
         if (!this.stopping) {
-          await this.runWorkerShip(deps, worker, rHandoff, "-repass")
+          await this.runWorkerShip(deps, system, worker, rHandoff, "-repass")
           workerShips++
         }
       }

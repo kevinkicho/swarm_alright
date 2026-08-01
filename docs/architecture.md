@@ -41,7 +41,8 @@ Legacy `swarm clean --worktrees` still removes old nested worktrees if present.
 3. Default accept advances baseline (unless `HOST: STOP`)  
 4. Durable logs under `.swarm/runs/<id>/`  
 5. No time pressure on the lead  
-6. **One workspace = project root**
+6. **One workspace = project root**  
+7. **Exceptions escalate to system** — host salvages sensors/git; lead decides CONTINUE / STOP / DONE / REPASS via `EXCEPTION.md`
 
 See [recommendations.md](./recommendations.md).
 

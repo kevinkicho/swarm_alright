@@ -87,6 +87,7 @@ Suggested order (mirrors MATERIALS.md):
 | **Busy ≠ stall** | Stall watch polls OpenCode status; busy/working tools refresh activity |
 | **Soft stall** | First stall re-prompts same session; rotate only on repeat |
 | **Dirty salvage** | Commit dirty root on cycle start, shutdown, and process exit (sync) |
+| **Exception → system** | Worker/cycle failures escalate to lead (`EXCEPTION.md` + sitrep); host does not invent recovery policy |
 
 ### Avoid unless needed
 
