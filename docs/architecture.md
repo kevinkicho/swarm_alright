@@ -43,7 +43,8 @@ Legacy `swarm clean --worktrees` still removes old nested worktrees if present.
 5. No time pressure on the lead  
 6. **One workspace = project root**  
 7. **Exceptions escalate to system** — host salvages sensors/git; lead decides CONTINUE / STOP / DONE / REPASS via `EXCEPTION.md`  
-8. **Event bus pub/sub** — only host calls OpenCode `event.subscribe`; publishes `BUS.md` / `BUS.jsonl` for the lead to re-open anytime
+8. **Event bus pub/sub** — only host calls OpenCode `event.subscribe`; publishes `BUS.md` / `BUS.jsonl`
+9. **Active system watch** — while worker runs, host injects live digests into the system session (`noReply`) and may run short ACTIVE WATCH turns on alerts (lead can `HOST: STOP`)
 
 See [recommendations.md](./recommendations.md).
 

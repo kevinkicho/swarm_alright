@@ -14,6 +14,7 @@ import {
   busJsonlPath,
   recentBusSummaries,
 } from "./event-bus-surface.ts"
+import { SystemWatch } from "./system-watch.ts"
 import { ensureRepo, ensureOnBranch } from "./git.ts"
 import * as Registry from "./registry.ts"
 import { Style } from "./style.ts"
@@ -138,6 +139,8 @@ export class Run {
   private busSnapshotTimer?: ReturnType<typeof setInterval>
   /** Last time we published a "busy but quiet" alert on the bus. */
   private lastBusyQuietPublishAt = 0
+  /** Active lead watch while worker runs (host fans bus → system session). */
+  private systemWatch: SystemWatch | null = null
 
   constructor(opts: RunOptions) {
     this.id = opts.resumeFrom ?? Registry.newId()
@@ -413,6 +416,7 @@ export class Run {
         sessionID: sessionID || undefined,
         summary: err ? `${st}: ${err}` : String(st),
       })
+      this.systemWatch?.observe(`${st}${err ? `: ${err}` : ""}`, evt.type === "session.error" ? "alert" : "status")
     }
 
     if (evt.type === "message.part.updated" && p?.part?.type === "tool") {
@@ -447,6 +451,7 @@ export class Run {
         sessionID: sessionID || undefined,
         summary: `${status || "tool"}: ${detail.slice(0, 300)}`,
       })
+      this.systemWatch?.observe(`${status || "tool"}: ${detail.slice(0, 280)}`, "tool")
       // Host + OpenCode are Node; mass-killing node ends the run (rms9gthvpprb postmortem).
       if (
         (tool === "bash" || /bash|shell|cmd/i.test(String(tool))) &&
@@ -463,6 +468,7 @@ export class Run {
           summary: "mass node kill pattern in tool command",
           detail: detail.slice(0, 200),
         })
+        this.systemWatch?.observe("mass node kill pattern in tool", "alert")
       }
     } else if (evt.type === "session.error") {
       const msg = p?.error?.data?.message ?? p?.error?.message ?? JSON.stringify(p?.error ?? p)
@@ -510,9 +516,10 @@ export class Run {
             sessionID: worker.sessionID,
             role: "worker",
             summary: `busy but no bus events for ~${mins}m (${act.detail})`,
-            detail: "Host still waiting; lead can review BUS.md / WORKER_SESSION when next turn runs",
+            detail: "Active system watch will be notified; lead can HOST: STOP on watch turn",
           })
           this.log(`  [host:bus] alert: worker busy but quiet ~${mins}m`)
+          this.systemWatch?.observe(`worker busy but quiet ~${mins}m (${act.detail})`, "alert")
         }
       }
     } catch {}
@@ -1083,11 +1090,85 @@ export class Run {
     const workerId = buildWorkerIdentity(this.paths())
     let activeHandoff = handoff
     let workerTurn: { text: string; secs: number }
-    try {
-      workerTurn = await runTurn(deps, worker, buildWorkerPrompt(activeHandoff, this.paths()), {
+
+    // Active lead listen: host fans OpenCode bus → system session while worker runs.
+    const p = this.paths()
+    this.systemWatch = new SystemWatch({
+      api: this.api!,
+      log: (m) => this.log(m),
+      isStopping: () => this.stopping || this.stopRequested(),
+      system,
+      busFile: p.busFile,
+      workerSessionFile: p.workerSessionFile,
+      handoffFile: p.handoffFile,
+      cycle: this.cycle,
+    })
+    this.systemWatch.observe(`worker turn starting (label=${label || "main"})`, "note")
+
+    const runWorkerOnce = async (brief: string) => {
+      let finished = false
+      let turnResult: { text: string; secs: number } | null = null
+      let turnErr: Error | null = null
+      const turnP = runTurn(deps, worker, buildWorkerPrompt(brief, this.paths()), {
         system: workerId,
-      })
+      }).then(
+        (t) => {
+          finished = true
+          turnResult = t
+        },
+        (e) => {
+          finished = true
+          turnErr = e instanceof Error ? e : new Error(String(e))
+        },
+      )
+      const watch = await this.systemWatch!.runWhile(
+        deps,
+        () => finished || this.stopping || this.stopRequested(),
+      )
+      if (watch.stopWorker) {
+        this.lastVerdict = watch.stopSignal || "STOP"
+        try {
+          await this.api!.abort(worker.directory, worker.sessionID)
+        } catch {}
+        this.log(`  [host:watch] aborted worker after system watch ${this.lastVerdict}`)
+        await turnP
+        return {
+          text: turnResult?.text || "(worker stopped by lead watch)",
+          secs: turnResult?.secs ?? 0,
+          stoppedByWatch: true,
+        }
+      }
+      await turnP
+      if (turnErr) throw turnErr
+      if (!turnResult) throw new Error("worker turn produced no result")
+      if (watch.activeWatches) {
+        this.log(`  [host:watch] ${watch.activeWatches} active system watch turn(s) during worker`)
+      }
+      return { ...turnResult, stoppedByWatch: false }
+    }
+
+    try {
+      const r = await runWorkerOnce(activeHandoff)
+      workerTurn = { text: r.text, secs: r.secs }
+      if (r.stoppedByWatch) {
+        this.lastWorkerReply = workerTurn.text
+        this.systemWatch = null
+        // Fall through to probe/commit with partial work.
+        appendDialogue(this.dialogueFile, label ? `worker${label}` : "worker", this.cycle, workerTurn.text)
+        this.heartbeat("probe-worker")
+        await this.captureAndArchiveWorker(deps, worker, label ? `post-ship${label}-watch-stop` : "post-ship-watch-stop")
+        this.heartbeat("commit")
+        const ship = await hostCommitWorker(this.gitCtx())
+        this.lastShip = { cycle: this.cycle, ...ship }
+        if (this.lastVerdict === "DONE" && ship.committed) {
+          await hostApplyVerdict(this.gitCtx(), "DONE", "system watch DONE", { doMerge: true })
+        }
+        if (this.lastVerdict === "STOP" || this.lastVerdict === "DONE") this.stopping = true
+        return
+      }
     } catch (err) {
+      this.systemWatch?.stop()
+      this.systemWatch = null
       if (this.stopping || this.stopRequested()) throw err
       const msg = err instanceof Error ? err.message : String(err)
       // Host already soft-recovered inside runTurn; remaining failure → system lead.
@@ -1108,15 +1189,27 @@ export class Run {
         }
         return
       }
-      // Lead CONTINUE (or empty): one recovery worker pass with updated handoff.
+      // Lead CONTINUE (or empty): one recovery worker pass with updated handoff + watch again.
       activeHandoff =
         esc.handoff.trim() ||
         readHandoffFile(this.handoffFile) ||
         activeHandoff
       this.log(`[cycle ${this.cycle}] worker${label}-recover after lead exception handling...`)
-      workerTurn = await runTurn(deps, worker, buildWorkerPrompt(activeHandoff, this.paths()), {
-        system: workerId,
+      this.systemWatch = new SystemWatch({
+        api: this.api!,
+        log: (m) => this.log(m),
+        isStopping: () => this.stopping || this.stopRequested(),
+        system,
+        busFile: p.busFile,
+        workerSessionFile: p.workerSessionFile,
+        handoffFile: p.handoffFile,
+        cycle: this.cycle,
       })
+      const r = await runWorkerOnce(activeHandoff)
+      workerTurn = { text: r.text, secs: r.secs }
+    } finally {
+      this.systemWatch?.stop()
+      this.systemWatch = null
     }
     this.lastWorkerReply = workerTurn.text
     this.throwIfStopped()

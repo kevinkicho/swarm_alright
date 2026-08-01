@@ -135,6 +135,62 @@ async function main() {
     assert.ok(n >= 2)
   })
 
+  check("SystemWatch queues observes", async () => {
+    const sw = await load("system-watch.ts")
+    const calls = []
+    const watch = new sw.SystemWatch({
+      api: {
+        sessionInjectContext: async (_d, _s, text) => {
+          calls.push(text)
+        },
+      },
+      log: () => {},
+      isStopping: () => false,
+      system: { role: "system", directory: tmp, sessionID: "sys1", model: "m" },
+      busFile: path.join(tmp, "BUS.md"),
+      workerSessionFile: path.join(tmp, "WORKER_SESSION.md"),
+      handoffFile: path.join(tmp, "HANDOFF.md"),
+      cycle: 1,
+      injectIntervalMs: 1,
+      activeWatchCooldownMs: 999999,
+    })
+    watch.observe("bash: npm run build", "tool")
+    watch.observe("busy", "status")
+    // flush via private path: runWhile ends immediately when worker done
+    const r = await watch.runWhile(
+      {
+        api: {
+          sessionInjectContext: async (_d, _s, text) => {
+            calls.push(text)
+          },
+          createSession: async () => ({ id: "x" }),
+          promptAsync: async () => {},
+          abort: async () => {},
+          sessionStatus: async () => ({}),
+          sessionMessages: async () => [],
+          sessionIsActive: async () => ({ active: false, detail: "idle" }),
+          sessionSummarize: async () => false,
+        },
+        bus: {
+          hasRunningTools: () => false,
+          lastActivityFor: () => 0,
+          waitIdle: async () => {},
+        },
+        stallMs: 999999,
+        runId: "t",
+        workerSessionFile: path.join(tmp, "W.md"),
+        isStopping: () => false,
+        markActivity: () => {},
+        lastActivityAt: () => Date.now(),
+        log: () => {},
+      },
+      () => true,
+    )
+    assert.equal(r.stopWorker, false)
+    assert.ok(calls.length >= 1)
+    assert.match(calls.join("\n"), /ACTIVE WATCH|digest|npm run build|sub-agent/i)
+  })
+
   check("sitrep points at materials inventory (no dual-audience template)", () => {
     const sit = prompts.buildSystemSitrep({
       cycle: 2,
