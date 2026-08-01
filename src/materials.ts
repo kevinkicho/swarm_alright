@@ -86,6 +86,7 @@ export function writeMaterialsIndex(input: {
     `- current handoff (write next assignment here): ${p.handoffFile}`,
     `- handoff history (prior assignments): ${p.handoffHistoryFile}`,
     `- mission: ${p.missionFile}`,
+    `- BACKLOG (next mission slices — lead maintains): ${p.backlogFile ?? path.join(p.runDir, "BACKLOG.md")}`,
     `- standards (you may edit): ${p.standardsFile}`,
     ``,
     `## Work output (repo / git) — root mode`,

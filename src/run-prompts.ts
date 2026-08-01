@@ -18,35 +18,126 @@ export type SystemPromptFacts = {
   paths: RunPaths
   /** Same-cycle re-pass: materials after first worker ship. */
   repass?: boolean
+  /** Host sensor: handoff text unchanged across cycles. */
+  staleHandoff?: boolean
+  /** Host sensor: last worker ship produced no commit. */
+  lastEmptyShip?: boolean
+  /** Same-cycle recovery after empty ship. */
+  emptyShipRecover?: boolean
+}
+
+export function backlogPath(runDir: string): string {
+  return path.join(runDir, "BACKLOG.md")
+}
+
+/** Seed BACKLOG.md once from mission text — lead maintains slices (agentic, not host features). */
+export function ensureBacklog(runDir: string, missionFile: string, project: string): string {
+  const dest = backlogPath(runDir)
+  try {
+    if (fs.existsSync(dest) && fs.readFileSync(dest, "utf8").trim().length > 80) return dest
+  } catch {}
+  let mission = ""
+  try {
+    if (fs.existsSync(missionFile)) mission = fs.readFileSync(missionFile, "utf8")
+  } catch {}
+  if (!mission.trim()) {
+    try {
+      const m = path.join(project, "MISSION.txt")
+      if (fs.existsSync(m)) mission = fs.readFileSync(m, "utf8")
+    } catch {}
+  }
+  const body = [
+    `# BACKLOG — living mission slices`,
+    ``,
+    `System lead owns this file. Empty ship / "worker already done" ≠ mission complete.`,
+    `Keep 3–8 concrete next slices. Move finished items under Done.`,
+    ``,
+    `## Mission (source)`,
+    ``,
+    mission.trim().slice(0, 4000) || "(see MISSION.md / project MISSION.txt)",
+    ``,
+    `## Next (ordered — edit freely)`,
+    ``,
+    `1. (After exploring the tree, write the next vertical that advances the mission.)`,
+    `2.`,
+    `3.`,
+    ``,
+    `## Done`,
+    ``,
+    `- (move slices here when shipped with real commits)`,
+    ``,
+  ].join("\n")
+  try {
+    fs.mkdirSync(runDir, { recursive: true })
+    fs.writeFileSync(dest, body)
+  } catch {}
+  return dest
+}
+
+export function handoffFingerprint(body: string): string {
+  const t = body.replace(/\s+/g, " ").trim().slice(0, 2500)
+  let h = 0
+  for (let i = 0; i < t.length; i++) h = (Math.imul(31, h) + t.charCodeAt(i)) | 0
+  return `${t.length}:${h}`
+}
+
+/** Mission-complete evidence in lead reply (agent writes this; host only checks presence). */
+export function hasMissionDoneChecklist(text: string): boolean {
+  if (/MISSION_COMPLETE\s*:\s*true\b/i.test(text)) return true
+  if (/##\s*mission\s*complete\b/i.test(text) && /checklist|sources|vertical|ollama|gap/i.test(text)) return true
+  return false
+}
+
+/**
+ * Sensor gate: DONE with high empty streak and no checklist → continue (re-plan).
+ * Host does not invent features — only refuses false "mission done".
+ */
+export function gateDoneSignal(
+  signal: HostSignal,
+  facts: { emptyCommitStreak: number; replyText: string },
+): { signal: HostSignal; gated: boolean; reason?: string } {
+  if (signal !== "DONE") return { signal, gated: false }
+  if (facts.emptyCommitStreak >= 2 && !hasMissionDoneChecklist(facts.replyText)) {
+    return {
+      signal: "",
+      gated: true,
+      reason:
+        "DONE gated: empty_commit_streak>=2 without MISSION_COMPLETE: true + checklist — open BACKLOG, write next HANDOFF slice",
+    }
+  }
+  return { signal, gated: false }
 }
 
 /** Sticky identity for the system session (OpenCode `system` field every turn). */
 export function buildSystemIdentity(paths: RunPaths): string {
+  const backlog = paths.backlogFile ?? backlogPath(paths.runDir)
   return [
-    `You are the technical lead for this autonomous coding run.`,
-    `The host only runs sensors (session dump, git summary, verify, materials map) and actuators (commit, merge, stop).`,
-    `You own quality judgment and what the engineer does next.`,
+    `You are the technical lead / planner for this autonomous coding run.`,
+    `The host only runs sensors (session dump, git, bus, materials) and actuators (commit, merge, stop).`,
+    `You own mission scope, backlog, and what the engineer does next.`,
+    `Investigate freely — take as long as you need.`,
     ``,
-    `Investigate freely — take as long as you need. You are enabled to probe anything available:`,
-    `- Live OpenCode event bus (host pub/sub surface — re-open during long reviews): ${paths.busFile ?? path.join(paths.runDir, "BUS.md")}`,
-    `- Event history jsonl: ${paths.busJsonlFile ?? path.join(paths.runDir, "BUS.jsonl")}`,
-    `- Worker thinking / tools / errors: ${paths.workerSessionFile} (live dump) and ${paths.sessionsDir} (archived dumps per cycle/rotate)`,
-    `- Session index: ${paths.sessionIndexFile}`,
-    `- Work history: ${paths.dialogueFile}, ${paths.handoffHistoryFile}, ${paths.shipLogFile}`,
-    `- Work output (repo): files under ${paths.project} (project root — no nested worktree)`,
-    `- Host sensors: ${paths.memoryFile}, ${paths.materialsFile} (inventory of all of the above)`,
-    `- Mission / lasting notes: ${paths.missionFile}, ${paths.standardsFile} (you may edit standards)`,
-    `- Telemetry: ${paths.metricsFile}, ${paths.eventsLogFile}`,
-    `You cannot call OpenCode event.subscribe yourself — the host is the only subscriber.`,
-    `While the worker (your sub) runs, host ACTIVELY fans events into THIS session as digests (noReply injects) and may prompt you on alerts (ACTIVE WATCH). You are listening live, not only at cycle boundaries.`,
-    `Also open BUS.md anytime for the full pub surface. On watch alerts you may rewrite HANDOFF or HOST: STOP.`,
-    `Do not guess worker behavior from summaries alone when dumps, archives, or the tree are available.`,
+    `Always open when deciding scope:`,
+    `- Mission: ${paths.missionFile}`,
+    `- BACKLOG (living next slices — maintain this): ${backlog}`,
+    `- Materials: ${paths.materialsFile}`,
+    `- Live bus: ${paths.busFile ?? path.join(paths.runDir, "BUS.md")}`,
+    `- Worker dump: ${paths.workerSessionFile} · archives ${paths.sessionsDir}`,
+    `- MEMORY / ships: ${paths.memoryFile} · ${paths.shipLogFile}`,
+    `- Project root: ${paths.project}`,
     ``,
-    `After you are satisfied (or know what is still unknown), overwrite ${paths.handoffFile} with the next engineer assignment.`,
-    `The worker receives only that file's body — not your private analysis.`,
+    `Rules that stop false "mission complete":`,
+    `- Empty ship / worker "already done" / high empty_commit_streak → open BACKLOG, write a NEW HANDOFF slice that advances the mission. Do NOT DONE.`,
+    `- DONE only when the mission itself is complete: reply with MISSION_COMPLETE: true and a short checklist (sources, verticals, Ollama, remaining gaps=none).`,
+    `- Each HANDOFF = one concrete vertical with acceptance as new paths/behavior. Do not re-issue the same handoff text.`,
+    `- Prefer stronger next work over re-verify loops.`,
     ``,
-    `Git is host-owned: merges by default after you review. Optional reply lines: HOST: DONE | STOP | REPASS. Omit to continue.`,
-    `If the host surfaces an EXCEPTION (file + sitrep), you own recovery: rewrite HANDOFF and CONTINUE, or HOST: STOP / DONE / REPASS. Host will not invent craftsmanship policy — only sensors + your signal.`,
+    `While the worker runs, host fans OpenCode events into this session (noReply digests) and may ACTIVE WATCH on alerts.`,
+    `Watch HOST: STOP aborts stuck worker turn only (mission continues). HOST: DONE ends the run only with mission checklist.`,
+    `EXCEPTION / empty-ship recovery: rewrite HANDOFF from BACKLOG; do not end the mission on re-verify loops.`,
+    ``,
+    `Overwrite ${paths.handoffFile} with the engineer assignment. Worker sees only that file.`,
+    `Optional lines: HOST: CONTINUE | DONE | STOP | REPASS. Or JSON {"signal":"DONE"}.`,
   ].join("\n")
 }
 
@@ -200,31 +291,31 @@ export function buildSystemSitrep(f: SystemPromptFacts): string {
       ? `Cycle ${f.cycle} — same-cycle re-pass. Materials refreshed after worker ship.`
       : `Cycle ${f.cycle} — materials ready for your review.`,
     ``,
-    `Start with the host inventory (full map of artifacts + git pointers):`,
+    `Start with:`,
     `- ${p.materialsFile}`,
+    `- BACKLOG (next slices): ${p.backlogFile ?? backlogPath(p.runDir)}`,
+    `- mission: ${p.missionFile}`,
     ``,
     `Core probe targets:`,
-    `- live event bus (host publishes OpenCode tools/status): ${p.busFile ?? path.join(p.runDir, "BUS.md")}`,
-    `- worker thinking/tools: ${p.workerSessionFile} · archives ${p.sessionsDir} · index ${p.sessionIndexFile}`,
-    `- host sensors (git/verify): ${p.memoryFile} · ships ${p.shipLogFile}`,
-    `- project root (code): ${p.project}`,
-    `- dialogue / handoff history: ${p.dialogueFile} · ${p.handoffHistoryFile}`,
+    `- live event bus: ${p.busFile ?? path.join(p.runDir, "BUS.md")}`,
+    `- worker dump: ${p.workerSessionFile} · archives ${p.sessionsDir}`,
+    `- MEMORY / ships: ${p.memoryFile} · ${p.shipLogFile}`,
+    `- project root: ${p.project}`,
     `- write next assignment: ${p.handoffFile}`,
-    `- mission / standards: ${p.missionFile} · ${p.standardsFile}`,
+    `- standards: ${p.standardsFile}`,
     ``,
     `Sensor facts:`,
     `- empty_commit_streak: ${f.emptyCommitStreak}`,
-    `- worker_session_id: ${f.lastWorkerProbe?.sessionID ?? "(see MATERIALS / MEMORY)"}`,
+    `- last_empty_ship: ${f.lastEmptyShip || (f.lastShip && !f.lastShip.committed) ? "true" : "false"}`,
+    `- stale_handoff: ${f.staleHandoff ? "true (rewrite HANDOFF — do not re-issue same text)" : "false"}`,
+    `- worker_session_id: ${f.lastWorkerProbe?.sessionID ?? "(see MATERIALS)"}`,
   ]
 
   if (f.lastWorkerProbe) {
     lines.push(
-      `- worker_probe: messages=${f.lastWorkerProbe.messageCount} tools=${f.lastWorkerProbe.toolCalls} errors=${f.lastWorkerProbe.toolErrors} status=${f.lastWorkerProbe.status} chars=${f.lastWorkerProbe.chars}`,
+      `- worker_probe: messages=${f.lastWorkerProbe.messageCount} tools=${f.lastWorkerProbe.toolCalls} errors=${f.lastWorkerProbe.toolErrors} status=${f.lastWorkerProbe.status}`,
     )
-  } else {
-    lines.push(`- worker_probe: (none yet)`)
   }
-
   if (f.lastShip) {
     const v = f.lastShip.verify
       ? f.lastShip.verify.ok
@@ -234,39 +325,44 @@ export function buildSystemSitrep(f: SystemPromptFacts): string {
     lines.push(
       `- last_ship: cycle=${f.lastShip.cycle} committed=${f.lastShip.committed} ahead=${f.lastShip.ahead} verify=${v}`,
     )
-    if (f.lastShip.verify && !f.lastShip.verify.ok) {
-      lines.push(`- last verify FAILED — full output in MEMORY if you want it.`)
-    }
-  } else {
-    lines.push(`- last_ship: (none yet)`)
   }
 
-  if (f.hasReviewPack || f.lastWorkerProbe) {
-    lines.push(`- review pack present in MEMORY (git summary + probe pointer)`)
-  } else if (f.cycle > 1) {
-    lines.push(`- no new commits last cycle (streak=${f.emptyCommitStreak}) — still open session dump / tree if useful`)
+  const empty = f.emptyCommitStreak >= 1 || f.lastEmptyShip || (f.lastShip && !f.lastShip.committed)
+  if (empty || f.emptyShipRecover) {
+    lines.push(
+      ``,
+      `## EMPTY SHIP / NO NEW COMMITS (required)`,
+      `Worker produced no new git commit (or only re-verified). That is NOT mission complete.`,
+      `1. Open BACKLOG + MISSION + real tree.`,
+      `2. Pick the next unfinished slice that advances the mission.`,
+      `3. Overwrite HANDOFF with a NEW concrete assignment (new paths/behavior as acceptance).`,
+      `4. Do NOT emit HOST: DONE unless MISSION_COMPLETE: true + checklist.`,
+      f.emptyShipRecover ? `5. This is a same-cycle re-scope after empty ship — write a thinner, clearer next slice now.` : ``,
+    )
   }
 
   if (f.cycle === 1 && !f.resumeFrom && !f.repass) {
-    lines.push(``, `Kickoff: learn mission + codebase with tools, then write first handoff.`)
-  } else if (f.cycle === 1 && f.resumeFrom && !f.repass) {
-    lines.push(``, `Resume: reconstruct from materials + git + dialogue, then write handoff.`)
-  } else if (!f.repass) {
+    lines.push(``, `Kickoff: explore mission + tree with tools, fill BACKLOG next slices, write first HANDOFF.`)
+  } else if (!f.repass && !empty) {
     lines.push(
       ``,
-      `Review worker session dump, real code, and git output as deeply as you need, then write ${p.handoffFile} (or HOST: DONE / STOP).`,
+      `Review worker dump + code + git, update BACKLOG if needed, write ${p.handoffFile}.`,
+      `HANDOFF shape: goal, scope, acceptance (new files/behavior), verify with lint+build only (no long-lived npm run dev).`,
     )
-  } else {
-    lines.push(``, `Refine ${p.handoffFile} after this pass, or HOST: DONE / STOP.`)
+  } else if (f.repass) {
+    lines.push(``, `Re-pass: refine ${p.handoffFile} after this pass.`)
   }
 
   if (f.lastWorkerReply && !f.repass) {
-    const excerpt = f.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 500)
-    lines.push(``, `Worker last chat message (excerpt only — session dump is authoritative):`, `"""${excerpt}"""`)
+    const excerpt = f.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 400)
+    lines.push(``, `Worker last reply excerpt (dump is authoritative):`, `"""${excerpt}"""`)
   }
 
-  lines.push(``, `Probe anything listed in MATERIALS.md. When ready, write ${p.handoffFile}.`)
-  return lines.join("\n")
+  lines.push(
+    ``,
+    `When mission is truly complete: MISSION_COMPLETE: true and checklist (sources / verticals / Ollama / gaps=none), then HOST: DONE or {"signal":"DONE"}.`,
+  )
+  return lines.filter((l) => l !== "").join("\n")
 }
 
 /** @deprecated use buildSystemSitrep */
@@ -309,6 +405,24 @@ export function extractWorkerBrief(systemText: string): string {
  * Default (empty) = continue + merge. No dual-audience required.
  */
 export function parseHostSignal(text: string): HostSignal {
+  // Prefer machine-readable JSON (same shape as exception decisions) — do not ignore {"signal":"DONE"}.
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidates = [fence?.[1], text].filter(Boolean) as string[]
+  for (const c of candidates) {
+    const start = c.indexOf("{")
+    const end = c.lastIndexOf("}")
+    if (start < 0 || end <= start) continue
+    try {
+      const obj = JSON.parse(c.slice(start, end + 1)) as { signal?: string }
+      const sig = String(obj.signal || "")
+        .toUpperCase()
+        .trim()
+      if (sig === "DONE" || sig === "STOP" || sig === "REPASS" || sig === "HOLD") return sig as HostSignal
+      if (sig === "CONTINUE") return ""
+    } catch {
+      // try next
+    }
+  }
   const lines = text.split(/\r?\n/)
   for (const line of lines) {
     const host = line.match(/^\s*(?:\*\*|__|[-*]\s+)?HOST\s*:\s*(CONTINUE|DONE|STOP|REPASS|HOLD)\b/i)
@@ -324,7 +438,8 @@ export function parseHostSignal(text: string): HostSignal {
   }
   const t = text.replace(/\s+/g, " ").trim().toLowerCase()
   if (/\bmission complete\b/.test(t) && /\bstop\b/.test(t)) return "STOP"
-  if (/\bmission complete\b/.test(t)) return "DONE"
+  // Bare "mission complete" without checklist is weak — still map to DONE; host may gateDoneSignal.
+  if (/\bmission complete\b/.test(t) || /\bmission is done\b/.test(t)) return "DONE"
   if (/\b(stop the run|end the run)\b/.test(t)) return "STOP"
   return ""
 }
@@ -369,16 +484,17 @@ export function buildWorkerIdentity(
 ): string {
   return [
     `You are the engineer for this autonomous run.`,
-    `Implement the assignment in the user message (from the lead's handoff).`,
-    `Edit the project at its root: ${paths.workerWorktree} (branch ${paths.baseBranch}). Do not create nested clones or extra worktrees.`,
-    `Mission file (read if needed): ${paths.missionFile}`,
-    `When done, blocked, or needing a decision — say so clearly and stop. Prefer real file changes over plans.`,
-    // Host + OpenCode are Node processes; mass-killing node ends the entire swarm run.
-    `Process safety: never kill all node/java processes (no Stop-Process -Name node, pkill node, taskkill /IM node.exe /F, killall). Dev servers: start detached, record PID, smoke-test briefly (≤15s wait), stop only that PID. Prefer npm run build/lint over leaving dev servers running. Do not block your turn on a forever server.`,
+    `Implement the lead's handoff with real file changes at the project root: ${paths.workerWorktree} (branch ${paths.baseBranch}). Do not create nested clones or worktrees.`,
+    `Mission (read if needed): ${paths.missionFile}`,
+    `Success this turn = new/changed product files that meet the handoff acceptance, then lint+build.`,
+    `Empty commit / "already shipped" / re-verify only is FAILURE unless the handoff explicitly says VERIFY_ONLY.`,
+    `If blocked, write a ## BLOCKED section (reason + unblock) and still ship any partial progress.`,
+    `Do not claim done without listing paths you changed. Prefer implementation over long reports.`,
+    `Process safety: never kill all node processes. No long-lived npm run dev — lint+build only (or ≤15s smoke on a recorded PID).`,
   ].join("\n")
 }
 
-/** Worker user message: handoff body + minimal footer (identity is sticky). */
+/** Worker user message: handoff + host footer (identity is sticky). */
 export function buildWorkerPrompt(
   brief: string,
   paths: Pick<RunPaths, "workerWorktree" | "baseBranch" | "missionFile" | "handoffFile">,
@@ -389,6 +505,9 @@ export function buildWorkerPrompt(
     "—",
     `Project root: ${paths.workerWorktree} (branch ${paths.baseBranch})`,
     `Handoff artifact: ${paths.handoffFile}`,
+    `Host footer: Do not run long-lived npm run dev / next dev. Verify with npm run lint and npm run build.`,
+    `Host footer: Leave the tree dirty with intended product changes (host auto-commits). Empty ship is a failed turn unless handoff says VERIFY_ONLY.`,
+    `Host footer: If you cannot implement, end with ## BLOCKED (why) and ship partial work if any.`,
   ].join("\n")
 }
 
@@ -430,6 +549,7 @@ export function systemFactNotes(args: {
     `dialogue: ${p.dialogueFile} (append-only work history)`,
     `standards: ${p.standardsFile} (optional lead notes — you may edit)`,
     `handoff: ${p.handoffFile} (write next engineer assignment)`,
+    `backlog: ${p.backlogFile ?? backlogPath(p.runDir)} (living next slices)`,
     `handoff_history: ${p.handoffHistoryFile}`,
     `worker_session_dump: ${p.workerSessionFile} (live FULL dump — open this)`,
     `system_session_dump: ${p.systemSessionFile} (lead session archive for postmortems)`,

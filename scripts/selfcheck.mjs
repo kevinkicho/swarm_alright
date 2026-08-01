@@ -54,6 +54,7 @@ async function main() {
     eventsLogFile: path.join(tmp, "events.log"),
     busFile: path.join(tmp, "BUS.md"),
     busJsonlFile: path.join(tmp, "BUS.jsonl"),
+    backlogFile: path.join(tmp, "BACKLOG.md"),
     memoryFile: path.join(tmp, "MEMORY.md"),
     sessionsDir: path.join(tmp, "sessions"),
     sessionIndexFile: path.join(tmp, "SESSION_INDEX.md"),
@@ -231,6 +232,38 @@ async function main() {
     assert.equal(prompts.parseHostSignal("HOST: DONE"), "DONE")
     assert.equal(prompts.parseHostSignal("VERDICT: STOP"), "STOP")
     assert.equal(prompts.parseHostSignal("HOST: REPASS"), "REPASS")
+    assert.equal(prompts.parseHostSignal('notes\n```json\n{"signal":"DONE"}\n```\n'), "DONE")
+  })
+
+  check("gateDoneSignal blocks false DONE on empty streak", () => {
+    const g = prompts.gateDoneSignal("DONE", {
+      emptyCommitStreak: 3,
+      replyText: "mission is done, worker already shipped",
+    })
+    assert.equal(g.gated, true)
+    assert.equal(g.signal, "")
+    const ok = prompts.gateDoneSignal("DONE", {
+      emptyCommitStreak: 3,
+      replyText: "MISSION_COMPLETE: true\nchecklist: sources, verticals, ollama, gaps=none",
+    })
+    assert.equal(ok.gated, false)
+    assert.equal(ok.signal, "DONE")
+  })
+
+  check("ensureBacklog seeds from mission", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-bl-"))
+    const mission = path.join(dir, "MISSION.md")
+    fs.writeFileSync(mission, "# Mission\nBuild the materials app.\n")
+    const bl = prompts.ensureBacklog(dir, mission, dir)
+    assert.ok(fs.existsSync(bl))
+    assert.match(fs.readFileSync(bl, "utf8"), /BACKLOG|Next|materials app/i)
+  })
+
+  check("worker identity rejects empty-ship success", () => {
+    const w = prompts.buildWorkerIdentity(paths)
+    assert.match(w, /Empty commit|VERIFY_ONLY|FAILURE/i)
+    const p = prompts.buildWorkerPrompt("Do the thing with real files.", paths)
+    assert.match(p, /lint|build|Empty ship|BLOCKED/i)
   })
 
   check("extractWorkerBrief only ### TO_WORKER (not free-form analysis)", () => {

@@ -111,6 +111,10 @@ export function scoreTrajectory(
   if (!n) flags.push("no metrics.jsonl yet (run a cycle with metrics enabled)")
   if (n >= 3 && ship_commits === 0) flags.push("no commits shipped across cycles — worker stuck or no file changes")
   if (empty_streak_max >= 3) flags.push(`empty_commit_streak peaked at ${empty_streak_max}`)
+  const emptyShips = rows.filter((r) => r.empty_ship || r.last_ship?.committed === false).length
+  if (n >= 3 && emptyShips >= 3) flags.push(`empty ships often (${emptyShips}/${n}) — re-plan next slice, not DONE`)
+  const staleH = rows.filter((r) => r.handoff_stale).length
+  if (staleH >= 2) flags.push(`stale handoff ×${staleH} — lead re-issuing same assignment`)
   if (n >= 2 && thin_handoff / n >= 0.5) flags.push("thin handoff often — lead not writing HANDOFF.md")
   if (tool_calls > 0 && tool_errors / tool_calls >= 0.25) flags.push("high tool error rate on worker probes")
   if (verify_fail > 0 && verify_fail >= verify_pass) flags.push("verify failing as often as passing")

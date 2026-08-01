@@ -45,6 +45,11 @@ import {
   writeExceptionFile,
   exceptionFilePath,
   parseExceptionDecision,
+  ensureBacklog,
+  backlogPath,
+  handoffFingerprint,
+  gateDoneSignal,
+  hasMissionDoneChecklist,
 } from "./run-prompts.ts"
 import type { HostSignal } from "./run-types.ts"
 import {
@@ -143,6 +148,10 @@ export class Run {
   private systemWatch: SystemWatch | null = null
   /** When true, worker abort is intentional (watch) — do not soft re-prompt. */
   private watchAbortInProgress = false
+  /** Prior handoff fingerprint for stale detection (sensor). */
+  private lastHandoffFp = ""
+  /** Same-cycle empty-ship re-scope already used this cycle. */
+  private emptyShipRescopedThisCycle = false
 
   constructor(opts: RunOptions) {
     this.id = opts.resumeFrom ?? Registry.newId()
@@ -180,6 +189,7 @@ export class Run {
       eventsLogFile: eventsLogPath(this.runDir),
       busFile: busMdPath(this.runDir),
       busJsonlFile: busJsonlPath(this.runDir),
+      backlogFile: backlogPath(this.runDir),
       memoryFile: memoryPath(this.runDir),
       sessionsDir: sessionsDir(this.runDir),
       sessionIndexFile: sessionIndexPath(this.runDir),
@@ -643,6 +653,10 @@ export class Run {
     }
     this.log(`workspace: ${this.workerWorktree} (project root)`)
 
+    // Living backlog for lead — agent fills slices; host only seeds.
+    ensureBacklog(this.runDir, this.missionFile, project)
+    this.log(`  [host] BACKLOG.md ready (lead maintains next slices)`)
+
     if (!fs.existsSync(this.missionFile)) {
       const mission =
         this.opts.directive ??
@@ -931,12 +945,22 @@ export class Run {
     deps: TurnDeps,
     system: AgentRef,
     worker: AgentRef,
-    opts: { anyCommits: boolean; reviewSections: string[]; repass?: boolean },
+    opts: {
+      anyCommits: boolean
+      reviewSections: string[]
+      repass?: boolean
+      emptyShipRecover?: boolean
+    },
   ): Promise<{ text: string; secs: number; signal: HostSignal; handoff: string; handoffFromReply: boolean }> {
+    ensureBacklog(this.runDir, this.missionFile, this.opts.project)
     const identity = buildSystemIdentity(this.paths())
-    this.writeMaterials(opts.repass ? "system-repass" : "system")
+    const handoffNow = readHandoffFile(this.handoffFile)
+    const fp = handoffFingerprint(handoffNow)
+    const staleHandoff = !!(this.lastHandoffFp && fp === this.lastHandoffFp && handoffNow.length > 40)
+    const lastEmptyShip = !!(this.lastShip && !this.lastShip.committed)
+    this.writeMaterials(opts.repass ? "system-repass" : opts.emptyShipRecover ? "system-empty-recover" : "system")
     this.writeHostMemory(
-      opts.repass ? "system-repass" : "system",
+      opts.repass ? "system-repass" : opts.emptyShipRecover ? "system-empty-recover" : "system",
       systemFactNotes({
         paths: this.paths(),
         workerSessionID: worker.sessionID,
@@ -963,6 +987,9 @@ export class Run {
         lastWorkerProbe: this.lastWorkerProbe,
         paths: this.paths(),
         repass: opts.repass,
+        staleHandoff,
+        lastEmptyShip,
+        emptyShipRecover: opts.emptyShipRecover,
       }),
       { system: identity },
     )
@@ -1003,7 +1030,24 @@ export class Run {
       appendHandoffHistory(this.paths().handoffHistoryFile, this.cycle, handoff)
     }
 
-    const signal = parseHostSignal(systemTurn.text)
+    let signal = parseHostSignal(systemTurn.text)
+    const gated = gateDoneSignal(signal, {
+      emptyCommitStreak: this.emptyCommitStreak,
+      replyText: systemTurn.text,
+    })
+    if (gated.gated) {
+      this.log(`  [host] ${gated.reason}`)
+      signal = gated.signal
+      // SDK noReply: tell lead why DONE was refused (agent re-plans next turn / cycle).
+      try {
+        await this.api!.sessionInjectContext(
+          system.directory,
+          system.sessionID,
+          `[host sensor] ${gated.reason}\nOpen BACKLOG.md and write a NEW HANDOFF slice. Empty ship ≠ mission done.`,
+        )
+      } catch {}
+    }
+    this.lastHandoffFp = handoffFingerprint(handoff)
     return {
       text: systemTurn.text,
       secs: systemTurn.secs,
@@ -1346,6 +1390,7 @@ export class Run {
     this.writeHostMemory(label ? `post-worker${label}` : "post-worker", [
       `cycle: ${this.cycle}`,
       `committed: ${ship.committed}`,
+      `empty_ship: ${!ship.committed}`,
       `commits_ahead: ${ship.ahead}`,
       `rehomed: ${ship.rehomed}`,
       ship.verify
@@ -1359,6 +1404,17 @@ export class Run {
       `worker_reply_excerpt: ${this.lastWorkerReply.replace(/\s+/g, " ").trim().slice(0, 400)}`,
     ])
 
+    if (!ship.committed) {
+      publishBusEvent(this.runDir, {
+        type: "alert",
+        role: "host",
+        summary: `EMPTY_SHIP cycle ${this.cycle} — empty commit ≠ mission done`,
+      })
+      this.log(
+        `  [host] EMPTY_SHIP — no product commit (streak=${this.emptyCommitStreak}); re-scope via system, not DONE`,
+      )
+    }
+
     // After empty ship or saturated probe: rotate so the next cycle is a fresh episode.
     const streakIfEmpty = this.emptyCommitStreak + (!ship.committed ? 1 : 0)
     if (shouldRotateWorker(this.lastWorkerProbe, !ship.committed, streakIfEmpty)) {
@@ -1369,6 +1425,60 @@ export class Run {
           ? `empty ship (streak will be ${streakIfEmpty})`
           : `post-ship probe messages=${this.lastWorkerProbe?.messageCount ?? 0}`,
       )
+    }
+
+    // Same-cycle agentic re-scope once: lead writes new HANDOFF, one more worker pass.
+    if (
+      !ship.committed &&
+      !this.emptyShipRescopedThisCycle &&
+      !label.includes("recover") &&
+      !label.includes("empty") &&
+      !this.stopping &&
+      !this.stopRequested()
+    ) {
+      this.emptyShipRescopedThisCycle = true
+      this.log(`[cycle ${this.cycle}] EMPTY_SHIP re-scope — system writes next slice, one recovery worker`)
+      // SDK inject: wake lead with empty-ship fact before re-scope turn.
+      try {
+        await this.api!.sessionInjectContext(
+          system.directory,
+          system.sessionID,
+          `[host] EMPTY_SHIP: worker produced no commit. Mission not done. Open BACKLOG, write NEW HANDOFF (next slice).`,
+        )
+      } catch {}
+      const pack = await buildReviewPack(
+        this.gitCtx(),
+        this.lastWorkerProbe ?? {
+          role: "worker",
+          sessionID: worker.sessionID,
+          directory: worker.directory,
+          messageCount: 0,
+          toolCalls: 0,
+          toolErrors: 0,
+          status: "unknown",
+          dumpPath: this.workerSessionFile,
+          chars: 0,
+        },
+      )
+      const rescope = await this.runSystemTurn(deps, system, worker, {
+        anyCommits: pack.anyCommits,
+        reviewSections: pack.sections,
+        emptyShipRecover: true,
+      })
+      if (rescope.signal === "STOP") {
+        this.lastVerdict = "STOP"
+        this.stopping = true
+        return
+      }
+      if (rescope.signal === "DONE") {
+        // Already gated inside runSystemTurn; if still DONE, checklist present.
+        this.lastVerdict = "DONE"
+        this.stopping = true
+        return
+      }
+      if (!this.stopping && rescope.handoff.trim()) {
+        await this.runWorkerShip(deps, system, worker, rescope.handoff, "-empty-recover")
+      }
     }
   }
 
@@ -1405,6 +1515,7 @@ export class Run {
       this.log(`  [host] salvaged dirty project root before review — lead will see new commits`)
     }
 
+    this.emptyShipRescopedThisCycle = false
     this.heartbeat("system")
     let anyCommits = false
     let reviewSections: string[] = []
@@ -1443,6 +1554,7 @@ export class Run {
 
     this.log(`[cycle ${this.cycle}] system (materials-only sitrep)...`)
     const sys = await this.runSystemTurn(deps, system, worker, { anyCommits, reviewSections })
+    // sys.signal already JSON-parsed + DONE-gated inside runSystemTurn
     const mergePlan = effectiveMergeSignal(sys.signal, defaultMerge)
     if (sys.handoffFromReply) handoffFromReply = true
 
@@ -1477,8 +1589,13 @@ export class Run {
         `[cycle ${this.cycle}] no commits last cycle [metric] empty_commit_streak=${this.emptyCommitStreak}`,
       )
       this.lastVerdict = mergePlan.signal
-      if (sys.signal === "DONE" || sys.signal === "STOP") {
-        this.log(`[cycle ${this.cycle}] system said ${sys.signal} (no commits) — stopping`)
+      // Empty streak alone never ends the run — only explicit DONE (gated) or STOP.
+      if (sys.signal === "STOP") {
+        this.log(`[cycle ${this.cycle}] system said STOP (no commits) — stopping`)
+        this.stopping = true
+      } else if (sys.signal === "DONE") {
+        // Gated already; if still DONE, checklist present.
+        this.log(`[cycle ${this.cycle}] system said DONE with checklist (no new commits) — stopping`)
         this.stopping = true
       }
     } else if (sys.signal === "DONE" || sys.signal === "STOP") {

@@ -35,6 +35,10 @@ export type CycleMetric = {
     status: string
   }
   models?: { system: string; worker: string }
+  /** Last ship had no commit (sensor). */
+  empty_ship?: boolean
+  /** Handoff fingerprint unchanged vs prior cycle. */
+  handoff_stale?: boolean
 }
 
 export function metricsPath(runDir: string): string {

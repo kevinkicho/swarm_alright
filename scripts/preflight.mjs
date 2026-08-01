@@ -102,6 +102,7 @@ async function main() {
     eventsLogFile: path.join(tmp, "events.log"),
     busFile: path.join(tmp, "BUS.md"),
     busJsonlFile: path.join(tmp, "BUS.jsonl"),
+    backlogFile: path.join(tmp, "BACKLOG.md"),
     memoryFile: path.join(tmp, "MEMORY.md"),
     sessionsDir: path.join(tmp, "sessions"),
     sessionIndexFile: path.join(tmp, "SESSION_INDEX.md"),

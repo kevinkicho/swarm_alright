@@ -50,6 +50,8 @@ export type RunPaths = {
   /** Live OpenCode event pub surface (host publishes; lead reads). */
   busFile: string
   busJsonlFile: string
+  /** Living mission slices (lead-maintained). */
+  backlogFile: string
   memoryFile: string
   /** Directory of archived WORKER_SESSION / SYSTEM_SESSION dumps. */
   sessionsDir: string
