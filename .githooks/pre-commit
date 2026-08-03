@@ -1,9 +1,12 @@
 #!/bin/sh
-# Run offline selfcheck before commit. Install: scripts/install-precommit.ps1
+# Offline host check before commit (Go primary).
 set -e
 cd "$(git rev-parse --show-toplevel)"
-if command -v npm >/dev/null 2>&1; then
-  npm run precommit
+if [ -d go-swarm ]; then
+  (cd go-swarm && go vet ./... && go test ./... && go build -o swarm_check.exe .)
+elif command -v npm >/dev/null 2>&1 && npm run | grep -q " check"; then
+  npm run check
 else
-  node --experimental-strip-types scripts/selfcheck.mjs
+  echo "pre-commit: no go-swarm/ and no npm check script" >&2
+  exit 1
 fi

@@ -7,76 +7,57 @@ Resolved in this order (first hit wins):
 1. `--api-key` flag
 2. `OLLAMA_API_KEY` environment variable
 3. `.env` in the current directory
-4. `%SWARM_HOME%\.env` and the swarm install root `.env` (via the `cli.ts` path — works when you run `swarm` from any folder)
+4. `SWARM_HOME/.env` and install-root `.env`
 5. `~/.swarm/.env`
-6. `<project>/.env` or `<project>/.swarm/.env` when starting a run on a project
+6. `<project>/.env` or `<project>/.swarm/.env`
 
 Get a key at <https://ollama.com/settings/keys>.
 
-Your key can stay in the swarm repo `.env` next to `src/`; you do not need to
-`cd` into the repo first. Optionally copy it to `%USERPROFILE%\.swarm\.env` for a home-wide key.
+## Models
 
-## Global CLI path (`SWARM_HOME`)
+Models are [Ollama Cloud](https://ollama.com/search?c=cloud) ids. Defaults:
 
-`.\scripts\install-path.ps1` sets:
+| Role | Default | Why |
+| --- | --- | --- |
+| system | `deepseek-v4-flash` | strong reasoning, 1M context |
+| worker | `deepseek-v4-flash` | strong agentic coding |
 
-| Variable | Value |
-| --- | --- |
-| `SWARM_HOME` | Absolute path to the swarm_alright repo |
-| User `Path` | Prepends `%SWARM_HOME%\bin` |
+Override per role (`--system-model`, `--worker-model`) or both at once (`--model`).
+`swarm models` lists what your account can use.
 
-Wrappers: `bin\swarm.cmd`, `bin\swarm-tui.cmd`.
+Known context/output limits (used by OpenCode for compaction meter):
+
+| Model | Context | Output |
+| --- | --- | --- |
+| `deepseek-v4-flash` | 1,000,000 | 64,000 |
+| `deepseek-v4-pro` | 1,000,000 | 64,000 |
+| `gemma4:31b` | 262,144 | 16,384 |
+| `glm-5.2` | 1,000,000 | 64,000 |
+| Other | 131,072 | 16,384 |
 
 ## Per-project config (optional)
 
-Create `<project>/.swarm/config.json` to reduce waste on *that* repo without
-changing swarm itself. Missing file = defaults (works on any project).
+Create `<project>/.swarm/config.json`:
 
 ```json
 {
   "verify": "npm test",
-  "linkDirs": ["node_modules"],
   "singleFlight": true,
   "defaultMerge": true,
-  "metrics": true
+  "metrics": true,
+  "redactDumps": true
 }
 ```
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `verify` | _(none)_ | Shell command the **host** runs in the **project root** after auto-commit when there are new commits. Fail-soft (never aborts the run). |
-| `linkDirs` | legacy | Ignored in root mode (no nested worktrees). Kept for older configs. |
-| `singleFlight` | `true` | Refuse a second concurrent alive run on the same project folder. |
-| `defaultMerge` | `true` | After system review, merge worker commits unless `HOST: STOP` / `HOLD`. Set `false` to merge only on explicit `CONTINUE` / `DONE` / `REPASS`. |
-| `metrics` | `true` | Append one JSON object per cycle to `metrics.jsonl` (trajectory for offline evals). |
+| `verify` | (none) | Shell command run in project root after auto-commit. Result logged. Fail-soft. |
+| `singleFlight` | `true` | Refuse a second concurrent alive run on the same project |
+| `defaultMerge` | `true` | Merge worker commits after review unless `HOST: STOP`/`HOLD` |
+| `metrics` | `true` | Append cycle facts to `metrics.jsonl` for scorecards |
+| `redactDumps` | `true` | Redact common secret shapes in session dumps |
 
-Keep `verify` as **your** project's normal check (unit tests, `go test ./...`, etc.). Prefer a focused command over an entire CI matrix so cycles stay cheap.
-
-## Models
-
-Models are [Ollama Cloud](https://ollama.com/search?c=cloud) ids. Defaults use a
-**principal / executor** split (modern multi-agent practice):
-
-| Role | Default | Why |
-| --- | --- | --- |
-| system | `deepseek-v4-pro` | stronger lead for review + handoff quality |
-| worker | `deepseek-v4-flash` | fast agentic coding |
-
-If `pro` is not on your account, pass `--system-model deepseek-v4-flash` (or pick
-in the wizard). Override per role (`--system-model`, `--worker-model`) or both
-(`--model`). Other good cloud choices: `qwen3.5:397b`, `kimi-k2.7-code`,
-`glm-5.2`, `nemotron-3-nano:30b` (cheapest). `swarm models` lists what your
-account can use.
-
-Any model you pass is registered in the run's opencode config with tool calling
-enabled and an explicit **context limit** OpenCode uses for the TUI % bar and
-auto-compaction. Known 1M-class cloud models (`deepseek-v4-*`, `glm-5.2`, …)
-are set to 1M tokens. Unknown models default to **1M / 64k output** (not 131k)
-so the context meter is not artificially inflated.
-
-If the UI still shows ~40% at ~50k tokens after a restart, the run was started
-with the old 131k fallback — stop and start a new run so the injected config
-picks up the new limits.
+Editable via `swarm panel` or directly in the file — the run reads config each cycle.
 
 ## Injected opencode config
 
@@ -89,9 +70,17 @@ Every run's server gets this via `OPENCODE_CONFIG_CONTENT`:
   "small_model": "ollama/<system-model>",
   "share": "disabled",
   "autoupdate": false,
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "tail_turns": 1
+  },
   "permission": {
-    "edit": "allow", "bash": "allow", "webfetch": "allow",
-    "doom_loop": "allow", "external_directory": "allow"
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow",
+    "doom_loop": "allow",
+    "external_directory": "allow"
   },
   "provider": {
     "ollama": {
@@ -104,18 +93,23 @@ Every run's server gets this via `OPENCODE_CONFIG_CONTENT`:
 }
 ```
 
-Permissions are fully pre-allowed so agents never pause for approval — runs
-are designed to be unattended. This is scoped to the run's own server process;
-your global opencode config is untouched.
+Permissions are fully pre-allowed so agents never pause for approval. OpenCode
+owns compaction (`auto` + `prune`).
 
-## Files the app writes
+## Compile-time thresholds (not configurable via config.json)
 
-| Path | Contents |
-| --- | --- |
-| `<project>/.swarm/` | Per-project: `runs/<id>/` (MISSION.md, MEMORY.md, events.log, run.json, STOP), `worktrees/<id>/` |
-| `~/.swarm/runs/<id>.json` | Registry records for `ls`/`watch`/pickers |
-| `~/.swarm/.env` | Optional global API key fallback |
-| `<project>/.git/info/exclude` | `.swarm/` appended (keeps run artifacts out of git status) |
-| `<project>/.git/config` | Local `user.name`/`user.email` = `swarm`, only if unset |
+| Threshold | Value | Where |
+| --- | --- | --- |
+| Worker rotate threshold | 120 messages (growth since fork) | `run.go` |
+| System rotate interval | 8 cycles | `run.go` |
+| Digest inject interval | 3 minutes | `system_watch.go` |
+| Active watch cooldown | 8 minutes | `system_watch.go` |
+| Stall threshold | 20 minutes | `run.go` |
+| Max turn retries | 3 attempts | `run.go` |
+| Ambition ratchet | 1 intercept then stop | `run.go` |
+| DONE gate streak | ≥2 empty ships + no checklist | `prompts.go` |
+| Heartbeat interval | 30 seconds | `run.go` |
+| Health poll interval | 45 seconds | `run.go` |
 
-Worker commits are authored as `swarm <swarm@localhost>`.
+These are visible in `swarm panel` (read-only) and can be changed by editing
+the Go source and rebuilding.

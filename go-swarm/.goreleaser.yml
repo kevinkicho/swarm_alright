@@ -1,0 +1,43 @@
+version: 2
+
+project_name: swarm
+
+builds:
+  - id: swarm
+    main: .
+    binary: swarm
+    env:
+      - CGO_ENABLED=0
+    targets:
+      - windows/amd64
+      - linux/amd64
+      - darwin/amd64
+      - darwin/arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    builds: [swarm]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: kevinkicho
+    name: swarm_alright
+  draft: true
+  prerelease: auto

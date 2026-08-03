@@ -1,215 +1,126 @@
 # CLI reference
 
-All commands run as `node src/cli.ts <command>` (shown here as `swarm <command>`).
-
-## Global install (any directory)
-
-### Windows
-
-From the repo root, once:
+## Go binary (recommended)
 
 ```powershell
-.\scripts\install-path.ps1
+cd go-swarm
+go build -o swarm.exe .
+./swarm.exe <command>
 ```
 
-Sets user `SWARM_HOME` to the repo and prepends `bin\` to your user `Path`:
+The binary is a standalone 12MB `.exe` with zero runtime dependencies.
 
-| Command | Equivalent |
-| --- | --- |
-| `swarm …` | `node %SWARM_HOME%\src\cli.ts …` |
-| `swarm-tui …` | `node %SWARM_HOME%\src\cli.ts tui …` |
+## TypeScript (archive only)
 
-Works in PowerShell and Command Prompt. Remove with
-`.\scripts\install-path.ps1 -Uninstall`.
+The old Node host lives under `legacy/` and is **not** the supported entrypoint.
+Build and run the Go binary instead.
 
-### Unix / macOS
+## Commands
 
-```bash
-export SWARM_HOME=/path/to/swarm_alright
-export PATH="$SWARM_HOME/bin:$PATH"
-chmod +x "$SWARM_HOME/bin/swarm" "$SWARM_HOME/bin/swarm-tui"
-```
+### swarm
 
-`bin/swarm` and `bin/swarm-tui` are bash shims (same as `bin/swarm.cmd` on Windows).
+Interactive hub (firebase-init style). Status panel of active runs, guided menus
+for starting/restarting runs, model selection from live Ollama Cloud list.
 
-## swarm
-
-Interactive hub (firebase-init style). Status panel of active runs on top,
-arrow-key menu below:
-
-- **start a new run** — guided: folder → directive → per-role model picked
-  live from your Ollama Cloud models → summary → optional background mode
-- **restart a run from history** — pick a run, confirm params, resumes it
-- **watch N active run(s)** — opens the dashboard
-- **attach to an agent** — pick run → pick agent → full opencode TUI
-- **stop a run** — graceful stop
-- **prune finished run(s)** — same as `swarm clean`
-- **list ollama cloud models** — same as `swarm models`
-- **exit**
-
-`swarm init` is an alias.
-
-## swarm run \<folder\> [options]
+### swarm run \<folder\> [options]
 
 Start an autonomous run on a project folder. Runs forever until the system says
-`DONE`/`STOP`, the user stops it, or `--max-cycles` is reached.
+DONE/STOP, the user stops it, or `--max-cycles` is reached.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--directive "..."` | _(none)_ | Mission for the run. Without it, the system infers the mission from the project itself |
-| `--system-model M` | `deepseek-v4-pro` | System / human-lead agent (stronger principal) |
-| `--worker-model M` | `deepseek-v4-flash` | Worker / implementer agent |
-| `--model M` | — | Shorthand: same model for both roles |
-| `--api-key K` | env | Ollama Cloud key (else `OLLAMA_API_KEY`, `.env`, or `~/.swarm/.env`) |
+| `--directive "..."` | (none) | Mission for the run (system infers from project if omitted) |
+| `--system-model M` | `deepseek-v4-flash` | Model for system agent |
+| `--worker-model M` | `deepseek-v4-flash` | Model for worker agent |
+| `--model M` | — | Shorthand: same model for both agents |
+| `--api-key K` | env | Ollama Cloud key (else `OLLAMA_API_KEY`, `.env`) |
 | `--max-cycles N` | ∞ | Stop after N cycles (testing) |
-| `--detach` | off | Background mode: no console, survives terminal closing |
+| `--detach` | off | Background mode (survives terminal close) |
+| `--continue` | off | Resume from latest run on this project |
+| `--workers N` | `1` | Worker count; N>1 experimental (shared HANDOFF on one root) |
 
-## swarm restart [run-id] [options]
+### swarm restart [run-id] [options]
 
-Resume a past run. **Reuses the same run id, the same worktrees, the same run
-folder** (mission, memory, events log), and the same git branches. The cycle
-counter continues from where the prior run left off. OpenCode agent sessions
-are always fresh (chat is not portable), but all file state and git state is
-inherited.
-
-Without an id, an arrow-key picker lists history.
+Resume a past run. Reuses the same run id, run folder, and all file state.
+OpenCode sessions are always fresh; file context (DIALOGUE, MEMORY, HANDOFF)
+is inherited.
 
 | Flag | Description |
 | --- | --- |
+| `--directive "..."` | New directive (empty = keep existing) |
+| `--system-model M` | Override system model |
+| `--worker-model M` | Override worker model |
+| `--model M` | Same model for both |
+| `--api-key K` | Ollama Cloud API key |
+| `--max-cycles N` | Stop after N cycles |
+| `--project <folder>` | Load run history from this project's .swarm/runs |
 | `--yes` | Keep previous models without prompting |
-| `--detach` | Restart in background |
-| `--project <folder>` | Read run history from a project's `.swarm/runs` (works after `swarm clean`) |
-| `--directive`, `--system-model`, `--worker-model`, `--model`, `--max-cycles`, `--api-key` | Override the previous run's params |
 
-Refuses to restart a run that's still alive — `swarm stop` it first.
+### swarm ls
 
-## swarm ls
+List all runs: `id  status  cycle  project — directive`.
 
-All runs, newest first: `id  status  cycle  project — directive`.
-Statuses: `alive`, `stopped`, `errored`, `crashed` (record says running but the
-process is gone).
+### swarm status [run-id]
 
-## swarm scorecard [run-id]
+Live facilitation snapshot: phase, cycle, opencode busy, git ahead.
 
-Trajectory from `metrics.jsonl`: ship rate, merges, verify, tool errors, flags.
+### swarm doctor [folder]
 
-| Flag | Description |
-| --- | --- |
-| `--recent N` | When no id, last N registry runs (default 5) |
-| `--json` | Machine-readable scorecards |
+Diagnose: dirty root paths, worktree count, registry records, alive count.
 
-## swarm postmortem [run-id]
+### swarm tally [run-id]
 
-Offline postmortem: scorecard + MATERIALS surface + session/memory counts +
-host tips from events.log. Prefer this after a closed run.
+Situation counts from events.log: cycle starts, completes, tool calls, errors,
+accepts, rejects.
 
-| Flag | Description |
-| --- | --- |
-| `--json` | Full report object |
-| `--out <file>` | Also write a plain markdown summary |
+### swarm scorecard [run-id]
 
-## swarm materials [run-id]
+Trajectory scorecard from metrics.jsonl: total cycles, time, commits shipped,
+empty ships, max empty streak, signal distribution.
 
-Print `MATERIALS.md` path, live session dumps, and the newest session archives —
-same inventory the lead uses each cycle.
+### swarm postmortem [run-id]
 
-## swarm tally [run-id]
+Run summary with recent events from events.log.
 
-Situation tally from `events.log` (offline; no OpenCode server). When
-`metrics.jsonl` exists, also prints a **trajectory scorecard** per run.
+### swarm watch [run-id]
 
-| Flag | Description |
-| --- | --- |
-| _(no id)_ | Tally the **N most recent** registry runs (default 5) |
-| `[run-id]` | One run only |
-| `--recent N` | How many recent runs when no id (default 5) |
-| `--json` | Machine-readable JSON |
+Live status refresh (2s interval, line clear between updates).
 
-Also available as `swarm doctor --tally [run-id]`.
+### swarm logs [run-id]
 
-Reports: per-run snapshot, grand funnel (CONTINUE/DONE/STOP/skip/maxBuffer/…),
-fail reason tallies, streaks, ahead-at-outcome, turn times, situation codes
-(S1–S10), and trajectory scorecards from `metrics.jsonl`.
+Tail events.log (proper offset-tracking file tail).
 
-## swarm scorecard [run-id]
+### swarm tui [run-id]
 
-Trajectory scorecard from `metrics.jsonl` only (ship rate, merge rate, signals,
-verify, tool errors, handoff size, operator flags). Offline; no OpenCode server.
+Attach the real opencode TUI to a live agent session. Pick the agent
+(`--agent system` or `--agent worker`), or defaults to system.
 
-| Flag | Description |
-| --- | --- |
-| _(no id)_ | Score the **N most recent** registry runs (default 5) |
-| `[run-id]` | One run only |
-| `--recent N` | How many recent runs when no id (default 5) |
-| `--json` | Machine-readable JSON |
+### swarm panel [run-id]
 
-## Dev: selfcheck / precommit / preflight
+Interactive control panel (bubbletea TUI) with:
+- Live run state (cycle, phase, agent status, message counts)
+- Editable config fields (verify, singleFlight, defaultMerge, metrics, redactDumps)
+- Read-only display of compile-time thresholds
+- Keybindings: ↑/↓ navigate, enter edit, tab toggle, r refresh, q quit
 
-Offline checks (no API key, no OpenCode server):
+### swarm stop [run-id]
 
-```powershell
-npm run selfcheck
-npm run precommit    # same as selfcheck (git hook target)
-npm run preflight    # run-ready host checks (+ nested selfcheck)
-npm run preflight -- C:\path\to\project   # also warn if project has no .git
-.\scripts\install-precommit.ps1   # git core.hooksPath=.githooks
-```
+Graceful stop: writes a STOP file; the run finishes the current turn and shuts down.
 
-The pre-commit hook runs `npm run precommit` before each commit.
+### swarm clean
 
-### Suggested live smoke
+Prune finished/errored/crashed records from the registry.
 
-```powershell
-npm run preflight
-node src/cli.ts run C:\path\to\project --max-cycles 1 --directive "add a one-line README note"
-# then: swarm logs / watch; inspect .swarm/runs/<id>/MATERIALS.md
-```
-
-## swarm watch [run-id]
-
-Live dashboard, repaints only when something changes, `q` to quit.
-
-- **No id**: every active run with its latest activity lines; finished runs as
-  compact one-liners
-- **With id**: mission line + scrolling activity feed from `events.log`
-
-## swarm tui [run-id]
-
-Attach the **real opencode TUI** to a live agent's session: pick the run
-(active only), then the agent (system / worker, each with model + directory in
-the detail frame). Watch the agent think, edit, and run tools in real time.
-Detaching (`q`/Ctrl+C) leaves the run going.
-
-Requires an active run — the TUI is a client of the run's opencode server.
-
-## swarm logs [run-id]
-
-Tail a run's `.swarm/runs/<id>/events.log` (Ctrl+C to stop).
-
-## swarm stop [run-id]
-
-Graceful stop: writes a STOP file; the run finishes the current agent turn and
-shuts down (worktrees/branches kept). Waits up to 2 minutes, then force-kills.
-
-## swarm clean
-
-Prune finished/errored/crashed records from the registry; also kills orphaned
-opencode servers left behind by crashed runs. Run folders on disk
-(mission, memory, logs, worktrees) are untouched.
-
-| Flag | Description |
-| --- | --- |
-| `--worktrees` | Also drop git worktrees for dead runs |
-| `--branches` | Also delete `swarm/<dead-id>/*` branches |
-| `--project <folder>` | Scope to one project |
-
-## swarm models
+### swarm models
 
 List models available on your Ollama Cloud account.
 
-## Interactive pickers
+## API key resolution
 
-Anywhere a run-id or agent is optional, omitting it opens a master–detail
-picker: arrow keys navigate a compact list on the left; a boxed frame on the
-right shows full details (status, cycle, models, project path, complete
-directive). `↑/↓` move, `enter` selects, `esc`/`q` cancels.
+Search order (first hit wins):
+1. `--api-key` flag
+2. `OLLAMA_API_KEY` environment variable
+3. `.env` in current directory
+4. `SWARM_HOME/.env` and install-root `.env`
+5. `~/.swarm/.env`
+6. `<project>/.env` or `<project>/.swarm/.env`

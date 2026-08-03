@@ -1,7 +1,7 @@
 {
   "name": "swarm-alright",
-  "version": "0.1.0",
-  "description": "Autonomous multi-agent runs on any project folder, powered by opencode + Ollama Cloud",
+  "version": "0.2.0",
+  "description": "Autonomous multi-agent runs on any project folder — Go host powered by OpenCode + Ollama Cloud",
   "type": "module",
   "author": "kimi k3 from moonshot ai",
   "license": "MIT",
@@ -18,25 +18,17 @@
     "autonomous",
     "ollama",
     "ollama-cloud",
-    "ai-agents"
+    "ai-agents",
+    "go"
   ],
-  "bin": {
-    "swarm": "./src/cli.ts"
-  },
   "scripts": {
-    "swarm": "node src/cli.ts",
-    "selfcheck": "node --experimental-strip-types scripts/selfcheck.mjs",
-    "precommit": "node --experimental-strip-types scripts/selfcheck.mjs",
-    "preflight": "node --experimental-strip-types scripts/preflight.mjs",
-    "install-hooks": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-precommit.ps1"
+    "build": "cd go-swarm && go build -o swarm.exe .",
+    "test": "cd go-swarm && go test ./...",
+    "check": "cd go-swarm && go vet ./... && go test ./... && go build -o swarm_check.exe .",
+    "swarm": "cd go-swarm && go run ."
   },
   "engines": {
     "node": ">=22.6"
   },
-  "devDependencies": {
-    "@types/node": "^24.0.0"
-  },
-  "dependencies": {
-    "@opencode-ai/sdk": "^1.18.4"
-  }
+  "private": true
 }

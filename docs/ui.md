@@ -4,44 +4,59 @@ Everything is terminal-native; there is no web UI. Four surfaces:
 
 ## 1. The wizard hub (`swarm` / `swarm init`)
 
-A boxed status panel of active runs (id, cycle, project, agent count, latest
-activity line) above an arrow-key action menu. Menu items appear only when
-relevant (e.g. "stop" only while something is active). Quick actions return to
-the menu; run/restart/watch/attach take over the terminal.
+A status panel of active runs above a numbered menu. Menu items:
+- start a new run (guided: folder → directive → models → confirm)
+- restart from history
+- list all runs
+- control panel
+- models
+- clean finished records
+- exit
 
 ## 2. The dashboard (`swarm watch [id]`)
 
-- Repaints only when content actually changed — no flicker, no scrolling spam
-- Overview: active runs get multi-line activity tails; finished runs are
-  compact one-liners
-- Single run: **mission line** parsed live from `MISSION.md` above the
-  activity feed
-- Color code: yellow = tool calls, green = ACCEPT/CONTINUE, magenta = DONE/STOP,
-  red = errors, cyan = cycle markers
-- `q` quits (never stops the run)
+- Line-clear refresh every 2 seconds
+- Shows: status badge, run id, cycle, phase, project name
+- No id: picks the single active run (or lists if multiple)
 
-## 3. Master–detail pickers
+## 3. The control panel (`swarm panel [id]`)
 
-Used everywhere a run or agent must be chosen (`stop`, `logs`, `tui`,
-`restart`, the wizard). Compact list on the left; boxed detail frame on the
-right with the full picture: status, cycle, start time, both models,
-project path, and the complete word-wrapped directive. `↑/↓` move, `enter`
-selects, `esc`/`q` cancels. Single-match lists auto-select. Falls back to
-one column below 90 chars wide.
+Built with [bubbletea](https://github.com/charmbracelet/bubbletea) +
+[lipgloss](https://github.com/charmbracelet/lipgloss):
+
+- **Top section:** live run state (status, cycle, phase, project, models)
+- **Agent info:** per-agent live session status (busy/idle), session ID, message
+  count — probed via SDK every 5 seconds
+- **Middle section:** guards & thresholds
+  - Editable fields (verify, singleFlight, defaultMerge, metrics, redactDumps) —
+    writes to `.swarm/config.json`, takes effect next cycle
+  - Read-only compile-time thresholds (rotation, stall, digest interval, etc.)
+- **Keybindings:** ↑/↓ navigate, enter edit, tab toggle, r refresh, q quit
+- Uses the terminal alternate screen buffer (no scrollback pollution)
 
 ## 4. The opencode TUI (`swarm tui [id]`)
 
-The genuine opencode terminal interface, attached to a live agent session of a
-run (`opencode attach <run-server> --session <agent>`):
+The genuine opencode terminal interface, attached to a live agent session
+(`opencode attach <url> --session <id>`):
 
-- The agent's full message stream live: reasoning, tool calls, file edits,
-  shell commands, diffs
-- Works per agent: system or worker
+- Full agent message stream live: reasoning, tool calls, file edits, shell
+  commands, diffs
+- Works per agent: system or worker (`--agent system` / `--agent worker`)
 - Read-only in practice — the swarm drives the session; `q`/Ctrl+C detaches
   without affecting the run
-- Requires an active run (the TUI is a client of the run's server)
+- Requires an active run (the TUI is a client of the run's opencode server)
 
 ## Raw logs (`swarm logs [id]`)
 
-A plain `tail -f` of `.swarm/runs/<id>/events.log` — every phase transition,
+A proper file tail of `events.log` with offset tracking — every phase transition,
 tool call, agent reply, and error, timestamped.
+
+## Colors
+
+ANSI colors respect `NO_COLOR` / `FORCE_COLOR` / TTY detection:
+- Green: ACCEPT / CONTINUE / alive
+- Magenta: DONE / STOP
+- Yellow: tool calls / warnings
+- Red: errors / failures
+- Cyan: cycle markers / highlights
+- Gray: muted info / hints

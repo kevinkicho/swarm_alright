@@ -3,6 +3,9 @@
 Minimal **system ↔ worker** loop. No team chat, no contracts board, no third agent.
 **Root mode:** both agents edit the **project folder** — no nested git worktrees.
 
+**Primary:** standalone Go binary under `go-swarm/` (12MB exe). TypeScript under
+`legacy/` is archive-only and not maintained.
+
 ## Pattern
 
 ```
@@ -20,94 +23,132 @@ user directive → MISSION.md (once)
 
 | Role | Model | Job |
 | --- | --- | --- |
-| **System** | stronger preferred | Agentic lead: inspect materials, judge work, write `HANDOFF.md` |
+| **System** | stronger preferred | Agentic lead: inspect materials, judge work, write `HANDOFF.md`, emit VERDICT |
 | **Worker** | fast tool model | Receives handoff; implements **in project root** until idle |
-| **Host** | — | Sensors + commit on root + baseline accept — **not** quality policy trees |
+| **Host** | — | Sensors + commit on root + baseline accept + session rotation + SystemWatch |
+
+## The cycle
+
+```
+every cycle:
+  1. Sync worker from integration (git merge)
+  2. Re-home dirty paths from project root
+  3. Dirty salvage (commit leftover root dirt before phases)
+  4. System rotation (fork every 8 cycles via session.fork)
+  5. Worker probe (capture session dump, check rotation threshold)
+  6. Worker rotation (fork on 120+ message growth since last fork)
+  7. Build review pack (git diff + probe summary → MEMORY.md, capped)
+  8. Write materials index + BUS snapshot (work_health)
+  9. SYSTEM turn (materials sitrep + sticky identity → review + HANDOFF + VERDICT)
+ 10. Dirty-on-system (commit lead edits)
+ 11. DONE gate (blocks false DONE on empty streak without checklist)
+ 12. Ambition ratchet (first DONE → think-bigger; STOP ends immediately)
+ 13. Archive system session for postmortems
+ 14. Resolve handoff from HANDOFF.md or system reply
+ 15. WORKER turn(s) with stall watch + full bus → SystemWatch
+ 16. SystemWatch digests (~3m when pending) + ACTIVE WATCH on alert/STALE
+ 17. Host commit (auto-commit dirty root, append ship log)
+ 18. Verify (project verify command if configured)
+ 19. Accept baseline (advance BASELINE.sha on CONTINUE/DONE)
+ 20. Empty ship recovery (same-cycle re-scope if no commits)
+ 21. Write session index + BUS snapshot + metrics
+ 22. Shutdown/SIGINT salvage commit
+```
+
+## Session rotation
+
+Uses OpenCode SDK's `session.fork` — the native "continue from here" mechanism.
+
+- **Worker:** forks after 120+ **new** messages since last fork (growth-based,
+  not absolute — fork inherits parent's message count)
+- **System:** forks every 8 cycles
+- **Fallback:** if fork fails, falls back to `session.summarize` → create →
+  inject summary. If summarize also fails (session too big), creates fresh
+  session with a host-written continuity note pointing to DIALOGUE.md / MEMORY.md.
+
+## SystemWatch
+
+During worker turns, the host runs a `SystemWatch` goroutine that:
+- Receives **full** SSE fan-in via `EventBus` → `observe` (not a one-shot peek)
+- Injects digests every ~3 minutes **only when pending events** (body capped)
+- Rewrites `BUS.md` with `work_health` (OK/QUIET/STALE) during the worker turn
+- On alert/STALE (8m cooldown): ACTIVE WATCH turn; lead `HOST: STOP` aborts **worker only**
+- Stops when the worker turn ends; sends one final end-of-turn digest
+
+## Event bus honesty
+
+`host_tick` is the host rewrite clock. Trust **`work_health`** / `last_opencode_event_age`:
+- **STALE** = worker still busy/active to SDK but no OpenCode bus events ≥10m
+- Stall detector uses bus quiet (20m) + running-tool flags (cleared if stuck)
+
+## Ambition ratchet
+
+When the system says `HOST: DONE`:
+1. First time: host intercepts, injects `[host:ambition]` think-bigger prompt,
+   gives system a fresh turn to write a more ambitious HANDOFF. Run continues.
+2. Second time: run stops. `doneIntercepted` flag ensures exactly one chance.
+
+**`HOST: STOP` is never intercepted** — run ends immediately.
+
+## Guards
+
+| Guard | What it does |
+| --- | --- |
+| `gateDoneSignal` | Blocks DONE when `emptyCommitStreak >= 2` without `MISSION_COMPLETE: true` + checklist |
+| `handoffFingerprint` | Detects stale handoff (same text re-issued across cycles) |
+| `needsHandoffRewrite` | Detects thin/missing handoff after system review |
+| `effectiveMergeSignal` | Maps empty signal to CONTINUE or HOLD based on `defaultMerge` config |
+| `parseHostSignal` | Parses CONTINUE/DONE/STOP/REPASS/HOLD from system reply (JSON or text) |
+| `hasMissionDoneChecklist` | Checks for `MISSION_COMPLETE: true` + checklist keywords |
 
 ## Root mode (why)
 
-Earlier designs used `git worktree` under `.swarm/worktrees/<id>/w1`. That duplicated trees, confused tools/humans, and wasted disk. The host now:
+Earlier designs used `git worktree` under `.swarm/worktrees/<id>/w1`. That
+duplicated trees, confused tools/humans, and wasted disk. The host now:
 
-- Opens **both** OpenCode sessions on the **project path**
-- Auto-commits dirty files **in the project root**
-- Tracks review range with **`BASELINE.sha`** (not a second branch/worktree)
+1. Both agents use the **project root** as their working directory.
+2. Host commits on the user's branch (typically `main`).
+3. `BASELINE.sha` tracks the last accepted commit — `git diff baseline..HEAD`
+   shows unreviewed work.
+4. No nested worktrees, no branch sprawl.
 
-Legacy `swarm clean --worktrees` still removes old nested worktrees if present.
+## Concurrency
 
-## Design principles
+- **Within a run:** system and worker turns are sequential. SystemWatch runs
+  as a goroutine during worker turns. Heartbeat (30s) and health (45s) timers
+  run as background goroutines.
+- **Thread safety:** `r.stopping` uses `atomic.Bool`. `r.rec` protected by
+  `recMu` mutex. `r.systemWatch` protected by `watchMu` mutex. EventBus
+  handlers called outside the lock to prevent deadlock.
+- **Across runs:** each run is an independent process with its own opencode
+  server, registry record, and run folder. `singleFlight` (default on) prevents
+  concurrent runs on the same project.
 
-1. Materials-only sitrep + sticky identities  
-2. Handoff as `HANDOFF.md`  
-3. Default accept advances baseline (unless `HOST: STOP`)  
-4. Durable logs under `.swarm/runs/<id>/`  
-5. No time pressure on the lead  
-6. **One workspace = project root**  
-7. **Exceptions escalate to system** — host salvages sensors/git; lead decides CONTINUE / STOP / DONE / REPASS via `EXCEPTION.md`  
-8. **Event bus pub/sub** — only host calls OpenCode `event.subscribe`; publishes `BUS.md` / `BUS.jsonl`
-9. **Active system watch** — while worker runs, host injects live digests into the system session (`noReply`) and may run short ACTIVE WATCH turns on alerts (lead can `HOST: STOP`)
+## Go source files (high level)
 
-See [recommendations.md](./recommendations.md).
-
-## System control lines (optional)
-
-```text
-HOST: DONE      # accept baseline + end run
-HOST: STOP      # leave baseline (still on branch) + end run
-HOST: REPASS    # same-cycle second worker pass
-HOST: HOLD      # leave baseline, keep running
-```
-
-Omitting host lines = **continue + accept** when `defaultMerge` is true.
-
-## Run folder
-
-```
-.swarm/runs/<id>/
-  MISSION.md, DIALOGUE.md, STANDARDS.md
-  MATERIALS.md, HANDOFF.md, HANDOFF_HISTORY.md
-  WORKER_SESSION.md, SYSTEM_SESSION.md, SESSION_INDEX.md, sessions/
-  SHIP_LOG.md, ships/, MEMORY.md, memory/
-  BUS.md, BUS.jsonl    live OpenCode event pub surface (host → lead)
-  BASELINE.sha         review range anchor (root mode)
-  metrics.jsonl, events.log, run.json, STOP
-```
-
-Project root is **not** under `.swarm/worktrees/`. Only run artifacts live in `.swarm/`.
-
-## Cycle
-
-1. Sense — git `baseline..HEAD` + session materials (recent probe window)  
-2. System turn — deep review; write HANDOFF  
-3. Host commits any **lead dirty** files, then accepts baseline (unless STOP/HOLD)  
-4. Worker on project root → host commit → probe/archive; rotate worker on empty ship or saturated session  
-5. Metrics + `cycle_summary` + MEMORY  
-6. Loop (sessions/ pruned to newest ~48 dumps)  
-
-## Git
-
-```
-user branch (current branch at run start)
-  └── commits land here via host auto-commit
-  └── BASELINE.sha advanced when the lead “accepts”
-```
-
-Restart reuses run id + run folder + baseline file.
-
-## What we avoid
-
-- Nested worktrees / “repos inside repos”  
-- Team chat / multi-agent boards  
-- Host quality trees / required VERDICT ceremony  
-
-## Source layout
-
-| Module | Role |
+| File | Purpose |
 | --- | --- |
-| `run.ts` | Orchestrator |
-| `run-host-git.ts` | Root commit, baseline accept, review pack |
-| `run-prompts.ts` | Identities / sitrep / handoff |
-| `run-log.ts` / `materials.ts` | Durable surfaces |
-| `session-probe.ts` | WORKER_SESSION dump |
-| `metrics.ts` / `scorecard.ts` | Trajectory |
+| `run.go` | Run state machine, cycle loop, salvage, ambition, bus fan-in |
+| `run_turn.go` | Turn execution: stall, external abort, rotate |
+| `system_watch.go` | SystemWatch digests + ACTIVE WATCH, materials, empty-ship, escalate, doctor |
+| `bus_surface.go` | BUS.md / BUS.jsonl, work_health STALE |
+| `eventbus.go` | SSE subscribe, running-tool tracking, last activity |
+| `constants.go` | Compile-time thresholds (stall, rotate, digests) |
+| `cli.go` | Cobra commands + interactive hub |
+| `panel.go` | Bubbletea TUI with guards |
+| `prompts.go` | Identities, signal parse, DONE gate |
+| `sdk.go` | OpenCode HTTP client |
+| `git.go` | Root-mode git actuators |
+| `tally.go` / `postmortem.go` / `scorecard.go` | Offline operator tools |
+| Platform | `pid_*.go`, `detach_*.go` |
 
-`npm run selfcheck` · `npm run preflight` · `.\scripts\install-precommit.ps1`
+## Resilience
+
+- Failed cycles retry with 15s backoff; 5 consecutive failures end the run as `errored`.
+- SIGINT/SIGTERM → **dirty salvage commit** + graceful shutdown.
+- `swarm stop` writes a `STOP` file; the run checks it between phases.
+- Busy-aware **stall** (20m bus quiet): soft re-prompt, then rotate; not wall-clock kill of healthy tools.
+- Watch `HOST: STOP` aborts worker only (mission continues).
+- `session.fork` for rotation — SDK native context branching.
+- OpenCode `compaction.auto` + logged `session.compacted` events.
+- Health timer every 45s; heartbeat registry write every 60s (no log spam).
