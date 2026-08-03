@@ -450,7 +450,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	hasReviewPack := false
 	var reviewSections []string
 	if r.cycle > 1 {
-		r.lastWorkerProbe = captureWorkerProbe(r.sdk, worker.SessionID, worker.Directory, r.paths.WorkerSessionFile, r.id)
+		r.lastWorkerProbe = captureSessionProbe(r.sdk, "worker", worker.SessionID, worker.Directory, r.paths.WorkerSessionFile, r.id, r.cycle)
 		r.log(fmt.Sprintf("  [host:session] worker probe: messages=%d tools=%d status=%s",
 			r.lastWorkerProbe.MessageCount, r.lastWorkerProbe.ToolCalls, r.lastWorkerProbe.Status))
 
@@ -534,7 +534,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	}
 
 	if r.cycle > 1 {
-		r.lastSystemProbe = captureWorkerProbe(r.sdk, system.SessionID, system.Directory, r.paths.SystemSessionFile, r.id)
+		r.lastSystemProbe = captureSessionProbe(r.sdk, "system", system.SessionID, system.Directory, r.paths.SystemSessionFile, r.id, r.cycle)
 	}
 
 	handoff := readHandoffFile(r.paths.HandoffFile)

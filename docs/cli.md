@@ -73,6 +73,10 @@ Diagnose: dirty root paths, worktree count, registry records, alive count.
 Situation counts from events.log: cycle starts, completes, tool calls, errors,
 accepts, rejects.
 
+### swarm materials [run-id]
+
+MATERIALS.md path + newest session archives under `sessions/`.
+
 ### swarm scorecard [run-id]
 
 Trajectory scorecard from metrics.jsonl: total cycles, time, commits shipped,

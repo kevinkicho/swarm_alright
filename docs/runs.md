@@ -23,7 +23,7 @@
   - `STANDARDS.md` — lead quality bars (system may edit)
   - `MATERIALS.md` — host inventory for system investigation
   - `BASELINE.sha` — accepted work tip
-  - `BUS.md` — live OpenCode event surface
+  - `BUS.md` — live OpenCode event surface (`work_health`, not host_tick alone)
   - `BUS.jsonl` — append-only event history
   - `WORKER_SESSION.md` — worker session dump
   - `SYSTEM_SESSION.md` — system session archive
@@ -44,8 +44,11 @@
   The record stays `running` (displayed as `crashed`), and the run's opencode
   server may be orphaned until the next `swarm clean`.
 - **System-initiated:** the system agent emits `HOST: DONE` (mission complete)
-  or `HOST: STOP` (something's wrong). The ambition ratchet intercepts the
-  first DONE and gives the system a think-bigger turn; only a second DONE stops.
+  or `HOST: STOP` (stop now). The ambition ratchet intercepts the **first DONE**
+  only and gives the system a think-bigger turn; a second DONE stops.
+  **`HOST: STOP` ends immediately** (no ambition intercept).
+- **Watch STOP:** during ACTIVE WATCH, lead `HOST: STOP` aborts the stuck
+  **worker turn only** — the mission continues.
 
 ## Background (detached) runs
 

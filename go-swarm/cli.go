@@ -24,6 +24,7 @@ Usage:
   swarm panel [run-id]           Interactive control panel — live state + guards
   swarm logs [run-id]            Tail events.log
   swarm stop [run-id]            Graceful stop
+  swarm materials [run-id]       MATERIALS.md + newest session archives
   swarm clean                    Prune finished registry records
   swarm models                   List Ollama Cloud models
   swarm help                     This help
@@ -63,6 +64,7 @@ func Execute() error {
 		cmdTally(),
 		cmdPostmortem(),
 		cmdScorecard(),
+		cmdMaterials(),
 		cmdPR(),
 		cmdDashboard(),
 	)
@@ -609,6 +611,22 @@ func cmdScorecard() *cobra.Command {
 				id = args[0]
 			}
 			runScorecard(id)
+			return nil
+		},
+	}
+}
+
+func cmdMaterials() *cobra.Command {
+	return &cobra.Command{
+		Use:   "materials [run-id]",
+		Short: "MATERIALS.md path + newest session archives",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := ""
+			if len(args) > 0 {
+				id = args[0]
+			}
+			runMaterials(id)
 			return nil
 		},
 	}

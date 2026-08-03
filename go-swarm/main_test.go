@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,5 +249,78 @@ func TestConstantsSensible(t *testing.T) {
 	}
 	if systemRotateCycleInterval < 2 {
 		t.Error("system rotate too frequent")
+	}
+}
+
+func TestScorecardFixtures(t *testing.T) {
+	// fixtures/eval lives at repo root; tests run from go-swarm/
+	root := filepath.Join("..", "fixtures", "eval")
+	healthy, err := os.ReadFile(filepath.Join(root, "metrics-healthy.jsonl"))
+	if err != nil {
+		t.Skip("fixtures not found:", err)
+	}
+	sc := scorecardFromMetrics(healthy)
+	if sc.Cycles != 3 {
+		t.Errorf("healthy cycles: got %d want 3", sc.Cycles)
+	}
+	if sc.CommitsShipped < 2 {
+		t.Errorf("healthy commits: got %d want ≥2", sc.CommitsShipped)
+	}
+	if sc.MaxEmptyStreak != 0 {
+		t.Errorf("healthy max empty streak: got %d want 0", sc.MaxEmptyStreak)
+	}
+	if sc.Signals["DONE"] < 1 {
+		t.Error("healthy should have DONE signal")
+	}
+	healthyFlag := false
+	for _, f := range sc.Flags {
+		if strings.Contains(f, "healthy") {
+			healthyFlag = true
+		}
+	}
+	if !healthyFlag {
+		t.Errorf("expected healthy flag, got %v", sc.Flags)
+	}
+
+	stuck, err := os.ReadFile(filepath.Join(root, "metrics-stuck.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := scorecardFromMetrics(stuck)
+	if st.Cycles != 4 {
+		t.Errorf("stuck cycles: got %d want 4", st.Cycles)
+	}
+	if st.CommitsShipped != 0 {
+		t.Errorf("stuck commits: got %d want 0", st.CommitsShipped)
+	}
+	if st.MaxEmptyStreak < 2 {
+		t.Errorf("stuck max empty streak: got %d want ≥2", st.MaxEmptyStreak)
+	}
+	elevated := false
+	for _, f := range st.Flags {
+		if strings.Contains(f, "empty ship streak") || strings.Contains(f, "zero ships") {
+			elevated = true
+		}
+	}
+	if !elevated {
+		t.Errorf("expected stuck flags, got %v", st.Flags)
+	}
+}
+
+func TestPruneSessionArchives(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 10; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("worker-c%d.md", i))
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// staggered mtimes
+		ts := time.Now().Add(time.Duration(i) * time.Second)
+		_ = os.Chtimes(p, ts, ts)
+	}
+	pruneSessionArchives(dir, 5)
+	entries, _ := os.ReadDir(dir)
+	if len(entries) > 5 {
+		t.Errorf("expected ≤5 files after prune, got %d", len(entries))
 	}
 }

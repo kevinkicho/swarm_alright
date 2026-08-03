@@ -40,6 +40,13 @@ go build -o swarm.exe .
 ./swarm.exe run C:\path\to\project --directive "make this app durable"
 ```
 
+Install on PATH (Windows):
+
+```powershell
+.\scripts\install-path.ps1 -Build
+# new terminal → swarm help
+```
+
 Or from the interactive hub:
 
 ```powershell
@@ -51,6 +58,7 @@ Offline check (no API key):
 ```powershell
 cd go-swarm
 make check   # vet + test + build
+# or from repo root: npm run check
 ```
 
 ## Commands
@@ -66,6 +74,7 @@ make check   # vet + test + build
 | `swarm tally [id]` | Situation counts from events.log |
 | `swarm scorecard [id]` | Trajectory scorecard from metrics.jsonl |
 | `swarm postmortem [id]` | Run summary with recent events |
+| `swarm materials [id]` | MATERIALS.md path + newest session archives |
 | `swarm watch [id]` | Live status refresh |
 | `swarm logs [id]` | Tail events.log |
 | `swarm tui [id]` | Attach OpenCode TUI to a live agent session (`--agent system\|worker`) |

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -161,8 +160,13 @@ func redactSecrets(text string) string {
 	return text
 }
 
-// captureWorkerProbe probes the worker session and writes the dump
+// captureWorkerProbe probes the worker session and writes the dump (+ archive).
 func captureWorkerProbe(sdk *SDKClient, sessionID, directory, dumpPath, runID string) *probeMeta {
+	return captureSessionProbe(sdk, "worker", sessionID, directory, dumpPath, runID, 0)
+}
+
+// captureSessionProbe probes a session, writes dump, and archives under sessions/.
+func captureSessionProbe(sdk *SDKClient, role, sessionID, directory, dumpPath, runID string, cycle int) *probeMeta {
 	meta, err := probeSession(sdk, struct {
 		Role         string
 		SessionID    string
@@ -173,7 +177,7 @@ func captureWorkerProbe(sdk *SDKClient, sessionID, directory, dumpPath, runID st
 		RunID        string
 		Redact       bool
 	}{
-		Role:         "worker",
+		Role:         role,
 		SessionID:    sessionID,
 		Directory:    directory,
 		DumpPath:     dumpPath,
@@ -185,7 +189,121 @@ func captureWorkerProbe(sdk *SDKClient, sessionID, directory, dumpPath, runID st
 	if err != nil {
 		return &probeMeta{SessionID: sessionID, Status: "error", DumpPath: dumpPath}
 	}
+	meta.DumpPath = dumpPath
+	// Archive under runDir/sessions/
+	runDir := filepath.Dir(dumpPath)
+	if filepath.Base(runDir) != "runs" && !strings.Contains(runDir, string(filepath.Separator)+"runs"+string(filepath.Separator)) {
+		// dump is typically <runDir>/WORKER_SESSION.md
+		runDir = filepath.Dir(dumpPath)
+	}
+	archiveSessionDump(runDir, role, cycle, dumpPath)
 	return meta
+}
+
+const sessionArchiveKeep = 48
+
+// archiveSessionDump copies the live dump into sessions/ and prunes old archives.
+func archiveSessionDump(runDir, role string, cycle int, dumpPath string) {
+	data, err := os.ReadFile(dumpPath)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	sessionsDir := filepath.Join(runDir, "sessions")
+	_ = os.MkdirAll(sessionsDir, 0755)
+	tag := time.Now().UTC().Format("20060102T150405")
+	name := fmt.Sprintf("%s-c%d-%s.md", role, cycle, tag)
+	if cycle <= 0 {
+		name = fmt.Sprintf("%s-%s.md", role, tag)
+	}
+	_ = os.WriteFile(filepath.Join(sessionsDir, name), data, 0644)
+	// Also write *-latest.md for quick open
+	_ = os.WriteFile(filepath.Join(sessionsDir, fmt.Sprintf("%s-c%d-latest.md", role, max(1, cycle))), data, 0644)
+	pruneSessionArchives(sessionsDir, sessionArchiveKeep)
+	writeSessionIndex(runDir)
+}
+
+// pruneSessionArchives keeps the newest keepCount session dumps (by mtime).
+func pruneSessionArchives(sessionsDir string, keepCount int) {
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return
+	}
+	type fileInfo struct {
+		path string
+		mod  time.Time
+	}
+	var files []fileInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "index.md" {
+			continue
+		}
+		if !strings.HasSuffix(name, ".md") && !strings.HasSuffix(name, ".md.gz") {
+			continue
+		}
+		// Keep *-latest.md out of prune count preference — still can prune if too many
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{path: filepath.Join(sessionsDir, name), mod: info.ModTime()})
+	}
+	if len(files) <= keepCount {
+		return
+	}
+	// Sort oldest first
+	for i := 0; i < len(files); i++ {
+		for j := i + 1; j < len(files); j++ {
+			if files[j].mod.Before(files[i].mod) {
+				files[i], files[j] = files[j], files[i]
+			}
+		}
+	}
+	// Prefer deleting non-latest first among oldest
+	toRemove := len(files) - keepCount
+	removed := 0
+	for _, f := range files {
+		if removed >= toRemove {
+			break
+		}
+		if strings.Contains(filepath.Base(f.path), "-latest") {
+			continue
+		}
+		_ = os.Remove(f.path)
+		removed++
+	}
+	// If still over, remove oldest including latest
+	if removed < toRemove {
+		entries2, _ := os.ReadDir(sessionsDir)
+		var remaining []fileInfo
+		for _, e := range entries2 {
+			if e.IsDir() || e.Name() == "index.md" {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			remaining = append(remaining, fileInfo{path: filepath.Join(sessionsDir, e.Name()), mod: info.ModTime()})
+		}
+		for i := 0; i < len(remaining); i++ {
+			for j := i + 1; j < len(remaining); j++ {
+				if remaining[j].mod.Before(remaining[i].mod) {
+					remaining[i], remaining[j] = remaining[j], remaining[i]
+				}
+			}
+		}
+		for _, f := range remaining {
+			if removed >= toRemove {
+				break
+			}
+			_ = os.Remove(f.path)
+			removed++
+		}
+	}
 }
 
 // probeSummaryForMemory returns a short MEMORY section pointing at the full dump
@@ -203,8 +321,3 @@ func probeSummaryForMemory(meta *probeMeta) string {
 	return strings.Join(lines, "\n")
 }
 
-// DumpPath field on probeMeta — add it
-func init() {
-	// Just ensure the type is used
-	_ = json.Marshal
-}

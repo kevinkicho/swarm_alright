@@ -3,67 +3,70 @@
 Host sensors only. These notes help **operators** interpret `events.log` and
 scorecards; they are **not** prompt law and are not wired into agents.
 
+**Host:** Go binary (`go-swarm/`). Thresholds in `constants.go`.
+
 ## What the host treats as a stall
 
-- **Definition:** no OpenCode bus activity for `stallMs` (default **20 minutes**)
-  **and** none of: session status busy/working/retry, **running tool parts**
-  (SDK events), or **child session** busy (`session.children` + status).
+- **Definition:** no OpenCode **bus events** for **20 minutes** while the turn
+  is still not idle, **and** either no running tools or tools cleared as stale
+  after ~10m of bus quiet.
+- Long tools with recent bus activity are **not** stalls (busy ≠ stall).
 - **Response:**
   1. First stall → abort + **re-prompt same session** (soft recover)
-  2. Repeated stall → SDK **summarize** + new session + **noReply** inject of summary
+  2. Repeated stall → session **fork** (or summarize fallback) + retry
   3. Up to 3 attempts total
-- Host **salvages dirty git** on cycle start, shutdown, and process exit.
-- **OpenCode health** polled ~45s (`/global/health` or `session.list`); 3 fails → salvage + stop.
+- Host **salvages dirty git** on cycle start, SIGINT, shutdown, after system turn, and before exception escalate.
+- **OpenCode health** polled ~45s; failures are logged (operator inspects).
+
+## BUS honesty
+
+| Field | Meaning |
+| --- | --- |
+| `host_tick` | Host rewrote BUS.md — **not** proof of worker progress |
+| `work_health: OK` | Recent bus events |
+| `work_health: QUIET` | ≥5m since last OpenCode event |
+| `work_health: STALE` | Worker still busy/active but bus silent ≥10m |
 
 ## Signals in events.log
 
 | Pattern | Meaning |
 | --- | --- |
-| `stall: no OpenCode activity for Nm` | Host rotated after idle bus |
-| `rotated session for worker/system` | Fresh OpenCode session id |
+| `stall: no OpenCode bus events for Nm` | Soft recover or rotate |
+| `cleared stale running-tool flag` | Stuck tool accounting reset |
+| `session.fork ok` / `rotated session` | Fresh OpenCode session id |
 | `turn error attempt k/3` | Transient failure before retry |
-| `Bad Request` / context size | Size recovery path → rotate |
-| `empty ship` / `empty_commit_streak` | Worker idle without commits (may rotate) |
-
-## Provider / model ops (qualitative)
-
-Rates vary by account load, model size, and tool density. Do **not** treat these
-as SLAs; re-measure on your runs with `swarm scorecard` / `swarm tally`.
-
-| Observation | Typical ops response |
-| --- | --- |
-| Frequent stalls on **strong / slow** system models during deep review | Expected — raise patience; do not cap lead time |
-| Worker stalls mid-tool on large repos | Check disk/network; verify cmd length; prefer smaller verify scripts |
-| Context / Bad Request mid-episode | Host rotates; if still failing, lower session dump size is already windowed |
-| High `tool_error_rate` on scorecard | Inspect `WORKER_SESSION.md` tools — environment, paths, permissions |
-| Empty ships while tools “succeed” | Files not written under project root, or edits only under `.swarm/` |
+| `external abort … re-prompt` | Human/TUI cancel — soft recover |
+| `watch HOST: STOP` | Lead aborted **worker only** (mission continues) |
+| `empty ship` / `empty_commit_streak` | Worker idle without commits |
+| `salvage commit` | Dirty tree committed on stop/crash path |
 
 ## External abort (human / TUI)
 
 | Pattern | Meaning |
 | --- | --- |
-| `turn error … Aborted` | OpenCode cancelled the session (Esc, concurrent prompt on same session, or external abort) |
-| `external abort … re-prompt same session (no rotate)` | Host recovers without rotating — preserves mid-turn context |
+| `turn error … aborted` | OpenCode cancelled the session |
+| `external abort … re-prompt same session` | Host recovers without rotating |
+| `watch/lead abort — terminal` | Deliberate ACTIVE WATCH STOP — no re-prompt |
 
-**While host owns a turn:** prefer not messaging or Esc-aborting that role’s session in TUI. Chatting with the *other* role is usually fine; rewriting HANDOFF mid-worker still confuses the engineer.
+## Watch STOP ≠ mission end
 
-## Mass process kill
+During worker turns, SystemWatch may give the lead an ACTIVE WATCH turn on
+alerts/STALE. If the lead replies `HOST: STOP`, the host aborts the worker
+session only. The run continues so the system can re-plan next cycle.
 
-If events.log shows `Stop-Process -Name node` / `pkill node` / `taskkill … node.exe`, the worker may have killed **OpenCode + the swarm host** (both are Node). Host logs `[host:warn] mass node/process kill detected`. Worker identity instructs PID-scoped cleanup only.
+## Ambition ratchet
 
-## Related host controls
-
-- Worker rotate: empty ship streak or probe message count ≥ 120
-- Session dump: recent window (~80 msgs / 150k chars)
-- Lead edits: committed after system turn (dirty-on-DONE)
-- External `Aborted`: re-prompt same session (no rotate thrash)
+- First system `HOST: DONE` → intercept + think-bigger turn
+- Second `HOST: DONE` → stop
+- `HOST: STOP` → stop **immediately** (no ratchet)
 
 ## Commands
 
 ```text
-swarm doctor [folder]          # includes scorecard alert flags
+swarm doctor [folder]
 swarm scorecard <id>
 swarm postmortem <id>
 swarm materials <id>
 swarm tally <id>
+swarm panel <id>
 ```
