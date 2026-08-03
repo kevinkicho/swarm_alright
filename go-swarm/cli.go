@@ -103,7 +103,11 @@ func cmdRun() *cobra.Command {
 			if workerModel == "" {
 				workerModel = DefaultModels.Worker
 			}
-			if workers < 1 {
+			if workers != 1 {
+				// Shared root has no path ownership — only single worker is supported.
+				if workers > 1 {
+					fmt.Fprintln(stdout, warning("--workers >1 is disabled (shared root); using 1"))
+				}
 				workers = 1
 			}
 
@@ -158,7 +162,7 @@ func cmdRun() *cobra.Command {
 	c.Flags().IntVar(&maxCycles, "max-cycles", 0, "Stop after N cycles")
 	c.Flags().BoolVar(&detach, "detach", false, "Background mode (survives terminal close)")
 	c.Flags().BoolVar(&continueFlag, "continue", false, "Resume from latest run on this project")
-	c.Flags().IntVar(&workers, "workers", 1, "Number of worker agents (parallel)")
+	c.Flags().IntVar(&workers, "workers", 1, "Worker count (only 1 supported; N>1 forced to 1)")
 	return c
 }
 

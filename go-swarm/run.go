@@ -23,7 +23,7 @@ type RunOptions struct {
 	MaxCycles  int
 	APIKey     string
 	ResumeFrom string
-	Workers    int // number of worker agents (default 1; >1 experimental)
+	Workers    int // always forced to 1 (single worker on shared root)
 }
 
 // Run is the main run state machine
@@ -47,7 +47,7 @@ type Run struct {
 	lastSystemProbe     *probeMeta
 	lastWorkerProbe     *probeMeta
 	lastHandoffFp       string
-	doneIntercepted     bool
+	phase               HostPhase
 	lastSystemRotate    int
 	workerRotateMsgBase int
 	lastSyncOk          bool
@@ -77,7 +77,8 @@ func NewRun(opts RunOptions) *Run {
 	if id == "" {
 		id = regNewID()
 	}
-	if opts.Workers < 1 {
+	// Architectural rule: one worker on shared project root until path ownership exists.
+	if opts.Workers != 1 {
 		opts.Workers = 1
 	}
 	project, _ := filepath.Abs(opts.Project)
@@ -88,17 +89,24 @@ func NewRun(opts RunOptions) *Run {
 		id:    id,
 		paths: paths,
 		cycle: 0,
+		phase: PhaseBoot,
 	}
 }
 
-func (r *Run) workerCount() int {
-	if n := len(r.workers); n > 0 {
-		return n
+func (r *Run) workerCount() int { return 1 }
+
+// transition logs control-plane phase changes (PHASES.jsonl + events.log).
+func (r *Run) transition(to HostPhase, detail string) {
+	from := r.phase
+	if from == "" {
+		from = PhaseBoot
 	}
-	if r.opts.Workers > 0 {
-		return r.opts.Workers
+	r.phase = to
+	appendPhaseLog(r.paths.RunDir, r.cycle, from, to, detail)
+	r.log(fmt.Sprintf("  [host:phase] %s → %s %s", from, to, truncate(detail, 160)))
+	if r.rec != nil {
+		r.rec.Phase = string(to)
 	}
-	return 1
 }
 
 func (r *Run) log(msg string) {
@@ -172,10 +180,9 @@ func (r *Run) Start() error {
 	}
 
 	resuming := r.opts.ResumeFrom != ""
+	r.transition(PhaseBoot, ternary(resuming, "resuming", "starting"))
 	r.log(fmt.Sprintf("run %s %s on %s", r.id, ternary(resuming, "resuming", "starting"), project))
-	if r.opts.Workers > 1 {
-		r.log(fmt.Sprintf("note: --workers %d is experimental (shared HANDOFF on one root; prefer 1)", r.opts.Workers))
-	}
+	r.log("architecture: single worker on project root; digests on disk; control via VERDICT.json; no ambition ratchet")
 
 	r.log("preparing git repo...")
 	branch, err := ensureRepo(project)
@@ -363,36 +370,20 @@ func (r *Run) createAgents(resuming bool) ([]AgentRecord, error) {
 		}
 	}
 
-	workerCount := r.opts.Workers
-	if workerCount < 1 {
-		workerCount = 1
+	wID, err := r.sdk.sessionCreate(fmt.Sprintf("swarm %s worker", r.id))
+	if err != nil {
+		return nil, fmt.Errorf("create worker session: %v", err)
 	}
-	for i := 1; i <= workerCount; i++ {
-		name := "worker"
-		if workerCount > 1 {
-			name = fmt.Sprintf("worker-%d", i)
-		}
-		wID, err := r.sdk.sessionCreate(fmt.Sprintf("swarm %s %s", r.id, name))
-		if err != nil {
-			return nil, fmt.Errorf("create %s session: %v", name, err)
-		}
-		agent := AgentRecord{
-			Role:      "worker",
-			Name:      name,
-			Directory: r.opts.Project,
-			SessionID: wID,
-			Model:     r.opts.Models.Worker,
-		}
-		agents = append(agents, agent)
-		r.workers = append(r.workers, agent)
+	worker := AgentRecord{
+		Role:      "worker",
+		Name:      "worker",
+		Directory: r.opts.Project,
+		SessionID: wID,
+		Model:     r.opts.Models.Worker,
 	}
-
-	if workerCount > 1 {
-		r.log(fmt.Sprintf("agents ready: system + %d workers (experimental) — entering autonomous loop", workerCount))
-	} else {
-		r.log("agents ready: system + worker — entering autonomous loop")
-	}
-
+	agents = append(agents, worker)
+	r.workers = []AgentRecord{worker}
+	r.log("agents ready: system + worker — entering autonomous loop")
 	return agents, nil
 }
 
@@ -413,6 +404,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	}
 	t0 := time.Now()
 
+	r.transition(PhaseSync, "cycle start")
 	r.heartbeat("sync")
 	ok, detail := syncWorkerFromIntegration(r.opts.Project, r.baseBranch, "HEAD")
 	r.lastSyncOk = ok
@@ -426,6 +418,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		dirty = dirtyPaths(r.opts.Project)
 	}
 
+	r.transition(PhaseSystem, "lead review")
 	r.heartbeat("system")
 
 	// Periodic system rotation
@@ -490,17 +483,24 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 
 	r.writeHostMemory("system", []string{
 		"Phase: system review",
-		"Emit one VERDICT line: CONTINUE | DONE | STOP.",
+		"Primary: SITREP.md. Control: VERDICT.json or HOST: line.",
 	}, reviewSections)
 
+	aheadForSitrep := commitsAhead(r.opts.Project, r.baseBranch, "HEAD")
+	writeSitrep(SitrepInput{
+		Cycle: r.cycle, Phase: "system", RunID: r.id, Project: r.opts.Project,
+		EmptyStreak: r.emptyStreak, Signal: string(r.lastVerdict), Ahead: aheadForSitrep,
+		Worker: r.lastWorkerProbe, HandoffFP: r.lastHandoffFp, Paths: r.paths,
+		HandoffHint: "overwrite HANDOFF.md this turn",
+	})
 	writeMaterialsIndex(r.paths.RunDir, r.cycle, "system", r.lastWorkerProbe)
 	writeBusSnapshot(r.paths.RunDir, BusSnapshotOpts{
 		Phase: "system", Cycle: r.cycle, RunID: r.id, LastEventAgeMs: -1,
 	})
 
 	r.log(fmt.Sprintf("[cycle %d] system...", r.cycle))
-	r.toast(fmt.Sprintf("Cycle %d — system turn", r.cycle), "System is reviewing worker output")
-	identity := buildSystemIdentity(r.paths, r.workerCount())
+	r.toast(fmt.Sprintf("Cycle %d — system turn", r.cycle), "System is reviewing (SITREP + HANDOFF)")
+	identity := buildSystemIdentity(r.paths, 1)
 	systemPrompt := r.buildSystemPrompt(hasReviewPack)
 	sysText, _, err := r.turn(system, systemPrompt, identity)
 	if err != nil {
@@ -515,23 +515,34 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	// Dirty-on-system: commit lead edits before accept/stop
 	r.salvageDirty("system", fmt.Sprintf("swarm %s system: cycle %d (lead edits)", r.id, r.cycle))
 
-	signal := parseHostSignal(sysText)
+	// Control plane: VERDICT.json preferred over chat scrape
+	signal, verdict := resolveControlSignal(r.paths.RunDir, sysText)
+	verdict.Cycle = r.cycle
+	if verdict.Quality == 0 {
+		verdict.Quality = parseQualityScore(sysText)
+	}
 	if signal == SignalDone {
-		gatedSignal, isGated, gatedWhy := gateDoneSignal(signal, r.emptyStreak, sysText)
+		gated, isGated, gatedWhy := gateDoneSignal(signal, r.emptyStreak, verdict.MissionComplete, sysText)
 		if isGated {
 			r.log("  [host] " + gatedWhy)
-			signal = gatedSignal
+			signal = gated
+			verdict.Signal = ""
+			verdict.Note = gatedWhy
+			// Sensor only — one inject so lead sees the gate (not ambition policy)
 			r.sdk.sessionInjectContext(system.SessionID,
-				"[host sensor] "+gatedWhy+"\nOpen BACKLOG.md and write a NEW HANDOFF slice. Empty ship ≠ mission done.",
+				"[host sensor] "+gatedWhy+"\nWrite next HANDOFF. Set VERDICT signal CONTINUE.",
 				&modelRef{ProviderID: ProviderID, ModelID: bareModel(system.Model)})
 		}
 	}
+	verdict.Signal = string(signal)
+	writeVerdict(r.paths.RunDir, verdict)
 	r.lastVerdict = signal
 
-	qualityScore := parseQualityScore(sysText)
+	qualityScore := verdict.Quality
 	if qualityScore > 0 {
-		r.log(fmt.Sprintf("  [host] quality score: %d/10", qualityScore))
+		r.log(fmt.Sprintf("  [host] quality score: %d/10 (source=%s)", qualityScore, verdict.Source))
 	}
+	r.log(fmt.Sprintf("  [host:control] signal=%s source=%s mission_complete=%v", signal, verdict.Source, verdict.MissionComplete))
 
 	if r.cycle > 1 {
 		r.lastSystemProbe = captureSessionProbe(r.sdk, "system", system.SessionID, system.Directory, r.paths.SystemSessionFile, r.id, r.cycle)
@@ -552,20 +563,11 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		r.log(fmt.Sprintf("  [host] handoff is %d chars (>%d) - prefer thinner HANDOFF next cycle", handoffChars, handoffCharsWarn))
 	}
 
-	// Ambition ratchet: DONE only (STOP ends immediately)
-	if signal == SignalStop {
-		r.log(fmt.Sprintf("[cycle %d] system said STOP — stopping", r.cycle))
+	// Lead owns terminal signal — host does not intercept DONE (no ambition ratchet).
+	if signal == SignalStop || signal == SignalDone {
+		r.log(fmt.Sprintf("[cycle %d] system said %s — stopping", r.cycle, signal))
+		r.transition(PhaseStopping, "lead signal "+string(signal))
 		r.stopping.Store(true)
-	} else if signal == SignalDone {
-		if r.doneIntercepted {
-			r.log(fmt.Sprintf("[cycle %d] system said DONE (confirmed) — stopping", r.cycle))
-			r.stopping.Store(true)
-		} else {
-			r.doneIntercepted = true
-			r.log(fmt.Sprintf("[cycle %d] system said DONE — intercepting with ambition ratchet", r.cycle))
-			r.toast("Ambition ratchet", "First DONE intercepted — system is thinking bigger")
-			r.ambitionRerun(system)
-		}
 	}
 
 	if err := r.throwIfStopped(); err != nil {
@@ -578,38 +580,26 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		appendMetric(r.paths.RunDir, map[string]any{
 			"cycle": r.cycle, "secs": secs, "signal": string(signal),
 			"phase": "system-only", "quality_score": qualityScore, "handoff_chars": handoffChars,
+			"verdict_source": verdict.Source,
 		})
 		r.heartbeat("idle")
 		return nil
 	}
 
-	if r.doneIntercepted && !r.stopping.Load() {
-		newHandoff := readHandoffFile(r.paths.HandoffFile)
-		if len(newHandoff) > 40 {
-			handoff = newHandoff
-		}
-	}
-
-	// --- WORKERS ---
+	// --- SINGLE WORKER ---
+	r.transition(PhaseWorker, "implement handoff")
 	r.heartbeat("worker")
-	workerCount := len(r.workers)
-	if workerCount == 0 {
+	if len(r.workers) == 0 {
 		for _, a := range agents {
 			if a.Role == "worker" {
 				r.workers = []AgentRecord{a}
-				workerCount = 1
 			}
 		}
 	}
+	r.log(fmt.Sprintf("[cycle %d] worker...", r.cycle))
+	r.toast(fmt.Sprintf("Cycle %d — worker", r.cycle), "Implementing HANDOFF")
 
-	if workerCount == 1 {
-		r.log(fmt.Sprintf("[cycle %d] worker...", r.cycle))
-	} else {
-		r.log(fmt.Sprintf("[cycle %d] %d workers (parallel, experimental)...", r.cycle, workerCount))
-	}
-	r.toast(fmt.Sprintf("Cycle %d — %d worker(s)", r.cycle, workerCount), "Workers are implementing")
-
-	workerIDs := make([]string, 0, len(r.workers))
+	workerIDs := []string{}
 	for _, w := range r.workers {
 		workerIDs = append(workerIDs, w.SessionID)
 	}
@@ -624,6 +614,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 			}
 		},
 		r.log,
+		func(to HostPhase, detail string) { r.transition(to, detail) },
 	)
 	r.watchMu.Lock()
 	r.systemWatch = watch
@@ -659,46 +650,25 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		})
 	}()
 
-	type workerResult struct {
-		agent AgentRecord
-		text  string
-		err   error
-	}
-	resultsCh := make(chan workerResult, workerCount)
-	var wg sync.WaitGroup
-
-	for _, w := range r.workers {
-		wg.Add(1)
-		go func(worker AgentRecord) {
-			defer wg.Done()
-			// Shared HANDOFF on one root — experimental for N>1
-			workerPrompt := buildWorkerPrompt(handoff, r.paths)
-			text, _, err := r.turn(worker, workerPrompt, buildWorkerIdentity(r.paths))
-			resultsCh <- workerResult{agent: worker, text: text, err: err}
-		}(w)
-	}
-
-	wg.Wait()
-	close(resultsCh)
-	close(workerDone)
-
-	var workerErrors []error
+	// Serial single worker
 	var lastReply string
-	for res := range resultsCh {
-		if res.err != nil {
-			// Watch STOP abort is not a hard cycle failure — continue to re-plan
-			if strings.Contains(res.err.Error(), "watch HOST: STOP") {
-				r.log(fmt.Sprintf("  [host] %s aborted by watch STOP — mission continues", res.agent.Name))
-				continue
-			}
-			r.log(fmt.Sprintf("  [host] %s turn error: %s", res.agent.Name, truncate(res.err.Error(), 200)))
-			workerErrors = append(workerErrors, res.err)
+	var workerErr error
+	wAgent := r.workers[0]
+	workerPrompt := buildWorkerPrompt(handoff, r.paths)
+	text, _, err := r.turn(wAgent, workerPrompt, buildWorkerIdentity(r.paths))
+	if err != nil {
+		if strings.Contains(err.Error(), "watch HOST: STOP") {
+			r.log("  [host] worker aborted by watch STOP — mission continues")
 		} else {
-			r.log(fmt.Sprintf("  [reply:%s] %s", res.agent.Name, truncate(strings.Join(strings.Fields(res.text), " "), 200)))
-			appendDialogue(r.paths.DialogueFile, res.agent.Name, r.cycle, res.text)
-			lastReply = res.text
+			workerErr = err
+			r.log(fmt.Sprintf("  [host] worker turn error: %s", truncate(err.Error(), 200)))
 		}
+	} else {
+		r.log(fmt.Sprintf("  [reply:worker] %s", truncate(strings.Join(strings.Fields(text), " "), 200)))
+		appendDialogue(r.paths.DialogueFile, "worker", r.cycle, text)
+		lastReply = text
 	}
+	close(workerDone)
 
 	watch.stop()
 	watch.flushInject()
@@ -706,15 +676,16 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	r.systemWatch = nil
 	r.watchMu.Unlock()
 
-	if len(workerErrors) > 0 && lastReply == "" {
-		r.escalateToSystem(system, r.workers[0], "worker_turn_error", "worker", workerErrors[0].Error())
-		return workerErrors[0]
+	if workerErr != nil && lastReply == "" {
+		r.escalateToSystem(system, wAgent, "worker_turn_error", "worker", workerErr.Error())
+		return workerErr
 	}
 	r.lastWorkerReply = lastReply
 	if err := r.throwIfStopped(); err != nil {
 		return err
 	}
 
+	r.transition(PhaseCommit, "host auto-commit")
 	r.heartbeat("commit")
 	r.log(fmt.Sprintf("[cycle %d] host auto-commit dirty project root...", r.cycle))
 	committed, sha, detail := commitWorktree(r.opts.Project, fmt.Sprintf("swarm %s worker: cycle %d (host auto-commit)", r.id, r.cycle))
@@ -749,6 +720,12 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	}
 
 	writeSessionIndex(r.paths.RunDir)
+	writeSitrep(SitrepInput{
+		Cycle: r.cycle, Phase: "idle", RunID: r.id, Project: r.opts.Project,
+		EmptyStreak: r.emptyStreak, Signal: string(signal), Ahead: ahead,
+		Worker: r.lastWorkerProbe, HandoffFP: r.lastHandoffFp, Paths: r.paths,
+		LastShip: ternary(committed, sha, "none"),
+	})
 	writeBusSnapshot(r.paths.RunDir, BusSnapshotOpts{
 		Phase: "idle", Cycle: r.cycle, RunID: r.id, LastEventAgeMs: -1,
 	})
@@ -760,6 +737,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		"phase": "complete", "quality_score": qualityScore, "handoff_chars": handoffChars,
 	})
 
+	r.transition(PhaseIdle, fmt.Sprintf("cycle complete %ds", secs))
 	r.log(fmt.Sprintf("[cycle %d] complete in %ds", r.cycle, secs))
 	r.toast(fmt.Sprintf("Cycle %d complete (%ds)", r.cycle, secs), fmt.Sprintf("Signal: %s, commits: %d", signal, ahead))
 	r.heartbeat("idle")
@@ -768,90 +746,35 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 }
 
 func (r *Run) buildSystemPrompt(hasReviewPack bool) string {
+	sitrep := filepath.Join(r.paths.RunDir, "SITREP.md")
+	verdict := filepath.Join(r.paths.RunDir, "VERDICT.json")
 	var bits []string
+	bits = append(bits,
+		fmt.Sprintf("Cycle %d.", r.cycle),
+		"Primary: open "+sitrep+" first (host sensors, capped).",
+		"Mission: "+r.paths.MissionFile+".",
+		"Overwrite "+r.paths.HandoffFile+" with the engineer assignment.",
+		"Control: write "+verdict+` {"signal":"CONTINUE|DONE|STOP","mission_complete":false,"quality":N} or HOST: CONTINUE|DONE|STOP.`,
+	)
 	if r.cycle == 1 && r.opts.ResumeFrom == "" {
-		bits = append(bits,
-			fmt.Sprintf("Cycle %d — you're initiating this run, system.", r.cycle),
-			"Read "+r.paths.MissionFile+" for the mission.",
-			"Read the project at "+r.opts.Project+" (README, docs, code, tests) to understand what we're working with.",
-			"Write a concrete plan for the worker: what to do first, in what order, what \"done\" looks like.",
-			"The worker will receive your message as its prompt and do what you say.",
-		)
-	} else if r.cycle == 1 && r.opts.ResumeFrom != "" {
-		bits = append(bits,
-			fmt.Sprintf("Cycle %d — resuming run %s.", r.cycle, r.id),
-			"Read "+r.paths.MissionFile+" for the mission and "+r.paths.DialogueFile+" for the prior conversation.",
-			"Assess where things stand, then tell the worker what to do next.",
-		)
+		bits = append(bits, "Kickoff: inspect project root "+r.opts.Project+", plan first slice.")
+	} else if !hasReviewPack {
+		bits = append(bits, fmt.Sprintf("No product commits last cycle (empty_streak=%d) — prefer a fresh HANDOFF slice over re-verify.", r.emptyStreak))
 	} else {
-		bits = append(bits,
-			fmt.Sprintf("Cycle %d — review time, system.", r.cycle),
-			"Read "+r.paths.MissionFile+" for the mission and "+r.paths.DialogueFile+" for the full conversation history.",
-		)
-		if hasReviewPack {
-			bits = append(bits,
-				r.paths.MemoryFile+" has the host-computed review pack: git diff + worker session trace.",
-				"Probe it like reading a colleague's screen.",
-			)
-		} else {
-			bits = append(bits, fmt.Sprintf("The worker produced no commits last cycle (streak %d).", r.emptyStreak))
-		}
-		if r.lastWorkerReply != "" {
-			excerpt := truncate(strings.Join(strings.Fields(r.lastWorkerReply), " "), 500)
-			bits = append(bits, "", "The worker's last message was:", fmt.Sprintf(`"""%s"""`, excerpt), "")
-		}
-		bits = append(bits,
-			"Tell the worker what to do next, and emit one VERDICT line for last cycle's work:",
-			"VERDICT: CONTINUE (accept + merge + keep going) | DONE (accept + merge + stop) | STOP (keep commits, stop).",
-		)
+		bits = append(bits, "Review pack in MEMORY.md if you need git detail; worker dump path is in SITREP.")
+	}
+	if r.lastWorkerReply != "" {
+		bits = append(bits, "Worker last reply excerpt: "+truncate(strings.Join(strings.Fields(r.lastWorkerReply), " "), 400))
 	}
 	return strings.Join(bits, " ")
 }
 
-// ambitionRerun: first DONE only — STOP is never intercepted.
-func (r *Run) ambitionRerun(system AgentRecord) {
-	r.sdk.sessionInjectContext(system.SessionID, strings.Join([]string{
-		"[host:ambition] You said DONE, and the host accepted your work.",
-		"Before the run ends, take one more cycle to think bigger:",
-		"- Is the project genuinely impressive, or just \"meets spec\"?",
-		"- What would a real user love that you have not built yet?",
-		"- Is there a quality gap — stubs, shallow features, missing polish?",
-		"Write a new ambitious HANDOFF slice for the worker. Emit HOST: DONE again only after genuinely exhausting ambition.",
-	}, "\n"), &modelRef{ProviderID: ProviderID, ModelID: bareModel(system.Model)})
-
-	r.heartbeat("ambition-rerun")
-	r.log(fmt.Sprintf("[cycle %d] system ambition rerun — think bigger, rewrite HANDOFF...", r.cycle))
-
-	identity := buildSystemIdentity(r.paths, r.workerCount())
-	ambitionPrompt := strings.Join([]string{
-		fmt.Sprintf("Cycle %d — ambition ratchet.", r.cycle),
-		"You said DONE, but the host asks you to think bigger before the run ends.",
-		"Open the project root and the BACKLOG. Ask yourself: what would make this genuinely remarkable?",
-		fmt.Sprintf("Write a new ambitious HANDOFF to %s for the worker.", r.paths.HandoffFile),
-		"Emit HOST: CONTINUE to keep the run going, or HOST: DONE only if you have genuinely exhausted every avenue.",
-	}, "\n")
-
-	text, _, err := r.turn(system, ambitionPrompt, identity)
-	if err != nil {
-		r.log("  [host] ambition rerun failed: " + truncate(err.Error(), 200))
-		return
-	}
-	r.lastSystemReview = text
-	appendDialogue(r.paths.DialogueFile, "system-ambition", r.cycle, text)
-
-	newSignal := parseHostSignal(text)
-	if newSignal == SignalDone {
-		r.log("  [host] system said DONE again in ambition rerun — confirmed, stopping")
-		r.stopping.Store(true)
-		r.lastVerdict = SignalDone
-	} else if newSignal == SignalStop {
-		r.log("  [host] system said STOP in ambition rerun — stopping")
-		r.stopping.Store(true)
-		r.lastVerdict = SignalStop
-	}
-}
-
 func (r *Run) shutdown(status string) {
+	ph := PhaseStopped
+	if status == "errored" {
+		ph = PhaseErrored
+	}
+	r.transition(ph, status)
 	r.salvageDirty("host", fmt.Sprintf("swarm %s host: cycle %d (sync salvage on shutdown)", r.id, r.cycle))
 	r.log(fmt.Sprintf("run %s %s — cleaning up", r.id, status))
 	if r.hbTimer != nil {

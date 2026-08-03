@@ -43,10 +43,9 @@
 - **Hard:** closing the terminal of a foreground run, or killing the process.
   The record stays `running` (displayed as `crashed`), and the run's opencode
   server may be orphaned until the next `swarm clean`.
-- **System-initiated:** the system agent emits `HOST: DONE` (mission complete)
-  or `HOST: STOP` (stop now). The ambition ratchet intercepts the **first DONE**
-  only and gives the system a think-bigger turn; a second DONE stops.
-  **`HOST: STOP` ends immediately** (no ambition intercept).
+- **System-initiated:** lead writes `VERDICT.json` or emits `HOST: DONE` / `HOST: STOP`.
+  Host honors DONE/STOP immediately (no ambition intercept). DONE may be blocked only
+  when empty-ship streak is high without `mission_complete`.
 - **Watch STOP:** during ACTIVE WATCH, lead `HOST: STOP` aborts the stuck
   **worker turn only** — the mission continues.
 

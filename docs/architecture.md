@@ -69,11 +69,10 @@ Uses OpenCode SDK's `session.fork` — the native "continue from here" mechanism
 ## SystemWatch
 
 During worker turns, the host runs a `SystemWatch` goroutine that:
-- Receives **full** SSE fan-in via `EventBus` → `observe` (not a one-shot peek)
-- Injects digests every ~3 minutes **only when pending events** (body capped)
-- Rewrites `BUS.md` with `work_health` (OK/QUIET/STALE) during the worker turn
-- On alert/STALE (8m cooldown): ACTIVE WATCH turn; lead `HOST: STOP` aborts **worker only**
-- Stops when the worker turn ends; sends one final end-of-turn digest
+- Receives **full** SSE fan-in via `EventBus` → `observe`
+- Flushes digests to **DIGEST.md** (disk) every ~3m — **not** the lead chat transcript
+- Rewrites `BUS.md` with `work_health` during the worker turn
+- On alert/STALE (8m cooldown): **ACTIVE WATCH** real lead turn only; `HOST: STOP` aborts **worker only**
 
 ## Event bus honesty
 
@@ -81,14 +80,22 @@ During worker turns, the host runs a `SystemWatch` goroutine that:
 - **STALE** = worker still busy/active to SDK but no OpenCode bus events ≥10m
 - Stall detector uses bus quiet (20m) + running-tool flags (cleared if stuck)
 
-## Ambition ratchet
+## Control plane (not chat scrape)
 
-When the system says `HOST: DONE`:
-1. First time: host intercepts, injects `[host:ambition]` think-bigger prompt,
-   gives system a fresh turn to write a more ambitious HANDOFF. Run continues.
-2. Second time: run stops. `doneIntercepted` flag ensures exactly one chance.
+| Channel | Role |
+| --- | --- |
+| **VERDICT.json** | Preferred lead control: `signal`, `mission_complete`, `quality` |
+| **HOST: line** | Explicit fallback in reply text |
+| **PHASES.jsonl** | Host phase transitions (boot→system→worker→commit→…) |
+| **SITREP.md** | Capped host sensors — lead opens this first |
+| **DIGEST.md** | Worker events on disk; not injected into lead chat |
 
-**`HOST: STOP` is never intercepted** — run ends immediately.
+Prose like “mission complete” is **not** a control signal.
+
+**No ambition ratchet.** Lead `DONE` / `STOP` is final. Host may block DONE only as a
+sensor when empty-ship streak is high without `mission_complete`.
+
+**Watch STOP** (ACTIVE WATCH only): aborts worker turn; mission continues.
 
 ## Guards
 

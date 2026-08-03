@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// SystemWatch watches worker activity during a worker turn and injects
-// digests into the system session at intervals. On alerts / STALE bus it may
-// run a short ACTIVE WATCH turn. HOST: STOP from watch aborts the worker only.
+// SystemWatch observes worker bus activity during a worker turn.
+// Digests go to DISK (DIGEST.md) — not the system chat transcript — to avoid
+// context tax without agency. Only STALE/alert triggers ACTIVE WATCH (real turn).
 type SystemWatch struct {
 	sdk               *SDKClient
 	systemSessionID   string
@@ -22,19 +22,18 @@ type SystemWatch struct {
 	handoffFile       string
 	runDir            string
 	cycle             int
-	injectInterval    time.Duration
+	flushInterval     time.Duration
 	pending           []string
 	pendingMu         sync.Mutex
-	lastInjectAt      time.Time
+	lastFlushAt       time.Time
 	alertPending      atomic.Bool
 	stopped           atomic.Bool
-	// watchAbortInProgress: external Aborted on worker is terminal (no re-prompt).
 	watchAbortInProgress atomic.Bool
 	lastActiveWatchAt    time.Time
 	workerSessionIDs     []string
-	// abortWorkers is called when lead says HOST: STOP during active watch.
-	abortWorkers func()
-	log          func(string)
+	abortWorkers         func()
+	log                  func(string)
+	phaseLog             func(to HostPhase, detail string)
 }
 
 func newSystemWatch(
@@ -44,6 +43,7 @@ func newSystemWatch(
 	workerSessionIDs []string,
 	abortWorkers func(),
 	logFn func(string),
+	phaseLog func(to HostPhase, detail string),
 ) *SystemWatch {
 	return &SystemWatch{
 		sdk:               sdk,
@@ -54,10 +54,11 @@ func newSystemWatch(
 		handoffFile:       handoffFile,
 		runDir:            runDir,
 		cycle:             cycle,
-		injectInterval:    digestInjectInterval,
+		flushInterval:     digestInjectInterval, // disk flush cadence
 		workerSessionIDs:  workerSessionIDs,
 		abortWorkers:      abortWorkers,
 		log:               logFn,
+		phaseLog:          phaseLog,
 	}
 }
 
@@ -65,7 +66,6 @@ func (w *SystemWatch) stop() { w.stopped.Store(true) }
 
 func (w *SystemWatch) isWatchAbort() bool { return w.watchAbortInProgress.Load() }
 
-// observe queues an event from the worker bus
 func (w *SystemWatch) observe(summary, kind string) {
 	if summary == "" {
 		return
@@ -82,8 +82,8 @@ func (w *SystemWatch) observe(summary, kind string) {
 	}
 }
 
-// flushInject sends queued events to the system session via noReply (capped).
-func (w *SystemWatch) flushInject() {
+// flushToDisk writes pending events to DIGEST.md / DIGEST.jsonl — never system chat.
+func (w *SystemWatch) flushToDisk() {
 	w.pendingMu.Lock()
 	if len(w.pending) == 0 {
 		w.pendingMu.Unlock()
@@ -93,30 +93,39 @@ func (w *SystemWatch) flushInject() {
 	w.pending = nil
 	w.pendingMu.Unlock()
 
-	body := fmt.Sprintf("[host] sub-agent digest (cycle %d) - %d event(s):\n", w.cycle, len(batch))
+	body := fmt.Sprintf("# DIGEST — cycle %d\nUpdated: %s\n\nWorker-side events (disk only; not in lead chat).\nOpen BUS.md for live work_health.\n\n",
+		w.cycle, time.Now().UTC().Format(time.RFC3339))
 	for _, l := range batch {
 		body += "- " + l + "\n"
 	}
-	body += "Open " + w.busFile + " for full live bus if needed."
 	if len(body) > digestMaxBodyChars {
-		body = body[:digestMaxBodyChars] + "\n… (digest truncated)"
+		body = body[:digestMaxBodyChars] + "\n… (digest truncated)\n"
 	}
-	w.sdk.sessionInjectContext(w.systemSessionID, body,
-		&modelRef{ProviderID: ProviderID, ModelID: bareModel(w.systemModel)})
+	digestFile := filepath.Join(w.runDir, "DIGEST.md")
+	_ = os.MkdirAll(w.runDir, 0755)
+	_ = os.WriteFile(digestFile, []byte(body), 0644)
+
+	// Append compact jsonl line
+	jsonl := filepath.Join(w.runDir, "DIGEST.jsonl")
+	line := fmt.Sprintf(`{"ts":%q,"cycle":%d,"events":%d}`+"\n",
+		time.Now().UTC().Format(time.RFC3339), w.cycle, len(batch))
+	f, err := os.OpenFile(jsonl, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		_, _ = f.WriteString(line)
+		_ = f.Close()
+	}
 }
 
-// runWhile runs alongside a worker turn until isWorkerDone returns true.
-func (w *SystemWatch) runWhile(isWorkerDone func() bool, shouldStop func() bool, bus *EventBus, workerActive func() bool) {
-	w.sdk.sessionInjectContext(w.systemSessionID,
-		"[host] ACTIVE WATCH ON - you are the lead listening to the worker.\n"+
-			"Host will inject digests every ~3m when there is activity.\n"+
-			"Live bus file: "+w.busFile+"\n"+
-			"Worker dump: "+w.workerSessionFile+"\n"+
-			"You may rewrite "+w.handoffFile+" if priorities change.\n"+
-			"HOST: STOP aborts stuck worker turn only (mission continues). HOST: DONE ends the run when mission goals are met.",
-		&modelRef{ProviderID: ProviderID, ModelID: bareModel(w.systemModel)})
+// flushInject kept as alias for end-of-turn callers — disk only.
+func (w *SystemWatch) flushInject() { w.flushToDisk() }
 
-	w.lastInjectAt = time.Now()
+// runWhile runs alongside a worker turn.
+func (w *SystemWatch) runWhile(isWorkerDone func() bool, shouldStop func() bool, bus *EventBus, workerActive func() bool) {
+	// No session inject on start — lead learns from SITREP next cycle unless STALE/alert.
+	if w.log != nil {
+		w.log("  [host] watch: digests → DIGEST.md (disk); chat inject only on STALE/alert ACTIVE WATCH")
+	}
+	w.lastFlushAt = time.Now()
 
 	for !isWorkerDone() && !shouldStop() && !w.stopped.Load() {
 		time.Sleep(5 * time.Second)
@@ -124,18 +133,17 @@ func (w *SystemWatch) runWhile(isWorkerDone func() bool, shouldStop func() bool,
 			break
 		}
 
-		// Periodic digest flush (only if pending)
-		if time.Since(w.lastInjectAt) >= w.injectInterval {
+		// Periodic disk flush
+		if time.Since(w.lastFlushAt) >= w.flushInterval {
 			w.pendingMu.Lock()
 			n := len(w.pending)
 			w.pendingMu.Unlock()
 			if n > 0 {
-				w.flushInject()
-				w.lastInjectAt = time.Now()
+				w.flushToDisk()
+				w.lastFlushAt = time.Now()
 			}
 		}
 
-		// Refresh BUS.md with honest work_health during worker turn
 		if bus != nil && w.runDir != "" {
 			ageMs := int64(-1)
 			for _, sid := range w.workerSessionIDs {
@@ -156,44 +164,45 @@ func (w *SystemWatch) runWhile(isWorkerDone func() bool, shouldStop func() bool,
 				LastEventAgeMs: ageMs,
 				WorkerActive:   active,
 			})
-			// STALE → alert for active watch
 			if active && ageMs >= int64(workStaleAge/time.Millisecond) {
 				w.observe(fmt.Sprintf("work_health STALE — no bus events ~%dm while worker still active", ageMs/60_000), "stale")
 			}
 		}
 
-		// ACTIVE WATCH turn on alerts (cooldown)
+		// ACTIVE WATCH only on alert/STALE (cooldown) — real system turn, not digests
 		if w.alertPending.Load() && time.Since(w.lastActiveWatchAt) >= activeWatchCooldown {
 			w.runActiveWatch()
 		}
 	}
 
-	// Final end-of-turn digest
-	w.flushInject()
+	w.flushToDisk()
 }
 
-// runActiveWatch gives the system a short judgment turn on pending alerts.
-// HOST: STOP → abort worker only (mission continues). Does not set run.stopping.
+// runActiveWatch: short lead turn on alert. HOST: STOP → abort worker only.
 func (w *SystemWatch) runActiveWatch() {
 	w.alertPending.Store(false)
 	w.lastActiveWatchAt = time.Now()
-	if w.log != nil {
-		w.log("  [host] ACTIVE WATCH — system lead turn on alert/STALE")
+	if w.phaseLog != nil {
+		w.phaseLog(PhaseWatch, "ACTIVE WATCH on alert/STALE")
 	}
+	if w.log != nil {
+		w.log("  [host] ACTIVE WATCH — system lead turn on alert/STALE (not routine digest)")
+	}
+	w.flushToDisk()
 
 	prompt := strings.Join([]string{
 		fmt.Sprintf("[host] ACTIVE WATCH (cycle %d) — worker may be stuck or bus STALE.", w.cycle),
-		"Open " + w.busFile + " and " + w.workerSessionFile + " if needed.",
+		"Open " + w.busFile + " and " + filepath.Join(w.runDir, "DIGEST.md") + " / " + w.workerSessionFile + " if needed.",
 		"Decide:",
-		"- Reply HOST: STOP to abort the stuck worker turn only (mission continues; you will re-plan next cycle).",
-		"- Reply CONTINUE (or anything else) to keep waiting.",
-		"Do NOT emit HOST: DONE here — that is for end-of-cycle review only.",
+		"- HOST: STOP — abort stuck worker turn only (mission continues; re-plan next cycle).",
+		"- Anything else — keep waiting.",
+		"Do NOT emit HOST: DONE here.",
+		"Optional: write VERDICT.json with signal STOP for the same effect.",
 	}, "\n")
 
-	// Short prompt-async + poll for reply (bounded)
 	pb := promptBody{
 		Parts:  []map[string]string{{"type": "text", "text": prompt}},
-		System: "You are the technical lead on active watch. HOST: STOP aborts worker only.",
+		System: "You are the technical lead on active watch. HOST: STOP aborts worker only. Mission continues.",
 		Model:  &modelRef{ProviderID: ProviderID, ModelID: bareModel(w.systemModel)},
 	}
 	if err := w.sdk.sessionPromptAsync(w.systemSessionID, pb); err != nil {
@@ -203,7 +212,6 @@ func (w *SystemWatch) runActiveWatch() {
 		return
 	}
 
-	// Wait up to 3 minutes for idle + text
 	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) && !w.stopped.Load() {
 		time.Sleep(3 * time.Second)
@@ -219,7 +227,8 @@ func (w *SystemWatch) runActiveWatch() {
 	}
 
 	text := lastAssistantTextSDK(w.sdk, w.systemSessionID)
-	sig := parseHostSignal(text)
+	sig, v := resolveControlSignal(w.runDir, text)
+	_ = v
 	if sig == SignalStop {
 		if w.log != nil {
 			w.log("  [host] watch HOST: STOP — aborting worker turn only (mission continues)")
@@ -228,7 +237,6 @@ func (w *SystemWatch) runActiveWatch() {
 		if w.abortWorkers != nil {
 			w.abortWorkers()
 		}
-		// Clear abort flag after a short delay so normal turns later can soft-recover
 		go func() {
 			time.Sleep(30 * time.Second)
 			w.watchAbortInProgress.Store(false)
@@ -238,7 +246,6 @@ func (w *SystemWatch) runActiveWatch() {
 	}
 }
 
-// formatWatchEvent formats an event for SystemWatch observation
 func formatWatchEvent(evt SwarmEvent) (summary, kind string) {
 	switch evt.Type {
 	case "message.part.updated":
@@ -281,59 +288,6 @@ func formatWatchEvent(evt SwarmEvent) (summary, kind string) {
 		return fmt.Sprintf("session %s context compressed by OpenCode", truncate(sid, 16)), "status"
 	}
 	return "", ""
-}
-
-// writeMaterialsIndex writes MATERIALS.md for the system lead
-func writeMaterialsIndex(runDir string, cycle int, phase string, workerProbe *probeMeta) {
-	matFile := filepath.Join(runDir, "MATERIALS.md")
-	lines := []string{
-		fmt.Sprintf("# MATERIALS - cycle %d (%s)", cycle, phase),
-		fmt.Sprintf("Updated: %s", time.Now().UTC().Format(time.RFC3339)),
-		"",
-		"Host inventory for the system lead. Open anything with tools. Take as long as you need.",
-		"Judgment is yours; this file only lists what exists.",
-		"",
-		"## Worker thinking & tool history",
-		fmt.Sprintf("- live session dump: %s", filepath.Join(runDir, "WORKER_SESSION.md")),
-		fmt.Sprintf("- session archive index: %s", filepath.Join(runDir, "sessions", "index.md")),
-		fmt.Sprintf("- session archives dir: %s", filepath.Join(runDir, "sessions")),
-	}
-	if workerProbe != nil {
-		lines = append(lines, fmt.Sprintf("- last worker probe: session=%s messages=%d tools=%d errors=%d status=%s chars=%d",
-			workerProbe.SessionID, workerProbe.MessageCount, workerProbe.ToolCalls, workerProbe.ToolErrors, workerProbe.Status, workerProbe.Chars))
-	} else {
-		lines = append(lines, "- last worker probe: (none yet - kickoff cycle or not shipped)")
-	}
-	lines = append(lines, "",
-		"## Work history (conversation & assignments)",
-		fmt.Sprintf("- dialogue (append-only system<->worker): %s", filepath.Join(runDir, "DIALOGUE.md")),
-		fmt.Sprintf("- current handoff (write next assignment here): %s", filepath.Join(runDir, "HANDOFF.md")),
-		fmt.Sprintf("- handoff history (prior assignments): %s", filepath.Join(runDir, "HANDOFF_HISTORY.md")),
-		fmt.Sprintf("- mission: %s", filepath.Join(runDir, "MISSION.md")),
-		fmt.Sprintf("- BACKLOG (next mission slices - lead maintains): %s", filepath.Join(runDir, "BACKLOG.md")),
-		fmt.Sprintf("- standards (you may edit): %s", filepath.Join(runDir, "STANDARDS.md")),
-		"",
-		"## Work output (repo / git) - root mode",
-		"- branch: main",
-		fmt.Sprintf("- host MEMORY (git --stat, verify, probe pointers): %s", filepath.Join(runDir, "MEMORY.md")),
-		fmt.Sprintf("- ship log (every auto-commit/verify): %s", filepath.Join(runDir, "ship.log")),
-		"",
-		"## Run telemetry",
-		fmt.Sprintf("- metrics trajectory: %s", filepath.Join(runDir, "metrics.jsonl")),
-		fmt.Sprintf("- host events log: %s", filepath.Join(runDir, "events.log")),
-		fmt.Sprintf("- live event bus (host pub / you read): %s", filepath.Join(runDir, "BUS.md")),
-		"",
-		"## Suggested investigation order (optional)",
-		fmt.Sprintf("1. Open %s - live OpenCode tools/status (trust work_health, not host_tick alone)", filepath.Join(runDir, "BUS.md")),
-		fmt.Sprintf("2. Open %s - worker thinking, tools, errors", filepath.Join(runDir, "WORKER_SESSION.md")),
-		"3. Open MEMORY / ship.log / git commands - what landed on the branch",
-		"4. Open real files under the project root - claims vs tree",
-		fmt.Sprintf("5. Read DIALOGUE.md / HANDOFF_HISTORY.md / older session archives for multi-cycle context"),
-		fmt.Sprintf("6. Write the next engineer assignment to %s", filepath.Join(runDir, "HANDOFF.md")),
-		"",
-	)
-	_ = os.MkdirAll(filepath.Dir(matFile), 0755)
-	_ = os.WriteFile(matFile, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 // appendShipLog appends a ship record to ship.log
@@ -386,7 +340,6 @@ func writeSessionIndex(runDir string) {
 	_ = os.WriteFile(idxFile, []byte(strings.Join(lines, "\n")), 0644)
 }
 
-// syncWorkerFromIntegration merges integration branch into worker branch
 func syncWorkerFromIntegration(repo, integrationBranch, workerBranch string) (bool, string) {
 	if canFF, _, _ := gitAllowFail(repo, "merge-base", "--is-ancestor", integrationBranch, workerBranch); canFF == 0 {
 		return true, "already up to date"
@@ -399,7 +352,6 @@ func syncWorkerFromIntegration(repo, integrationBranch, workerBranch string) (bo
 	return false, "merge conflict with " + integrationBranch + ": " + strings.TrimSpace(stderr)
 }
 
-// rehomeDirtyIntoWorktree copies dirty files from project root into worktree
 func rehomeDirtyIntoWorktree(project, worktree string, paths []string) []string {
 	var copied []string
 	for _, rel := range paths {
@@ -423,7 +375,6 @@ func rehomeDirtyIntoWorktree(project, worktree string, paths []string) []string 
 	return copied
 }
 
-// restoreTrackedPaths restores tracked paths on project root to HEAD
 func restoreTrackedPaths(repo string, paths []string) []string {
 	var restored []string
 	for _, rel := range paths {
@@ -441,20 +392,24 @@ func restoreTrackedPaths(repo string, paths []string) []string {
 	return restored
 }
 
-// escalateToSystem escalates a host exception to the system lead
 func (r *Run) escalateToSystem(system, worker AgentRecord, kind, phase, message string) {
+	r.transition(PhaseException, kind+": "+truncate(message, 120))
 	r.heartbeat("exception-escalate")
 	r.log(fmt.Sprintf("  [host] escalating to system lead - kind=%s phase=%s: %s", kind, phase, truncate(message, 200)))
-
-	// Salvage dirty before exception path
 	r.salvageDirty("host", "salvage before exception escalate")
 
 	excFile := filepath.Join(r.paths.RunDir, "EXCEPTION.md")
 	_ = os.MkdirAll(r.paths.RunDir, 0755)
 	_ = os.WriteFile(excFile, []byte(fmt.Sprintf("# Host exception\n\nKind: %s\nPhase: %s\nMessage: %s\n", kind, phase, message)), 0644)
 
-	identity := buildSystemIdentity(r.paths, r.workerCount())
-	prompt := fmt.Sprintf("HOST EXCEPTION - cycle %d - your decision is required.\n\nKind: %s\nPhase: %s\nMessage: %s\n\nRead EXCEPTION.md, then decide:\n- HOST: CONTINUE to keep going (write a recovery HANDOFF)\n- HOST: STOP to abort the run\n- HOST: DONE if the mission is genuinely complete",
+	writeSitrep(SitrepInput{
+		Cycle: r.cycle, Phase: "exception", RunID: r.id, Project: r.opts.Project,
+		EmptyStreak: r.emptyStreak, Paths: r.paths, Worker: r.lastWorkerProbe,
+		Note: fmt.Sprintf("EXCEPTION kind=%s: %s", kind, truncate(message, 400)),
+	})
+
+	identity := buildSystemIdentity(r.paths, 1)
+	prompt := fmt.Sprintf("HOST EXCEPTION - cycle %d.\n\nKind: %s\nPhase: %s\nMessage: %s\n\nRead SITREP.md and EXCEPTION.md. Write recovery HANDOFF.\nControl: VERDICT.json or HOST: CONTINUE | STOP | DONE.",
 		r.cycle, kind, phase, message)
 
 	text, _, err := r.turn(system, prompt, identity)
@@ -463,23 +418,22 @@ func (r *Run) escalateToSystem(system, worker AgentRecord, kind, phase, message 
 		return
 	}
 	appendDialogue(r.paths.DialogueFile, "system-exception", r.cycle, text)
-
-	signal := parseHostSignal(text)
-	r.lastVerdict = signal
-	if signal == SignalStop || signal == SignalDone {
+	sig, v := resolveControlSignal(r.paths.RunDir, text)
+	v.Cycle = r.cycle
+	writeVerdict(r.paths.RunDir, v)
+	r.lastVerdict = sig
+	if sig == SignalStop || sig == SignalDone {
+		r.transition(PhaseStopping, "exception signal "+string(sig))
 		r.stopping.Store(true)
 	}
-	_ = worker // reserved for multi-worker escalation context
+	_ = worker
 }
 
-// emptyShipRecover gives the system a same-cycle re-scope after an empty ship
 func (r *Run) emptyShipRecover(system, worker AgentRecord, committed bool) {
-	if committed {
+	if committed || r.emptyStreak < 1 {
 		return
 	}
-	if r.emptyStreak < 1 {
-		return
-	}
+	r.transition(PhaseEmptyShip, fmt.Sprintf("streak=%d", r.emptyStreak))
 	r.log(fmt.Sprintf("[cycle %d] EMPTY_SHIP - no product commit (streak=%d); re-scope via system", r.cycle, r.emptyStreak))
 
 	ok, detail := syncWorkerFromIntegration(r.opts.Project, r.baseBranch, "HEAD")
@@ -487,8 +441,14 @@ func (r *Run) emptyShipRecover(system, worker AgentRecord, committed bool) {
 	r.lastSyncDetail = detail
 	r.log("  [host:git] sync worker: " + detail)
 
-	identity := buildSystemIdentity(r.paths, r.workerCount())
-	prompt := fmt.Sprintf("Cycle %d - EMPTY_SHIP recovery.\n\nWorker produced no new git commit. Mission is NOT done.\nOpen BACKLOG + MISSION + real tree.\nPick the next unfinished slice that advances the mission.\nOverwrite HANDOFF with a NEW concrete assignment (new paths/behavior as acceptance).\nEmit HOST: CONTINUE to keep the run going.",
+	writeSitrep(SitrepInput{
+		Cycle: r.cycle, Phase: "empty_ship", RunID: r.id, Project: r.opts.Project,
+		EmptyStreak: r.emptyStreak, Paths: r.paths, Worker: r.lastWorkerProbe,
+		Note: "Worker produced no product commit. Write a NEW Handoff slice. Mission is NOT done.",
+	})
+
+	identity := buildSystemIdentity(r.paths, 1)
+	prompt := fmt.Sprintf("Cycle %d - EMPTY_SHIP recovery.\n\nRead SITREP.md. Worker produced no new git commit. Mission is NOT done.\nOverwrite HANDOFF with a NEW concrete assignment.\nWrite VERDICT.json signal CONTINUE (or HOST: CONTINUE).",
 		r.cycle)
 
 	text, _, err := r.turn(system, prompt, identity)
@@ -518,7 +478,6 @@ func (r *Run) emptyShipRecover(system, worker AgentRecord, committed bool) {
 	}
 }
 
-// runDoctor prints diagnostics for a project
 func runDoctor(projectArg string) {
 	project, _ := filepath.Abs(projectArg)
 	if projectArg == "" {
@@ -547,4 +506,5 @@ func runDoctor(projectArg string) {
 	for _, r := range onProj {
 		fmt.Fprintf(stdout, "  %s %s cycle=%d phase=%s\n", statusBadge(regEffectiveStatus(&r)), r.ID, r.Cycle, r.Phase)
 	}
+	fmt.Fprintln(stdout, muted("Surfaces: swarm materials <id> · SITREP.md · VERDICT.json · PHASES.jsonl"))
 }

@@ -18,16 +18,21 @@ The previous TypeScript host lives under `legacy/` for reference only and is not
 3. **Host** advances **`BASELINE.sha`** when accepting last work (unless `HOST: STOP`).
 4. **Worker** receives the handoff and edits the **project root** (no nested worktrees).
 5. **Host** commits dirty files, probes/archives sessions, updates MEMORY / metrics / BUS.
-6. **SystemWatch** injects digests into the system session every 3 minutes **when there is activity**, and may run ACTIVE WATCH on alerts / STALE bus.
-7. Loop until `HOST: DONE` / `STOP`, or you `swarm stop`.
+6. **SystemWatch** writes worker digests to **DIGEST.md** (disk only). Chat injects
+   happen only on STALE/alert **ACTIVE WATCH**.
+7. Loop until lead `HOST: DONE` / `STOP` (or `VERDICT.json`), or you `swarm stop`.
 
-**Ambition ratchet:** first `HOST: DONE` is intercepted — the host injects a
-think-bigger prompt. Only a second `DONE` stops the run. **`HOST: STOP` ends immediately** (no ratchet).
+**Control plane:** prefer **`VERDICT.json`** (`signal`, `mission_complete`, `quality`).
+Chat `HOST:` lines still work. Free prose is **not** a stop signal.
 
-**Watch STOP ≠ mission end:** during ACTIVE WATCH, lead `HOST: STOP` aborts the stuck worker turn only; the mission continues.
+**No ambition ratchet:** lead DONE/STOP is final. Host may only block DONE when
+empty-ship streak is high without `mission_complete` (sensor, not “think bigger”).
 
-No nested `.swarm/worktrees`, no team chat, no third "auditor" — two OpenCode
-sessions on the same project folder (default).
+**Watch STOP ≠ mission end:** ACTIVE WATCH `HOST: STOP` aborts the worker turn only.
+
+**Single worker** on project root (no multi-worker until path ownership exists).
+
+**Primary surface:** host-written **SITREP.md** (capped). Optional deep links in MATERIALS.
 
 ## Quick start
 
@@ -96,9 +101,11 @@ make check   # vet + test + build
 | Active watch cooldown | 8 minutes | Lead turn on alert/STALE |
 | Stall threshold | 20 minutes | Bus quiet while busy; soft re-prompt then rotate |
 | Max turn retries | 3 | Aborted soft re-prompt; stall soft then fork |
-| Ambition ratchet | First DONE only | STOP ends immediately |
-| DONE gate streak | ≥2 empty ships + no checklist | Host sensor |
-| Multi-worker | default 1 | N>1 experimental |
+| Ambition ratchet | **removed** | Lead DONE/STOP final |
+| DONE gate | ≥2 empty ships without mission_complete | Host sensor only |
+| Digests | DIGEST.md disk | Chat only on STALE/alert |
+| Control | VERDICT.json | Explicit HOST: lines fallback |
+| Workers | **1 only** | Shared root |
 | Single flight | on | `.swarm/config.json` |
 | Default merge | on | `.swarm/config.json` |
 | Verify command | (none) | `.swarm/config.json` |
@@ -128,7 +135,11 @@ Append-only history: `BUS.jsonl`.
   HANDOFF_HISTORY.md  — prior assignments (append-only)
   BACKLOG.md          — living mission slices (system maintains)
   STANDARDS.md        — lead quality bars (system may edit)
-  MATERIALS.md        — host inventory for system investigation
+  SITREP.md           — primary host sitrep (capped; open first)
+  VERDICT.json        — structured control signal from lead
+  PHASES.jsonl        — host phase transitions
+  DIGEST.md           — worker bus events on disk (not lead chat)
+  MATERIALS.md        — thin index → SITREP + optional deep links
   BASELINE.sha        — accepted work tip (host advances on CONTINUE/DONE)
   BUS.md              — live OpenCode event surface (work_health)
   BUS.jsonl           — append-only event history

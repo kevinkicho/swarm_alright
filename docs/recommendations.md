@@ -73,9 +73,12 @@ Operating and evolving swarm_alright. These are **operator guidance**, not host-
 | External Aborted | Soft re-prompt same session; watch abort is terminal |
 | Empty ship recovery | Same-cycle re-scope via system + BACKLOG |
 | DONE gate | empty_streak ≥2 without MISSION_COMPLETE checklist |
-| Ambition ratchet | First **DONE** only; **STOP** ends immediately |
-| Event → watch fan-in | Full SSE bus → SystemWatch.observe + BUS.jsonl |
-| Multi-worker | Default 1; N>1 logged experimental |
+| Ambition ratchet | **Removed** — lead DONE/STOP final |
+| VERDICT.json / PHASES.jsonl | Structured control + phase log |
+| SITREP.md | Primary capped host surface |
+| Digests | Disk-only DIGEST.md; chat on STALE/alert only |
+| Event → watch fan-in | Full SSE → observe + BUS.jsonl |
+| Workers | Forced to 1 |
 
 ## Design guardrails when changing code
 

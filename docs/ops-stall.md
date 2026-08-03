@@ -54,11 +54,12 @@ During worker turns, SystemWatch may give the lead an ACTIVE WATCH turn on
 alerts/STALE. If the lead replies `HOST: STOP`, the host aborts the worker
 session only. The run continues so the system can re-plan next cycle.
 
-## Ambition ratchet
+## Control / terminal signals
 
-- First system `HOST: DONE` → intercept + think-bigger turn
-- Second `HOST: DONE` → stop
-- `HOST: STOP` → stop **immediately** (no ratchet)
+- Prefer `VERDICT.json` `{ "signal": "DONE|STOP|CONTINUE", "mission_complete": true }`
+- Explicit `HOST:` lines also work; free prose does not
+- Lead DONE/STOP is final (no ambition ratchet)
+- DONE may be blocked only if empty-ship streak is high without mission_complete
 
 ## Commands
 

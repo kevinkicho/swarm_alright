@@ -147,11 +147,14 @@ func loadPanelFields(rec *RunRecord) []panelField {
 		{"Active watch cooldown", "8 minutes", "activeWatchCooldown — lead turn on alert/STALE"},
 		{"Stall threshold", "20 minutes", "stallThreshold — bus quiet while busy (soft re-prompt then rotate)"},
 		{"Max turn retries", "3 attempts", "maxTurnAttempts"},
-		{"Ambition ratchet", "first DONE only (STOP ends immediately)", "doneIntercepted"},
-		{"DONE gate streak", ">=2 empty ships + no checklist", "gateDoneSignal / doneGateEmptyStreak"},
+		{"Ambition ratchet", "removed — lead DONE/STOP is final", "no host intercept"},
+		{"DONE gate streak", ">=2 empty ships without mission_complete", "host sensor only"},
+		{"Digests", "DIGEST.md on disk; chat inject only on STALE/alert", "system_watch"},
+		{"Control plane", "VERDICT.json preferred over chat scrape", "control.go"},
+		{"Primary surface", "SITREP.md (capped)", "sitrep.go"},
 		{"Health poll interval", "45 seconds", "healthCheckInterval"},
 		{"Heartbeat interval", "60 seconds", "heartbeatInterval (registry only, no log spam)"},
-		{"Multi-worker", "default 1 (N>1 experimental)", "--workers flag"},
+		{"Workers", "exactly 1 (shared root)", "--workers forced to 1"},
 	}
 	for _, h := range hardcoded {
 		fields = append(fields, panelField{

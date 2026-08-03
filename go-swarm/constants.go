@@ -8,7 +8,7 @@ const (
 	systemRotateCycleInterval = 8
 	// Worker rotates when message growth since last fork reaches this.
 	workerRotateMsgThreshold = 120
-	// SystemWatch digest inject interval.
+	// SystemWatch disk digest flush interval (not chat inject).
 	digestInjectInterval = 3 * time.Minute
 	// Active watch (lead turn on alert) cooldown.
 	activeWatchCooldown = 8 * time.Minute
