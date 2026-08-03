@@ -1,8 +1,12 @@
 #!/bin/sh
 # Offline host check before commit (Go primary).
+# Use repo-local temp dirs — some Windows Application Control policies block %TEMP% test exes.
 set -e
 cd "$(git rev-parse --show-toplevel)"
 if [ -d go-swarm ]; then
+  mkdir -p go-swarm/.gotmp
+  export GOTMPDIR="$(pwd)/go-swarm/.gotmp"
+  export TMPDIR="$GOTMPDIR"
   (cd go-swarm && go vet ./... && go test ./... && go build -o swarm_check.exe .)
 elif command -v npm >/dev/null 2>&1 && npm run | grep -q " check"; then
   npm run check

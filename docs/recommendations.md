@@ -46,7 +46,7 @@ Operating and evolving swarm_alright. These are **operator guidance**, not host-
 3. **Detach long runs**: `swarm run … --detach` then `swarm watch` / `swarm tui`.
 4. **Restart same id**: `swarm restart` reuses run folder — don’t start a new run to “continue.”
 5. **When stuck**: `swarm doctor`, `swarm scorecard <id>`, open `MATERIALS.md` + `BUS.md` (`work_health`) + latest `sessions/` dump.
-6. **Prefer `--workers 1`**. N>1 is experimental (shared HANDOFF on one root).
+6. **Workers are always 1** until a path-ownership model exists.
 7. **Model 404**: pass `--system-model` / `--worker-model` explicitly.
 
 ## Reading a run
@@ -71,7 +71,8 @@ Operating and evolving swarm_alright. These are **operator guidance**, not host-
 | BUS work_health | OK / QUIET / STALE / UNKNOWN; STALE ≥10m quiet while busy |
 | Busy-aware stall | 20m bus quiet; soft re-prompt then rotate; clear stale running-tool flags |
 | External Aborted | Soft re-prompt same session; watch abort is terminal |
-| Empty ship recovery | Same-cycle re-scope via system + BACKLOG |
+| Empty ship | SITREP note next cycle (lead rewrites HANDOFF); no forced same-cycle thrash |
+| Missing VERDICT | HOLD — no worker until explicit CONTINUE |
 | DONE gate | empty_streak ≥2 without MISSION_COMPLETE checklist |
 | Ambition ratchet | **Removed** — lead DONE/STOP final |
 | VERDICT.json / PHASES.jsonl | Structured control + phase log |

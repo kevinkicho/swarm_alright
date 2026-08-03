@@ -53,7 +53,7 @@ Create `<project>/.swarm/config.json`:
 | --- | --- | --- |
 | `verify` | (none) | Shell command run in project root after auto-commit. Result logged. Fail-soft. |
 | `singleFlight` | `true` | Refuse a second concurrent alive run on the same project |
-| `defaultMerge` | `true` | Merge worker commits after review unless `HOST: STOP`/`HOLD` |
+| `defaultMerge` | `true` | Legacy name: baseline advances only on explicit CONTINUE/DONE/REPASS. **Missing VERDICT → HOLD** (never invents CONTINUE). |
 | `metrics` | `true` | Append cycle facts to `metrics.jsonl` for scorecards |
 | `redactDumps` | `true` | Redact common secret shapes in session dumps |
 

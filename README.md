@@ -89,7 +89,7 @@ make check   # vet + test + build
 | `swarm models` | List Ollama Cloud models |
 | `swarm dashboard [id]` | Browser dashboard |
 
-`--workers N` defaults to **1**. Values >1 share one HANDOFF on the same project root and are **experimental** (file races possible).
+`--workers` is **always 1** (shared project root has no path ownership). Values >1 are rejected/clamped.
 
 ## Guards & thresholds (Go host)
 
@@ -97,7 +97,7 @@ make check   # vet + test + build
 | --- | --- | --- |
 | Worker rotate threshold | 120 messages (growth since fork) | Compile-time |
 | System rotate interval | 8 cycles | Compile-time |
-| Digest inject interval | 3 minutes | Only when pending bus events |
+| Digest flush interval | 3 minutes | DIGEST.md on disk only |
 | Active watch cooldown | 8 minutes | Lead turn on alert/STALE |
 | Stall threshold | 20 minutes | Bus quiet while busy; soft re-prompt then rotate |
 | Max turn retries | 3 | Aborted soft re-prompt; stall soft then fork |

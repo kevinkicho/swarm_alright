@@ -120,7 +120,7 @@ func loadPanelFields(rec *RunRecord) []panelField {
 			func(c ResolvedProjectConfig) string { return c.Verify }},
 		{"singleFlight", "Single flight", "Refuse second concurrent run on same project", "toggle",
 			func(c ResolvedProjectConfig) string { return toggleStr(c.SingleFlight) }},
-		{"defaultMerge", "Default merge", "Merge worker commits after review unless STOP/HOLD", "toggle",
+		{"defaultMerge", "Default merge", "Legacy flag; empty VERDICT no longer invents CONTINUE (HOLD)", "toggle",
 			func(c ResolvedProjectConfig) string { return toggleStr(c.DefaultMerge) }},
 		{"metrics", "Metrics JSONL", "Append cycle facts to metrics.jsonl", "toggle",
 			func(c ResolvedProjectConfig) string { return toggleStr(c.Metrics) }},

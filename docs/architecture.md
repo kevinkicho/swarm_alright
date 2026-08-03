@@ -135,7 +135,8 @@ duplicated trees, confused tools/humans, and wasted disk. The host now:
 
 | File | Purpose |
 | --- | --- |
-| `run.go` | Run state machine, cycle loop, salvage, ambition, bus fan-in |
+| `run.go` | Run cycle loop, salvage, bus fan-in, SITREP |
+| `internal/runcontrol` | Pure control plane (phases, VERDICT, merge/HOLD policy) |
 | `run_turn.go` | Turn execution: stall, external abort, rotate |
 | `system_watch.go` | SystemWatch digests + ACTIVE WATCH, materials, empty-ship, escalate, doctor |
 | `bus_surface.go` | BUS.md / BUS.jsonl, work_health STALE |

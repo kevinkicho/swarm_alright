@@ -87,17 +87,27 @@ func TestGateDoneSignal(t *testing.T) {
 }
 
 func TestEffectiveMergeSignal(t *testing.T) {
-	sig, merge, implied := effectiveMergeSignal("", true)
-	if sig != SignalContinue || !merge || !implied {
-		t.Errorf("empty+defaultMerge: got %q merge=%v implied=%v", sig, merge, implied)
+	// Empty never invents CONTINUE — HOLD always
+	sig, merge, empty := effectiveMergeSignal("", true)
+	if sig != SignalHold || merge || !empty {
+		t.Errorf("empty+defaultMerge: got %q merge=%v empty=%v (want HOLD)", sig, merge, empty)
 	}
-	sig, merge, implied = effectiveMergeSignal("", false)
-	if sig != SignalHold || merge {
-		t.Errorf("empty+noMerge: got %q merge=%v", sig, merge)
+	sig, merge, empty = effectiveMergeSignal("", false)
+	if sig != SignalHold || merge || !empty {
+		t.Errorf("empty+noMerge: got %q merge=%v empty=%v", sig, merge, empty)
 	}
 	sig, merge, _ = effectiveMergeSignal(SignalStop, true)
 	if sig != SignalStop || merge {
 		t.Errorf("STOP should not merge: %q %v", sig, merge)
+	}
+	if shouldRunWorker(SignalHold) {
+		t.Error("HOLD must not run worker")
+	}
+	if !shouldRunWorker(SignalContinue) {
+		t.Error("CONTINUE runs worker")
+	}
+	if shouldAcceptBaseline("") || shouldAcceptBaseline(SignalHold) {
+		t.Error("empty/hold must not accept baseline")
 	}
 }
 

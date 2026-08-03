@@ -58,8 +58,10 @@ session only. The run continues so the system can re-plan next cycle.
 
 - Prefer `VERDICT.json` `{ "signal": "DONE|STOP|CONTINUE", "mission_complete": true }`
 - Explicit `HOST:` lines also work; free prose does not
+- **Missing signal → HOLD** (no worker that cycle; never invent CONTINUE)
 - Lead DONE/STOP is final (no ambition ratchet)
 - DONE may be blocked only if empty-ship streak is high without mission_complete
+- Empty ship: SITREP note for **next** system turn — no same-cycle forced re-scope
 
 ## Commands
 

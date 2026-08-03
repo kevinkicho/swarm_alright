@@ -30,7 +30,8 @@ const (
 	maxCycleFailures = 5
 	// Max turn attempts (stall soft-recover + rotate).
 	maxTurnAttempts = 3
-	// DONE gate: empty ships before requiring checklist.
+	// DONE gate: empty ships before requiring mission_complete (host sensor).
+	// Keep in sync with internal/runcontrol.DoneGateEmptyStreak.
 	doneGateEmptyStreak = 2
 	// Handoff size warn threshold (chars).
 	handoffCharsWarn = 3000

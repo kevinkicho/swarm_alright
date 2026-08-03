@@ -1,7 +1,9 @@
 package main
 
 import (
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,8 +220,78 @@ func archiveSessionDump(runDir, role string, cycle int, dumpPath string) {
 	_ = os.WriteFile(filepath.Join(sessionsDir, name), data, 0644)
 	// Also write *-latest.md for quick open
 	_ = os.WriteFile(filepath.Join(sessionsDir, fmt.Sprintf("%s-c%d-latest.md", role, max(1, cycle))), data, 0644)
+	compressOldSessionArchives(sessionsDir, 16)
 	pruneSessionArchives(sessionsDir, sessionArchiveKeep)
 	writeSessionIndex(runDir)
+}
+
+// compressOldSessionArchives gzips non-latest .md dumps beyond keepUncompressed newest.
+func compressOldSessionArchives(sessionsDir string, keepUncompressed int) {
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return
+	}
+	type fi struct {
+		path string
+		mod  time.Time
+	}
+	var plain []fi
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".md") || strings.Contains(name, "-latest") || name == "index.md" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		plain = append(plain, fi{path: filepath.Join(sessionsDir, name), mod: info.ModTime()})
+	}
+	if len(plain) <= keepUncompressed {
+		return
+	}
+	// oldest first
+	for i := 0; i < len(plain); i++ {
+		for j := i + 1; j < len(plain); j++ {
+			if plain[j].mod.Before(plain[i].mod) {
+				plain[i], plain[j] = plain[j], plain[i]
+			}
+		}
+	}
+	toCompress := len(plain) - keepUncompressed
+	for i := 0; i < toCompress; i++ {
+		p := plain[i].path
+		if err := gzipFile(p, p+".gz"); err == nil {
+			_ = os.Remove(p)
+		}
+	}
+}
+
+func gzipFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	zw := gzip.NewWriter(out)
+	if _, err := io.Copy(zw, in); err != nil {
+		zw.Close()
+		out.Close()
+		_ = os.Remove(dst)
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // pruneSessionArchives keeps the newest keepCount session dumps (by mtime).

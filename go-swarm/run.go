@@ -474,16 +474,22 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		ahead := commitsAhead(r.opts.Project, r.baseBranch, "HEAD")
 		if ahead > 0 {
 			hasReviewPack = true
+			// Cap MEMORY: pointers + short log only — not full diffs (token / sprawl hygiene).
 			log := shortLog(r.opts.Project, r.baseBranch, "HEAD")
-			diff := rangeDiff(r.opts.Project, r.baseBranch, "HEAD", 8000)
-			reviewSections = append(reviewSections, fmt.Sprintf("### project git\nstatus: HAS_COMMITS (%d since baseline)\nlog:\n%s\ndiff:\n```\n%s\n```", ahead, log, diff))
+			if len(log) > 1200 {
+				log = log[:1200] + "\n… (log truncated)"
+			}
+			names := rangeDiff(r.opts.Project, r.baseBranch, "HEAD", 1500)
+			reviewSections = append(reviewSections, fmt.Sprintf(
+				"### project git\nstatus: HAS_COMMITS (%d since baseline)\nlog (short):\n%s\nname-status (capped):\n```\n%s\n```\nRun `git diff baseline..HEAD` in project root for full patch — not embedded here.",
+				ahead, log, names))
 			reviewSections = append(reviewSections, probeSummaryForMemory(r.lastWorkerProbe))
 		}
 	}
 
 	r.writeHostMemory("system", []string{
 		"Phase: system review",
-		"Primary: SITREP.md. Control: VERDICT.json or HOST: line.",
+		"Primary: SITREP.md. Control: VERDICT.json required (missing → HOLD).",
 	}, reviewSections)
 
 	aheadForSitrep := commitsAhead(r.opts.Project, r.baseBranch, "HEAD")
@@ -563,6 +569,19 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		r.log(fmt.Sprintf("  [host] handoff is %d chars (>%d) - prefer thinner HANDOFF next cycle", handoffChars, handoffCharsWarn))
 	}
 
+	// Empty / invalid control → HOLD (never invent CONTINUE via defaultMerge).
+	signal, _, wasEmpty := effectiveMergeSignal(signal, r.projectCfg.DefaultMerge)
+	if wasEmpty {
+		r.log("  [host:control] missing VERDICT/HOST signal — HOLD (no worker this cycle)")
+		verdict.Signal = string(SignalHold)
+		verdict.Note = "missing control signal; write VERDICT.json"
+		verdict.Source = "host_default_hold"
+		writeVerdict(r.paths.RunDir, verdict)
+		r.lastVerdict = SignalHold
+		signal = SignalHold
+		r.transition(PhaseHold, "missing VERDICT")
+	}
+
 	// Lead owns terminal signal — host does not intercept DONE (no ambition ratchet).
 	if signal == SignalStop || signal == SignalDone {
 		r.log(fmt.Sprintf("[cycle %d] system said %s — stopping", r.cycle, signal))
@@ -574,14 +593,21 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		return err
 	}
 
-	if r.stopping.Load() {
+	// HOLD or terminal: no worker this cycle
+	if r.stopping.Load() || !shouldRunWorker(signal) {
 		secs := int(time.Since(t0).Seconds())
 		r.log(fmt.Sprintf("[cycle %d] complete in %ds (no worker — %s)", r.cycle, secs, signal))
+		writeSitrep(SitrepInput{
+			Cycle: r.cycle, Phase: string(signal), RunID: r.id, Project: r.opts.Project,
+			EmptyStreak: r.emptyStreak, Signal: string(signal), Paths: r.paths,
+			Worker: r.lastWorkerProbe, Note: ternary(signal == SignalHold, "HOLD: write VERDICT.json with CONTINUE to run worker next cycle", ""),
+		})
 		appendMetric(r.paths.RunDir, map[string]any{
 			"cycle": r.cycle, "secs": secs, "signal": string(signal),
 			"phase": "system-only", "quality_score": qualityScore, "handoff_chars": handoffChars,
 			"verdict_source": verdict.Source,
 		})
+		r.transition(PhaseIdle, "system-only "+string(signal))
 		r.heartbeat("idle")
 		return nil
 	}
@@ -704,7 +730,8 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		}
 	}
 
-	if ahead > 0 && (signal == SignalContinue || signal == SignalDone || (signal == "" && r.projectCfg.DefaultMerge)) {
+	// Baseline only on explicit CONTINUE/DONE/REPASS — never invent accept from empty signal.
+	if ahead > 0 && shouldAcceptBaseline(signal) {
 		headSha, _ := git(r.opts.Project, "rev-parse", "HEAD")
 		if headSha != "" {
 			r.writeBaseline(headSha)
@@ -714,17 +741,21 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	} else if ahead == 0 && r.cycle > 1 {
 		r.emptyStreak++
 		r.log(fmt.Sprintf("[cycle %d] no commits last cycle [metric] empty_commit_streak=%d", r.cycle, r.emptyStreak))
-		if r.emptyStreak >= 1 {
-			r.emptyShipRecover(system, worker, committed)
-		}
+		// Next-cycle lead ownership: note on SITREP only — no same-cycle forced re-scope thrash.
+		r.transition(PhaseEmptyShip, fmt.Sprintf("streak=%d next-cycle lead", r.emptyStreak))
+		r.log("  [host] empty ship → SITREP note for next system turn (no same-cycle forced recover)")
 	}
 
 	writeSessionIndex(r.paths.RunDir)
+	emptyNote := ""
+	if r.emptyStreak >= 1 && !committed {
+		emptyNote = fmt.Sprintf("EMPTY_SHIP streak=%d — next cycle write a NEW HANDOFF slice (host will not auto re-scope mid-cycle).", r.emptyStreak)
+	}
 	writeSitrep(SitrepInput{
 		Cycle: r.cycle, Phase: "idle", RunID: r.id, Project: r.opts.Project,
 		EmptyStreak: r.emptyStreak, Signal: string(signal), Ahead: ahead,
 		Worker: r.lastWorkerProbe, HandoffFP: r.lastHandoffFp, Paths: r.paths,
-		LastShip: ternary(committed, sha, "none"),
+		LastShip: ternary(committed, sha, "none"), Note: emptyNote,
 	})
 	writeBusSnapshot(r.paths.RunDir, BusSnapshotOpts{
 		Phase: "idle", Cycle: r.cycle, RunID: r.id, LastEventAgeMs: -1,
@@ -861,12 +892,11 @@ func (r *Run) writeHostMemory(phase string, notes []string, reviewSections []str
 	lines = append(lines, "")
 	if len(reviewSections) > 0 {
 		lines = append(lines, "## Review pack (host)")
-		lines = append(lines, "Git summary and worker session pointer. Facts only.")
+		lines = append(lines, "Short git pointers only — full diffs via git CLI. Prefer SITREP.md.")
 		lines = append(lines, "")
 		for _, s := range reviewSections {
-			// Cap review pack size for tokens
-			if len(s) > 12000 {
-				s = s[:12000] + "\n… (truncated)"
+			if len(s) > 2500 {
+				s = s[:2500] + "\n… (truncated — use git for full patch)"
 			}
 			lines = append(lines, s, "")
 		}

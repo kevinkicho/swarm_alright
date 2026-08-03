@@ -37,7 +37,7 @@ DONE/STOP, the user stops it, or `--max-cycles` is reached.
 | `--max-cycles N` | ∞ | Stop after N cycles (testing) |
 | `--detach` | off | Background mode (survives terminal close) |
 | `--continue` | off | Resume from latest run on this project |
-| `--workers N` | `1` | Worker count; N>1 experimental (shared HANDOFF on one root) |
+| `--workers N` | `1` | Only 1 supported; N>1 forced to 1 (shared root, no ownership) |
 
 ### swarm restart [run-id] [options]
 

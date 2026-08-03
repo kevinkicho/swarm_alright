@@ -3,19 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
-)
-
-// HostSignal is the system's control verdict
-type HostSignal string
-
-const (
-	SignalContinue HostSignal = "CONTINUE"
-	SignalDone     HostSignal = "DONE"
-	SignalStop     HostSignal = "STOP"
-	SignalRepass   HostSignal = "REPASS"
-	SignalHold     HostSignal = "HOLD"
 )
 
 // buildSystemIdentity — sticky system field. Keep short; judgment lives with the lead.
@@ -44,8 +32,9 @@ func buildSystemIdentity(p RunPaths, workerCount int) string {
 		"Each cycle:",
 		"1. Review sensors / code.",
 		"2. Overwrite HANDOFF.md with one concrete assignment (acceptance = new paths/behavior).",
-		"3. Emit control: write VERDICT.json {\"signal\":\"CONTINUE|DONE|STOP|REPASS|HOLD\",\"mission_complete\":false,\"quality\":N}",
+		"3. REQUIRED control: write VERDICT.json {\"signal\":\"CONTINUE|DONE|STOP|REPASS|HOLD\",\"mission_complete\":false,\"quality\":N}",
 		"   or a single line HOST: CONTINUE | DONE | STOP | REPASS | HOLD.",
+		"   Missing signal → host HOLDs (no worker turn). Do not rely on default continue.",
 		"4. DONE only when mission goals are met (set mission_complete true). Empty ship ≠ done.",
 		"5. Optional QUALITY: N/10 in the reply. Append real project learnings to " + p.LearningsFile + ".",
 		"",
@@ -81,30 +70,6 @@ func buildWorkerPrompt(brief string, p RunPaths) string {
 	}, "\n")
 }
 
-// parseQualityScore extracts a QUALITY: N/10 line from system reply text
-func parseQualityScore(text string) int {
-	re := regexp.MustCompile(`(?i)QUALITY\s*:\s*(\d+)\s*/\s*10`)
-	if m := re.FindStringSubmatch(text); m != nil {
-		score := 0
-		fmt.Sscanf(m[1], "%d", &score)
-		if score >= 0 && score <= 10 {
-			return score
-		}
-	}
-	return 0
-}
-
-// hasMissionDoneChecklist checks for MISSION_COMPLETE: true (or VERDICT field handled separately)
-func hasMissionDoneChecklist(text string) bool {
-	if m, _ := regexp.MatchString(`(?i)MISSION_COMPLETE\s*:\s*true\b`, text); m {
-		return true
-	}
-	if m, _ := regexp.MatchString(`(?i)"mission_complete"\s*:\s*true\b`, text); m {
-		return true
-	}
-	return false
-}
-
 // handoffFingerprint returns a hash of handoff text for stale detection
 func handoffFingerprint(body string) string {
 	t := strings.TrimSpace(body)
@@ -130,7 +95,3 @@ func needsHandoffRewrite(body string) bool {
 	return false
 }
 
-// regexpMustCompile — panic-free compile for control parsers
-func regexpMustCompile(pattern string) *regexp.Regexp {
-	return regexp.MustCompile(pattern)
-}
