@@ -34,6 +34,15 @@ empty-ship streak is high without `mission_complete` (sensor, not “think bigge
 
 **Primary surface:** host-written **SITREP.md** (capped). Optional deep links in MATERIALS.
 
+### No `--directive`?
+
+The host writes **PROJECT_SCAN.md** (README, package manifests, docs excerpts, tree)
+and seeds **MISSION.md** in *inferred-mission mode*. The system lead must:
+
+1. Rewrite MISSION with success criteria taken from what the **project already claims**
+2. Seed BACKLOG, write first HANDOFF, VERDICT CONTINUE
+3. Drive slices until those criteria are met — not invent a random product
+
 ## Quick start
 
 **Prerequisites:** `opencode` CLI (`npm i -g opencode-ai`), git, [Ollama Cloud API key](https://ollama.com/settings/keys), Go 1.22+ (to build).

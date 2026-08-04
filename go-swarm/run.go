@@ -199,12 +199,24 @@ func (r *Run) Start() error {
 	}
 
 	if _, err := os.Stat(r.paths.MissionFile); os.IsNotExist(err) {
-		mission := r.opts.Directive
-		if mission == "" {
-			mission = "(no directive given — the system infers the mission from the project itself)"
-		}
 		os.MkdirAll(r.paths.RunDir, 0755)
-		os.WriteFile(r.paths.MissionFile, []byte(fmt.Sprintf("# MISSION — run %s\n\n%s\n", r.id, mission)), 0644)
+		if strings.TrimSpace(r.opts.Directive) == "" {
+			// No user directive: host scans project intent; lead must rewrite MISSION.
+			if err := writeProjectScan(project, r.paths.ProjectScanFile); err != nil {
+				r.log("  [host] project scan failed (non-fatal): " + err.Error())
+			} else {
+				r.log("  [host] PROJECT_SCAN.md written — inferred-mission mode (no --directive)")
+			}
+			seed := inferredMissionSeed(project, r.paths.ProjectScanFile)
+			_ = os.WriteFile(r.paths.MissionFile, []byte(seed), 0644)
+			// Seed empty backlog template
+			if _, err := os.Stat(r.paths.BacklogFile); os.IsNotExist(err) {
+				_ = os.WriteFile(r.paths.BacklogFile, []byte("# BACKLOG\n\nLead maintains living slices. Seed from PROJECT_SCAN + rewritten MISSION.\n\n"), 0644)
+			}
+		} else {
+			body := fmt.Sprintf("# MISSION — run %s\n\n%s\n", r.id, strings.TrimSpace(r.opts.Directive))
+			_ = os.WriteFile(r.paths.MissionFile, []byte(body), 0644)
+		}
 	}
 
 	if _, err := os.Stat(r.paths.StandardsFile); os.IsNotExist(err) {
@@ -787,12 +799,35 @@ func (r *Run) buildSystemPrompt(hasReviewPack bool) string {
 		"Overwrite "+r.paths.HandoffFile+" with the engineer assignment.",
 		"Control: write "+verdict+` {"signal":"CONTINUE|DONE|STOP","mission_complete":false,"quality":N} or HOST: CONTINUE|DONE|STOP.`,
 	)
+
+	missionBody, _ := os.ReadFile(r.paths.MissionFile)
+	inferred := strings.TrimSpace(r.opts.Directive) == "" || missionIsInferredPlaceholder(string(missionBody))
+
 	if r.cycle == 1 && r.opts.ResumeFrom == "" {
-		bits = append(bits, "Kickoff: inspect project root "+r.opts.Project+", plan first slice.")
+		if inferred {
+			bits = append(bits,
+				"KICKOFF — no user directive. Inferred-mission mode.",
+				"1) Open "+r.paths.ProjectScanFile+" (host scan of docs/manifests).",
+				"2) Open README and primary code under "+r.opts.Project+".",
+				"3) Rewrite "+r.paths.MissionFile+" with product intent + observable success criteria from what the project already claims.",
+				"4) Seed "+r.paths.BacklogFile+" with ordered slices.",
+				"5) Write first HANDOFF (one vertical, acceptance = new paths/behavior).",
+				"6) VERDICT signal CONTINUE (required or host HOLDs).",
+			)
+		} else {
+			bits = append(bits,
+				"Kickoff: read MISSION (user directive), inspect project root "+r.opts.Project+", write first HANDOFF + VERDICT CONTINUE.",
+			)
+		}
+	} else if inferred && missionIsInferredPlaceholder(string(missionBody)) {
+		bits = append(bits,
+			"MISSION is still a placeholder — rewrite it from PROJECT_SCAN + project docs/code before DONE.",
+			"Open "+r.paths.ProjectScanFile+" and "+r.opts.Project+".",
+		)
 	} else if !hasReviewPack {
 		bits = append(bits, fmt.Sprintf("No product commits last cycle (empty_streak=%d) — prefer a fresh HANDOFF slice over re-verify.", r.emptyStreak))
 	} else {
-		bits = append(bits, "Review pack in MEMORY.md if you need git detail; worker dump path is in SITREP.")
+		bits = append(bits, "Review pack in MEMORY.md if you need git detail; worker dump path is in SITREP. Compare work to MISSION success criteria.")
 	}
 	if r.lastWorkerReply != "" {
 		bits = append(bits, "Worker last reply excerpt: "+truncate(strings.Join(strings.Fields(r.lastWorkerReply), " "), 400))

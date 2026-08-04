@@ -78,6 +78,30 @@ func TestCompressOldSessionArchives(t *testing.T) {
 	}
 }
 
+func TestProjectScanAndInferredMission(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Demo App\n\nShip durable todos.\n"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"demo","description":"todo app","scripts":{"test":"echo ok"}}`), 0644)
+	scanPath := filepath.Join(dir, "PROJECT_SCAN.md")
+	if err := writeProjectScan(dir, scanPath); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(scanPath)
+	if !strings.Contains(string(body), "Demo App") && !strings.Contains(string(body), "todo") {
+		t.Fatalf("scan missing readme/package intent:\n%s", body)
+	}
+	if !strings.Contains(string(body), "package.json") {
+		t.Fatal("expected package.json section")
+	}
+	seed := inferredMissionSeed(dir, scanPath)
+	if !missionIsInferredPlaceholder(seed) {
+		t.Fatal("seed should be recognized as placeholder")
+	}
+	if !strings.Contains(seed, "Rewrite this MISSION.md") {
+		t.Fatal("seed should instruct rewrite")
+	}
+}
+
 func TestSitrepMentionsEmptyShipNote(t *testing.T) {
 	dir := t.TempDir()
 	p := bindPaths(dir, dir)

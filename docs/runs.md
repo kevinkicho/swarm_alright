@@ -35,6 +35,18 @@
   - `STOP` — created by `swarm stop`
 - **Git:** commits on the user's branch; `BASELINE.sha` tracks accepted work
 
+## No user directive (inferred mission)
+
+If `swarm run <folder>` is started **without** `--directive`:
+
+1. Host writes `PROJECT_SCAN.md` — capped inventory of README, manifests, docs, top-level tree.
+2. Host seeds `MISSION.md` as **inferred-mission** (instructions for the lead, not a product goal yet).
+3. Cycle 1 system prompt forces: open PROJECT_SCAN + project docs/code → rewrite MISSION with
+   observable success criteria → BACKLOG → first HANDOFF → VERDICT CONTINUE.
+4. Later cycles judge worker output against that rewritten MISSION (not against “make something”).
+
+This keeps the host as sensors; the lead still owns judgment, but is grounded in the repo’s own intent.
+
 ## Stopping
 
 - **Graceful (recommended):** `swarm stop` or Ctrl+C. The current agent turn

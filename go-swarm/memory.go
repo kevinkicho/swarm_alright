@@ -32,6 +32,7 @@ type RunPaths struct {
 	BaseBranch        string
 	WorkerWorktree    string
 	LearningsFile     string // project-level cross-run memory
+	ProjectScanFile   string // host inventory when mission is inferred
 }
 
 func bindPaths(runDir, project string) RunPaths {
@@ -58,6 +59,7 @@ func bindPaths(runDir, project string) RunPaths {
 		BaseBranch:        "",
 		WorkerWorktree:    project, // root mode — agents use project root
 		LearningsFile:     filepath.Join(filepath.Dir(filepath.Dir(runDir)), "LEARNINGS.md"), // <project>/.swarm/LEARNINGS.md
+		ProjectScanFile:   filepath.Join(runDir, "PROJECT_SCAN.md"),
 	}
 }
 

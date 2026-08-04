@@ -69,14 +69,19 @@ func writeSitrep(in SitrepInput) {
 	}
 
 	b.WriteString("\n## Your job this turn\n")
-	b.WriteString("1. Read this SITREP (and MISSION if needed).\n")
-	b.WriteString("2. Optionally open WORKER dump / BUS / git only if sensors are insufficient.\n")
-	b.WriteString("3. Overwrite HANDOFF.md with the next engineer assignment.\n")
-	b.WriteString("4. Write control signal to VERDICT.json (preferred) or a `HOST: CONTINUE|DONE|STOP` line.\n")
+	b.WriteString("1. Read this SITREP (and MISSION).\n")
+	b.WriteString("2. If mission is inferred (no user directive): open PROJECT_SCAN + rewrite MISSION with concrete success criteria.\n")
+	b.WriteString("3. Optionally open WORKER dump / BUS / git only if sensors are insufficient.\n")
+	b.WriteString("4. Overwrite HANDOFF.md with the next engineer assignment.\n")
+	b.WriteString("5. Write control signal to VERDICT.json (preferred) or a `HOST: CONTINUE|DONE|STOP` line.\n")
 
 	b.WriteString("\n## Paths\n")
 	fmt.Fprintf(&b, "- mission: %s\n", p.MissionFile)
+	if p.ProjectScanFile != "" {
+		fmt.Fprintf(&b, "- project_scan: %s\n", p.ProjectScanFile)
+	}
 	fmt.Fprintf(&b, "- handoff (write): %s\n", p.HandoffFile)
+	fmt.Fprintf(&b, "- backlog: %s\n", p.BacklogFile)
 	fmt.Fprintf(&b, "- verdict (write): %s\n", verdictPath(p.RunDir))
 	fmt.Fprintf(&b, "- bus (live): %s\n", p.BusFile)
 	fmt.Fprintf(&b, "- worker dump: %s\n", p.WorkerSessionFile)
@@ -110,9 +115,11 @@ func writeMaterialsIndex(runDir string, cycle int, phase string, workerProbe *pr
 		"",
 		"## Primary",
 		fmt.Sprintf("- SITREP: %s", filepath.Join(runDir, "SITREP.md")),
-		fmt.Sprintf("- HANDOFF (engineer contract): %s", filepath.Join(runDir, "HANDOFF.md")),
-		fmt.Sprintf("- VERDICT.json (control): %s", filepath.Join(runDir, "VERDICT.json")),
 		fmt.Sprintf("- MISSION: %s", filepath.Join(runDir, "MISSION.md")),
+		fmt.Sprintf("- PROJECT_SCAN (no-directive kickoff): %s", filepath.Join(runDir, "PROJECT_SCAN.md")),
+		fmt.Sprintf("- HANDOFF (engineer contract): %s", filepath.Join(runDir, "HANDOFF.md")),
+		fmt.Sprintf("- BACKLOG: %s", filepath.Join(runDir, "BACKLOG.md")),
+		fmt.Sprintf("- VERDICT.json (control): %s", filepath.Join(runDir, "VERDICT.json")),
 		"",
 		"## Optional deep links",
 		fmt.Sprintf("- BUS: %s", filepath.Join(runDir, "BUS.md")),
@@ -120,7 +127,7 @@ func writeMaterialsIndex(runDir string, cycle int, phase string, workerProbe *pr
 		fmt.Sprintf("- worker dump: %s", filepath.Join(runDir, "WORKER_SESSION.md")),
 		fmt.Sprintf("- MEMORY / ships: %s · %s", filepath.Join(runDir, "MEMORY.md"), filepath.Join(runDir, "ship.log")),
 		fmt.Sprintf("- sessions/: %s", filepath.Join(runDir, "sessions")),
-		fmt.Sprintf("- DIALOGUE / BACKLOG: %s · %s", filepath.Join(runDir, "DIALOGUE.md"), filepath.Join(runDir, "BACKLOG.md")),
+		fmt.Sprintf("- DIALOGUE: %s", filepath.Join(runDir, "DIALOGUE.md")),
 		"",
 	}
 	if workerProbe != nil {
