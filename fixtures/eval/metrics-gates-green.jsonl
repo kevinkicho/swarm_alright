@@ -1,3 +1,0 @@
-{"ts":"2026-01-01T00:00:00Z","cycle":1,"secs":40,"phase":"complete","signal":"CONTINUE","committed":true,"commits_ahead":1,"empty_streak":0,"gates_ok":true,"gates_count":2,"gates_fail":0,"handoff_chars":120,"quality_score":7}
-{"ts":"2026-01-01T00:10:00Z","cycle":2,"secs":50,"phase":"complete","signal":"CONTINUE","committed":true,"commits_ahead":1,"empty_streak":0,"gates_ok":true,"gates_count":2,"gates_fail":0,"handoff_chars":100,"quality_score":8}
-{"ts":"2026-01-01T00:20:00Z","cycle":3,"secs":30,"phase":"system-only","signal":"DONE","committed":false,"commits_ahead":0,"empty_streak":0,"gates_ok":true,"gates_count":2,"gates_fail":0,"handoff_chars":80,"quality_score":8,"verdict_source":"file"}

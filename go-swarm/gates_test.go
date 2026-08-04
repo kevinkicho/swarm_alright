@@ -47,21 +47,6 @@ func TestVerifyBecomesGate(t *testing.T) {
 	}
 }
 
-func TestHandoffStructureHints(t *testing.T) {
-	if len(handoffStructureHints("x")) == 0 {
-		t.Fatal("thin handoff")
-	}
-	hints := handoffStructureHints("Please implement the login form with email and password fields only for now thanks")
-	// may warn about acceptance
-	_ = hints
-	good := handoffStructureHints("Goal: add health route.\nAcceptance: path src/health.ts exists.\nDone when: npm test passes.")
-	for _, h := range good {
-		if strings.Contains(h, "lack explicit acceptance") {
-			t.Fatal("should not warn: ", h)
-		}
-	}
-}
-
 func TestBudgetExceeded(t *testing.T) {
 	r := NewRun(RunOptions{Project: t.TempDir(), MaxCycles: 2, MaxMinutes: 0})
 	r.cycle = 3

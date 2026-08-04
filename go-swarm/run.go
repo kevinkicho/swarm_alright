@@ -628,42 +628,19 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	if handoffChars > handoffCharsWarn {
 		r.log(fmt.Sprintf("  [host] handoff is %d chars (>%d) - prefer thinner HANDOFF next cycle", handoffChars, handoffCharsWarn))
 	}
-	for _, h := range handoffStructureHints(handoff) {
-		r.log("  [host:handoff] " + h)
-	}
-
-	// Empty / invalid control → HOLD (never invent CONTINUE via defaultMerge).
+	// Empty control → CONTINUE when defaultMerge (value: keep shipping). Explicit STOP/HOLD/DONE win.
 	signal, _, wasEmpty := effectiveMergeSignal(signal, r.projectCfg.DefaultMerge)
 	if wasEmpty {
-		r.log("  [host:control] missing VERDICT/HOST signal — HOLD (no worker this cycle)")
-		verdict.Signal = string(SignalHold)
-		verdict.Note = "missing control signal; write VERDICT.json"
-		verdict.Source = "host_default_hold"
+		r.log("  [host:control] no VERDICT/HOST line — default CONTINUE (work proceeds)")
+		verdict.Signal = string(SignalContinue)
+		verdict.Source = "host_default_continue"
 		writeVerdict(r.paths.RunDir, verdict)
-		r.lastVerdict = SignalHold
-		signal = SignalHold
-		r.transition(PhaseHold, "missing VERDICT")
+		r.lastVerdict = SignalContinue
 	}
 
-	// Inferred mission: refuse to run worker while MISSION is still a placeholder.
-	// Cycle 1+ until rewrite — lead must lock success criteria from PROJECT_SCAN first.
-	if shouldRunWorker(signal) {
-		missionBody, _ := os.ReadFile(r.paths.MissionFile)
-		inferredMode := strings.TrimSpace(r.opts.Directive) == "" || missionIsInferredPlaceholder(string(missionBody))
-		if inferredMode && missionIsInferredPlaceholder(string(missionBody)) {
-			why := "HOLD: MISSION.md still placeholder (inferred mode) — rewrite from PROJECT_SCAN + project docs before CONTINUE"
-			r.log("  [host:control] " + why)
-			signal = SignalHold
-			verdict.Signal = string(SignalHold)
-			verdict.Note = why
-			verdict.Source = "host_mission_placeholder"
-			writeVerdict(r.paths.RunDir, verdict)
-			r.lastVerdict = SignalHold
-			r.transition(PhaseHold, "mission placeholder")
-			r.sdk.sessionInjectContext(system.SessionID,
-				"[host sensor] "+why+"\nOpen PROJECT_SCAN.md and rewrite MISSION.md with concrete success criteria, then HANDOFF + VERDICT CONTINUE.",
-				&modelRef{ProviderID: ProviderID, ModelID: bareModel(system.Model)})
-		}
+	// Soft sensor only: remind lead if inferred MISSION is still a seed (do not block worker).
+	if missionBody, err := os.ReadFile(r.paths.MissionFile); err == nil && missionIsInferredPlaceholder(string(missionBody)) {
+		r.log("  [host] note: MISSION.md still placeholder — prefer rewrite from PROJECT_SCAN when convenient")
 	}
 
 	// Lead owns terminal signal — host does not intercept DONE (no ambition ratchet).
@@ -677,21 +654,14 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		return err
 	}
 
-	// HOLD or terminal: no worker this cycle
+	// Explicit HOLD or terminal DONE/STOP: no worker this cycle
 	if r.stopping.Load() || !shouldRunWorker(signal) {
 		secs := int(time.Since(t0).Seconds())
 		r.log(fmt.Sprintf("[cycle %d] complete in %ds (no worker — %s)", r.cycle, secs, signal))
-		holdNote := ""
-		if signal == SignalHold {
-			holdNote = "HOLD: write VERDICT CONTINUE after locking MISSION (if inferred) and HANDOFF"
-			if verdict.Note != "" {
-				holdNote = verdict.Note
-			}
-		}
 		writeSitrep(SitrepInput{
 			Cycle: r.cycle, Phase: string(signal), RunID: r.id, Project: r.opts.Project,
 			EmptyStreak: r.emptyStreak, Signal: string(signal), Paths: r.paths,
-			Worker: r.lastWorkerProbe, Note: holdNote,
+			Worker: r.lastWorkerProbe, Note: string(signal),
 		})
 		appendMetric(r.paths.RunDir, r.metricRow(secs, signal, qualityScore, handoffChars, verdict.Source, false, 0, "system-only"))
 		r.transition(PhaseIdle, "system-only "+string(signal))
@@ -921,10 +891,8 @@ func (r *Run) buildSystemPrompt(hasReviewPack bool) string {
 	var bits []string
 	bits = append(bits,
 		fmt.Sprintf("Cycle %d.", r.cycle),
-		"Primary: open "+sitrep+" first (host sensors, capped).",
-		"Mission: "+r.paths.MissionFile+".",
-		"Overwrite "+r.paths.HandoffFile+" with the engineer assignment.",
-		"Control: write "+verdict+` {"signal":"CONTINUE|DONE|STOP","mission_complete":false,"quality":N} or HOST: CONTINUE|DONE|STOP.`,
+		"Open "+sitrep+" then MISSION and the project. Write HANDOFF for the next real ship.",
+		"Optional control: HOST: CONTINUE|DONE|STOP or "+verdict+" (omit signal → host continues).",
 	)
 
 	missionBody, _ := os.ReadFile(r.paths.MissionFile)
@@ -933,28 +901,15 @@ func (r *Run) buildSystemPrompt(hasReviewPack bool) string {
 	if r.cycle == 1 && r.opts.ResumeFrom == "" {
 		if inferred {
 			bits = append(bits,
-				"KICKOFF — no user directive. Inferred-mission mode.",
-				"1) Open "+r.paths.ProjectScanFile+" (host scan of docs/manifests).",
-				"2) Open README and primary code under "+r.opts.Project+".",
-				"3) Rewrite "+r.paths.MissionFile+" with product intent + observable success criteria from what the project already claims.",
-				"4) Seed "+r.paths.BacklogFile+" with ordered slices.",
-				"5) Write first HANDOFF (one vertical, acceptance = new paths/behavior).",
-				"6) VERDICT signal CONTINUE (required or host HOLDs).",
+				"No user directive: use PROJECT_SCAN + README/code to set MISSION success criteria, then first HANDOFF that changes real files.",
 			)
 		} else {
-			bits = append(bits,
-				"Kickoff: read MISSION (user directive), inspect project root "+r.opts.Project+", write first HANDOFF + VERDICT CONTINUE.",
-			)
+			bits = append(bits, "Kickoff: mission is the user directive; inspect "+r.opts.Project+" and write first HANDOFF.")
 		}
-	} else if inferred && missionIsInferredPlaceholder(string(missionBody)) {
-		bits = append(bits,
-			"MISSION is still a placeholder — rewrite it from PROJECT_SCAN + project docs/code before DONE.",
-			"Open "+r.paths.ProjectScanFile+" and "+r.opts.Project+".",
-		)
 	} else if !hasReviewPack {
-		bits = append(bits, fmt.Sprintf("No product commits last cycle (empty_streak=%d) — prefer a fresh HANDOFF slice over re-verify.", r.emptyStreak))
+		bits = append(bits, fmt.Sprintf("No product commits last cycle (empty_streak=%d) — prefer a fresh HANDOFF over re-verify.", r.emptyStreak))
 	} else {
-		bits = append(bits, "Review pack in MEMORY.md if you need git detail; worker dump path is in SITREP. Compare work to MISSION success criteria.")
+		bits = append(bits, "Compare worker output to MISSION; next HANDOFF should advance it.")
 	}
 	if r.lastWorkerReply != "" {
 		bits = append(bits, "Worker last reply excerpt: "+truncate(strings.Join(strings.Fields(r.lastWorkerReply), " "), 400))

@@ -110,9 +110,6 @@ func scorecardFlags(sc Scorecard) []string {
 	if sc.GatesFail >= 2 {
 		flags = append(flags, fmt.Sprintf("mission gates failed on %d cycle(s)", sc.GatesFail))
 	}
-	if sc.Holds >= 2 {
-		flags = append(flags, fmt.Sprintf("HOLD frequent (%d) — missing VERDICT or placeholder MISSION", sc.Holds))
-	}
 	if sc.Cycles >= 3 && sc.CommitsShipped > 0 && sc.MaxEmptyStreak == 0 && sc.GatesFail == 0 {
 		flags = append(flags, "trajectory looks healthy")
 	}

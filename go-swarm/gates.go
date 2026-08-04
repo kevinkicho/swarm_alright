@@ -189,26 +189,6 @@ func writeGateReport(runDir string, cycle int, allOK bool, results []GateResult,
 		}
 		b.WriteString(fmt.Sprintf("- **%s** `%s` %s — %s\n", mark, r.Name, r.Type, r.Detail))
 	}
-	b.WriteString("\nDONE requires all gates PASS unless VERDICT sets \"waive_gates\": true.\n")
+	b.WriteString("\nIf configured, DONE is blocked while any gate is FAIL (unless VERDICT waive_gates:true).\n")
 	_ = os.WriteFile(filepath.Join(runDir, "GATES_LAST.md"), []byte(b.String()), 0644)
-}
-
-// handoffStructureHints returns soft sensor notes (not hard fail).
-func handoffStructureHints(body string) []string {
-	t := strings.TrimSpace(body)
-	if len(t) < 40 {
-		return []string{"HANDOFF too thin (<40 chars)"}
-	}
-	low := strings.ToLower(t)
-	var hints []string
-	hasAccept := strings.Contains(low, "accept") || strings.Contains(low, "done when") ||
-		strings.Contains(low, "success") || strings.Contains(low, "path") ||
-		strings.Contains(low, "file") || strings.Contains(low, "```")
-	if !hasAccept {
-		hints = append(hints, "HANDOFF may lack explicit acceptance (paths/behavior/done-when)")
-	}
-	if len(t) > handoffCharsWarn {
-		hints = append(hints, fmt.Sprintf("HANDOFF large (%d chars) — prefer thinner work orders", len(t)))
-	}
-	return hints
 }

@@ -65,7 +65,7 @@ Optional **mission gates** (preferred for multi-check):
 | --- | --- | --- |
 | `verify` | (none) | Shell command treated as a **cmd gate** after ships; also used alone if no gates.json |
 | `singleFlight` | `true` | Refuse a second concurrent alive run on the same project |
-| `defaultMerge` | `true` | Legacy name: baseline advances only on explicit CONTINUE/DONE/REPASS. **Missing VERDICT → HOLD** |
+| `defaultMerge` | `true` | Empty control signal → CONTINUE (work proceeds). Baseline advances on CONTINUE/DONE/REPASS. |
 | `metrics` | `true` | Append cycle facts to `metrics.jsonl` for scorecards |
 | `redactDumps` | `true` | Redact common secret shapes in session dumps |
 

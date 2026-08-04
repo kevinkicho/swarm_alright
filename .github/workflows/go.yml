@@ -28,7 +28,5 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test ./... -count=1
-      - name: eval goldens
-        run: go test ./... -count=1 -run 'TestEvalGoldens|TestScorecardFixtures'
       - name: build
         run: go build -o swarm .

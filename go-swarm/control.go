@@ -69,7 +69,7 @@ func gateDoneSignal(signal HostSignal, emptyCommitStreak int, missionComplete bo
 	return runcontrol.GateDone(signal, emptyCommitStreak, missionComplete, replyText)
 }
 
-// effectiveMergeSignal: empty → HOLD (never invent CONTINUE).
+// effectiveMergeSignal: empty → CONTINUE when defaultMerge (keep work moving).
 func effectiveMergeSignal(signal HostSignal, defaultMerge bool) (HostSignal, bool, bool) {
 	return runcontrol.EffectiveMerge(signal, defaultMerge)
 }

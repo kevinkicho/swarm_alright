@@ -87,14 +87,14 @@ func TestGateDoneSignal(t *testing.T) {
 }
 
 func TestEffectiveMergeSignal(t *testing.T) {
-	// Empty never invents CONTINUE — HOLD always
+	// Empty + defaultMerge → CONTINUE so work is not blocked by ceremony
 	sig, merge, empty := effectiveMergeSignal("", true)
-	if sig != SignalHold || merge || !empty {
-		t.Errorf("empty+defaultMerge: got %q merge=%v empty=%v (want HOLD)", sig, merge, empty)
+	if sig != SignalContinue || !merge || !empty {
+		t.Errorf("empty+defaultMerge: got %q merge=%v empty=%v (want CONTINUE)", sig, merge, empty)
 	}
 	sig, merge, empty = effectiveMergeSignal("", false)
 	if sig != SignalHold || merge || !empty {
-		t.Errorf("empty+noMerge: got %q merge=%v empty=%v", sig, merge, empty)
+		t.Errorf("empty+!defaultMerge: got %q merge=%v empty=%v", sig, merge, empty)
 	}
 	sig, merge, _ = effectiveMergeSignal(SignalStop, true)
 	if sig != SignalStop || merge {
@@ -105,9 +105,6 @@ func TestEffectiveMergeSignal(t *testing.T) {
 	}
 	if !shouldRunWorker(SignalContinue) {
 		t.Error("CONTINUE runs worker")
-	}
-	if shouldAcceptBaseline("") || shouldAcceptBaseline(SignalHold) {
-		t.Error("empty/hold must not accept baseline")
 	}
 }
 
@@ -168,11 +165,11 @@ func TestBuildSystemIdentitySitrep(t *testing.T) {
 	if !strings.Contains(id, "SITREP") {
 		t.Error("identity should mention SITREP")
 	}
-	if !strings.Contains(id, "VERDICT.json") {
-		t.Error("identity should mention VERDICT.json")
+	if !strings.Contains(id, "HANDOFF") {
+		t.Error("identity should mention HANDOFF")
 	}
-	if strings.Contains(id, "ambition ratchet") || strings.Contains(id, "fans OpenCode events into this session") {
-		t.Error("identity should not claim digest inject or ambition")
+	if strings.Contains(id, "ambition ratchet") || strings.Contains(id, "REQUIRED control") {
+		t.Error("identity should not force ceremony")
 	}
 }
 

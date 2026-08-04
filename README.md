@@ -22,31 +22,26 @@ The previous TypeScript host lives under `legacy/` for reference only and is not
    happen only on STALE/alert **ACTIVE WATCH**.
 7. Loop until lead `HOST: DONE` / `STOP` (or `VERDICT.json`), or you `swarm stop`.
 
-**Control plane:** prefer **`VERDICT.json`** (`signal`, `mission_complete`, `quality`).
-Chat `HOST:` lines still work. Free prose is **not** a stop signal.
+**Control (optional):** `HOST: CONTINUE|DONE|STOP` or `VERDICT.json`.  
+Missing signal → **CONTINUE** by default (work is not blocked). Free prose is not a signal.
 
-**No ambition ratchet:** lead DONE/STOP is final. Host may only block DONE when
-empty-ship streak is high without `mission_complete` (sensor, not “think bigger”).
+**DONE:** final when the lead says so. Host may block DONE only if **optional gates/verify**
+are red, or empty-ship streak is high without `mission_complete`.
 
-**Watch STOP ≠ mission end:** ACTIVE WATCH `HOST: STOP` aborts the worker turn only.
+**Watch STOP ≠ mission end:** ACTIVE WATCH aborts the worker turn only.
 
-**Single worker** on project root (no multi-worker until path ownership exists).
+**Single worker** on project root.
 
-**Primary surface:** host-written **SITREP.md** (capped). Optional deep links in MATERIALS.
+**SITREP.md** = capped host facts. **DIGEST.md** = worker bus on disk (not lead chat).
 
-**Mission gates (optional):** `.swarm/gates.json` and/or `verify` in config — host runs them after ships.
-**DONE** is blocked while gates are red unless VERDICT sets `"waive_gates": true`.
+**Optional gates:** `.swarm/gates.json` or `verify` — after ships; DONE needs green unless `waive_gates`.
 
-**Budgets:** `--max-cycles N` and/or `--max-minutes N`.
+**Budgets:** `--max-cycles` / `--max-minutes`.
 
 ### No `--directive`?
 
-The host writes **PROJECT_SCAN.md** (README, package manifests, docs excerpts, tree)
-and seeds **MISSION.md** in *inferred-mission mode*. The system lead must:
-
-1. Rewrite MISSION with success criteria taken from what the **project already claims**
-2. Seed BACKLOG, write first HANDOFF, VERDICT CONTINUE
-3. Drive slices until those criteria are met — not invent a random product
+Host writes **PROJECT_SCAN.md** and seeds MISSION. Lead should set success criteria from
+docs/code and write HANDOFF slices — work still proceeds if mission rewrite is late.
 
 ## Quick start
 
@@ -119,7 +114,7 @@ make check   # vet + test + build
 | DONE gate | ≥2 empty ships without mission_complete | Host sensor only |
 | Mission gates | optional | DONE blocked if red (unless waive_gates) |
 | Digests | DIGEST.md disk | Chat only on STALE/alert |
-| Control | VERDICT.json | Explicit HOST: lines fallback |
+| Control | optional VERDICT / HOST: | empty → CONTINUE |
 | Budgets | max-cycles / max-minutes | Wall clock + cycles |
 | Workers | **1 only** | Shared root |
 | Single flight | on | `.swarm/config.json` |

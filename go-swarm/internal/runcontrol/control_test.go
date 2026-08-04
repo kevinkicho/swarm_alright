@@ -19,10 +19,14 @@ func TestParseSignalExplicitNoProse(t *testing.T) {
 	}
 }
 
-func TestEffectiveMergeEmptyIsHold(t *testing.T) {
+func TestEffectiveMergeEmptyContinuesByDefault(t *testing.T) {
 	sig, merge, empty := EffectiveMerge("", true)
+	if sig != SignalContinue || !merge || !empty {
+		t.Fatalf("empty+defaultMerge must CONTINUE: %q merge=%v empty=%v", sig, merge, empty)
+	}
+	sig, merge, empty = EffectiveMerge("", false)
 	if sig != SignalHold || merge || !empty {
-		t.Fatalf("empty+defaultMerge must HOLD without merge: %q merge=%v empty=%v", sig, merge, empty)
+		t.Fatalf("empty+!defaultMerge must HOLD: %q merge=%v empty=%v", sig, merge, empty)
 	}
 	sig, merge, empty = EffectiveMerge(SignalContinue, false)
 	if sig != SignalContinue || !merge || empty {

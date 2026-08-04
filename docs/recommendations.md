@@ -1,115 +1,45 @@
 # Recommendations
 
-Operating and evolving swarm_alright. These are **operator guidance**, not host-encoded agent laws.
+Operator guidance for swarm_alright. **Source of truth:** `go-swarm/`.
 
-**Source of truth:** Go host in `go-swarm/`. TypeScript under `legacy/` is archive only.
-
-## Ranked next bets (upside / downside)
-
-| Rank | Bet | Upside | Downside | Status |
-| --- | --- | --- | --- | --- |
-| 1 | Light mission gates + DONE needs green | Closed-loop delivery | Gate gaming; flaky cmds | **Implemented** (`gates.json`, verify, waive_gates) |
-| 2 | Budgets (`max-cycles` / `max-minutes`) | Cost/time bounds | Early stop mid-value | **Implemented** |
-| 3 | Soft HANDOFF structure hints | Fewer empty ships | Noise if models ignore | **Implemented** (log only) |
-| 4 | Eval goldens (metrics fixtures) | CI proof of trajectory sensors | Synthetic only | **Implemented** (`fixtures/eval` + TestEvalGoldens) |
-| 5 | Interrupt-only lead wake | Token savings | Weaker supervision | Deferred |
-| 6 | Typed HANDOFF hard fail | Structure | Ceremony / invalid YAML thrash | Deferred (soft only) |
-| 7 | Multi-backend turn API | Portability | Platform sink | Deferred |
-| 8 | Multi-worker leases | Parallelism | Merge hell | Deferred (forced N=1) |
-| 9 | Hosted / GH Action product | Distribution | Support + liability | Deferred |
-
-**Default operator setup for real missions:** set `verify` or `.swarm/gates.json`, pass `--max-minutes` or `--max-cycles`, use a stronger `--system-model`.
-
-## Product stance (keep)
+## Product stance
 
 | Do | Don’t |
 | --- | --- |
-| Let the **system lead** take as long as it needs to review worker thinking, tools, and real code | Cap system turns or “optimize away” multi-lens review |
-| Keep **host dumb**: sensors, git, dumps, baseline accept | Encode craftsmanship slogans or behavior trees in the host |
-| **Project root only** — no nested worktrees | Creating `.swarm/worktrees` clones (waste + confusion) |
-| Give the lead a **workable materials surface** (MATERIALS, sessions/, ships, MEMORY, BUS) | Hide history on session rotate |
-| Prefer **HANDOFF.md** as the engineer contract | Dual-audience chat ceremony every turn |
-| **Default merge** after review | Force CONTINUE tokens for healthy loops |
-| **Underclaim** in docs vs code | Advertise stall/ACTIVE WATCH/digests without code paths |
+| Let the lead ship work with HANDOFF + git | Host ceremony that blocks cycles without external truth |
+| Use **optional** verify/gates for real projects | Invent gates when the repo has none |
+| Prefer digests/SITREP on disk | Stuff lead chat with every tool event |
+| Set budgets on long detach runs | Run forever without a wall clock |
 
-## Models
-
-1. **Principal / executor split** — keep system stronger than worker when the account allows it. If pro is missing, set `--system-model` explicitly.
-2. **Same model for both** works for smoke tests; for real missions, different models improve second-opinion quality.
-3. Re-check `swarm models` when defaults age; update `DefaultModels` in `go-swarm/config.go`.
-
-## Project config (`.swarm/config.json`)
+## High value setup
 
 ```json
+// <project>/.swarm/config.json
 {
-  "verify": "<cheap focused check>",
-  "defaultMerge": true,
-  "metrics": true,
-  "singleFlight": true
+  "verify": "npm test",
+  "singleFlight": true,
+  "metrics": true
 }
 ```
 
-| Recommendation | Why |
+```powershell
+./swarm.exe run C:\proj --directive "…" --max-minutes 90 --system-model <stronger>
+# or omit directive → PROJECT_SCAN + lead sets mission from docs/code
+```
+
+## Keep vs skip
+
+| Feature | Keep? |
 | --- | --- |
-| Set **`verify`** to a *fast* project check | Surfaces real failures in MEMORY without full CI per cycle |
-| Leave **`defaultMerge: true`** | Matches human “looks good → integrate” |
-| Keep **`metrics: true`** | Offline `swarm scorecard` without re-reading events.log |
+| Salvage / stall / STALE | Yes |
+| SITREP + disk digests | Yes |
+| PROJECT_SCAN (no directive) | Yes |
+| Optional gates + verify | Yes if project has real checks |
+| Budgets | Yes for detach |
+| VERDICT / HOST lines | Optional clarity |
+| Default CONTINUE without VERDICT | Yes (unblocks work) |
+| Forced HOLD for missing VERDICT / draft MISSION | **Removed** — low value friction |
 
-## Running well
+## Models
 
-1. **Offline gate**: `cd go-swarm && make check` (or `npm run check` from repo root).
-2. **First live smoke**: `--max-cycles 1` (or 2) with a tiny directive before multi-hour detach.
-3. **Detach long runs**: `swarm run … --detach` then `swarm watch` / `swarm tui`.
-4. **Restart same id**: `swarm restart` reuses run folder — don’t start a new run to “continue.”
-5. **When stuck**: `swarm doctor`, `swarm scorecard <id>`, open `MATERIALS.md` + `BUS.md` (`work_health`) + latest `sessions/` dump.
-6. **Workers are always 1** until a path-ownership model exists.
-7. **Model 404**: pass `--system-model` / `--worker-model` explicitly.
-
-## Reading a run
-
-1. `MATERIALS.md` — map  
-2. `BUS.md` — `work_health` / recent events (not `host_tick` alone)  
-3. `WORKER_SESSION.md` or `sessions/worker-*` — thinking / tools  
-4. `MEMORY.md` + `ship.log` — git/verify  
-5. Project root / `git log` — code  
-6. `HANDOFF_HISTORY.md` + `DIALOGUE.md` — multi-cycle intent  
-7. `metrics.jsonl` + `swarm scorecard` — trajectory  
-
-## Implemented in Go host (current)
-
-| Item | Notes |
-| --- | --- |
-| Dirty salvage | Cycle start, SIGINT, shutdown, before exception escalate, after system turn |
-| Worker rotate | Probe growth ≥120 messages → session.fork |
-| System rotate | Every 8 cycles |
-| SystemWatch digests | Every ~3m **when pending events**; body capped |
-| ACTIVE WATCH | On alert/STALE with 8m cooldown; `HOST: STOP` aborts worker only |
-| BUS work_health | OK / QUIET / STALE / UNKNOWN; STALE ≥10m quiet while busy |
-| Busy-aware stall | 20m bus quiet; soft re-prompt then rotate; clear stale running-tool flags |
-| External Aborted | Soft re-prompt same session; watch abort is terminal |
-| Empty ship | SITREP note next cycle (lead rewrites HANDOFF); no forced same-cycle thrash |
-| Missing VERDICT | HOLD — no worker until explicit CONTINUE |
-| DONE gate | empty_streak ≥2 without MISSION_COMPLETE checklist |
-| Ambition ratchet | **Removed** — lead DONE/STOP final |
-| VERDICT.json / PHASES.jsonl | Structured control + phase log |
-| SITREP.md | Primary capped host surface |
-| Digests | Disk-only DIGEST.md; chat on STALE/alert only |
-| Event → watch fan-in | Full SSE → observe + BUS.jsonl |
-| Workers | Forced to 1 |
-
-## Design guardrails when changing code
-
-1. **Lead access first** — if you remove a log, the system must still reconstruct worker work another way.  
-2. **Subtraction over rules** — prefer deleting ceremony; don’t add soft “think harder” host trees.  
-3. **Host stays non-judgmental** — sensors and actuators only.  
-4. **Modules stay focused** — prefer new files over growing `run.go` forever.  
-5. **Honest docs** — panel/README must match `constants.go` and real code paths.  
-
-## Avoid unless needed
-
-| Item | Why avoid |
-| --- | --- |
-| Third auditor / team-chat board | System **is** the lead |
-| Host “quality trees” / forced REVIEW sections | Weakens informed judgment |
-| Dual maintenance of `legacy/` TS | Archive only |
-| Shipping N workers on one root without ownership | File races |
+Stronger system than worker when the account allows it. Same model is fine for smokes.

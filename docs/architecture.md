@@ -1,93 +1,56 @@
 # Architecture
 
-Minimal **system ↔ worker** loop. No team chat, no third agent.
-**Root mode:** both agents edit the **project folder** — no nested git worktrees.
+**System (lead) ↔ worker** on the **project root**. Host owns git, OpenCode, sensors.
 
-**Primary:** Go binary under `go-swarm/`. TypeScript under `legacy/` is archive-only.
+Primary code: `go-swarm/`. `legacy/` is archive only.
 
-## Pattern
+## Loop
 
 ```
-directive OR PROJECT_SCAN → MISSION.md
-       │
-       ▼
-   ┌────────┐  SITREP, PROJECT_SCAN, dumps, git, GATES     ┌────────┐
-   │ SYSTEM │  writes HANDOFF + VERDICT.json                │ WORKER │
-   │ (lead) │ ─────────────────────────────────────────────►│        │
-   └────────┘  host: commit, baseline, gates                 └────────┘
+MISSION (directive or inferred from PROJECT_SCAN)
+  → system reviews SITREP / tree → HANDOFF.md
+  → worker implements
+  → host commits, optional gates/verify, baseline on CONTINUE/DONE
+  → repeat until DONE/STOP or budget
 ```
 
-| Role | Job |
+## Host does (high value)
+
+| Sensor / actuator | Why it exists |
 | --- | --- |
-| **System** | Lead: mission, HANDOFF, VERDICT |
-| **Worker** | Implement HANDOFF in project root |
-| **Host** | Sensors, git, budgets, gates, SystemWatch |
+| Commit + salvage | Work is not lost on crash/stop |
+| Stall / STALE bus | Detect hangs vs healthy long tools |
+| SITREP / BUS / DIGEST on disk | Facts without stuffing lead chat |
+| PROJECT_SCAN | No-directive runs see project intent |
+| Optional gates / `verify` | DONE needs real green checks when configured |
+| Budgets | `--max-cycles` / `--max-minutes` |
+| Session rotate | Context size survival |
 
-## Cycle (current)
+## Host does **not** (by design)
 
-```
-every cycle:
-  1. Budget check (max-cycles / max-minutes)
-  2. Dirty salvage
-  3. System session rotate (every 8 cycles)
-  4. Worker probe + rotate if growth ≥ 120 msgs
-  5. SITREP + MATERIALS + BUS (work_health)
-  6. SYSTEM turn → HANDOFF + VERDICT
-  7. Sensors: empty-ship DONE gate; mission gates on DONE
-  8. HOLD if missing VERDICT (no worker)
-  9. STOP/DONE → stop (DONE needs green gates unless waive_gates)
- 10. WORKER turn + SystemWatch (DIGEST.md disk; ACTIVE WATCH on STALE/alert)
- 11. Host commit + run mission gates → GATES_LAST
- 12. Baseline only on CONTINUE/DONE/REPASS
- 13. Empty ship → SITREP note next cycle (no same-cycle thrash)
- 14. Metrics / session archives
-```
+- Force HOLD because VERDICT.json is missing (default **CONTINUE**)
+- Block the worker because MISSION is still a draft (log only)
+- Ambition ratchet / “think bigger” overrides
+- Multi-worker on one root without ownership
 
-## Control plane
+## Control
 
-| Artifact | Role |
+- Optional: `HOST: CONTINUE|DONE|STOP` or `VERDICT.json`
+- Empty signal → **CONTINUE** when `defaultMerge` (default true)
+- Prose is not a control signal
+- Explicit HOLD still skips the worker
+
+## Optional gates
+
+`.swarm/gates.json` or `verify` in config. After ships host runs them → `GATES_LAST.md`.
+**DONE** blocked while red unless `waive_gates: true`. No gates configured → no gate block.
+
+## Packages
+
+| Path | Role |
 | --- | --- |
-| **VERDICT.json** | signal, mission_complete, quality, waive_gates |
-| **HOST: line** | Explicit fallback |
-| **PHASES.jsonl** | Host phase log |
-| **SITREP.md** | Capped host sensors |
-| **PROJECT_SCAN.md** | No-directive inventory |
-| **GATES.json / .swarm/gates.json** | Machine-checkable success |
-| **GATES_LAST.md** | Last gate results |
-| **DIGEST.md** | Worker bus on disk |
-
-Missing VERDICT → **HOLD**. Prose is not a signal. No ambition ratchet.
-
-## Mission gates (light)
-
-```json
-// <project>/.swarm/gates.json
-{
-  "gates": [
-    {"name": "unit", "type": "cmd", "run": "go test ./...", "timeout_sec": 180},
-    {"name": "health", "type": "path_exists", "path": "src/health.ts"}
-  ]
-}
-```
-
-`config.verify` is also a cmd gate. Host runs gates after ships; **DONE blocked while red** unless `waive_gates: true`.
-
-## Budgets
-
-- `--max-cycles N`
-- `--max-minutes N`
-
-## SystemWatch
-
-- DIGEST.md only (not lead chat)
-- ACTIVE WATCH on STALE/alert; HOST: STOP aborts worker only
-
-## Package layout
-
-| Area | Path |
-| --- | --- |
-| Cycle / turns | `run.go`, `run_turn.go` |
-| Control pure logic | `internal/runcontrol` |
-| Gates / budgets | `gates.go` |
-| Scan / sitrep | `project_scan.go`, `sitrep.go` |
-| Bus | `eventbus.go`, `bus_surface.go` |
+| `run.go` / `run_turn.go` | Cycle + turns |
+| `internal/runcontrol` | Signals / phases |
+| `gates.go` | Optional machine checks |
+| `project_scan.go` / `sitrep.go` | Host inventory |
+| `eventbus.go` / `bus_surface.go` | OpenCode events |

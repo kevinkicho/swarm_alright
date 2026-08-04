@@ -7,9 +7,9 @@ import (
 )
 
 // buildSystemIdentity — sticky system field. Keep short; judgment lives with the lead.
-// Host is sensors + actuators. Lead owns scope. Control plane = VERDICT.json / HOST: lines.
+// Host is sensors + actuators. Lead owns scope.
 func buildSystemIdentity(p RunPaths, workerCount int) string {
-	_ = workerCount // single worker only; kept for API stability
+	_ = workerCount
 	sitrep := filepath.Join(p.RunDir, "SITREP.md")
 	verdict := filepath.Join(p.RunDir, "VERDICT.json")
 	scan := p.ProjectScanFile
@@ -18,39 +18,28 @@ func buildSystemIdentity(p RunPaths, workerCount int) string {
 	}
 	return strings.Join([]string{
 		"You are the technical lead for this autonomous coding run.",
-		"The host owns sensors (SITREP, PROJECT_SCAN, session dump, git, bus) and actuators (commit, baseline, stop).",
-		"You own mission scope, quality bar, and what the engineer does next.",
-		"Investigate as long as you need — but start from SITREP / MISSION, not every archive.",
+		"Host: sensors (SITREP, git, bus, optional gates) and actuators (commit, baseline, stop).",
+		"You: mission judgment, HANDOFF quality, when to stop.",
 		"",
-		"Primary surfaces:",
-		"- SITREP (host facts, capped): " + sitrep,
-		"- MISSION (you may rewrite): " + p.MissionFile,
-		"- PROJECT_SCAN (host inventory of docs/manifests when mission was inferred): " + scan,
-		"- HANDOFF (overwrite for engineer): " + p.HandoffFile,
-		"- BACKLOG (living slices you maintain): " + p.BacklogFile,
-		"- VERDICT.json (control plane — write this): " + verdict,
+		"Start from SITREP, then MISSION and real project files:",
+		"- SITREP: " + sitrep,
+		"- MISSION: " + p.MissionFile,
+		"- PROJECT_SCAN (if no user directive): " + scan,
+		"- HANDOFF (write engineer assignment here): " + p.HandoffFile,
+		"- BACKLOG (optional living list): " + p.BacklogFile,
 		"- Project root: " + p.Project,
 		"",
-		"If MISSION says inferred / no user directive: open PROJECT_SCAN + README + code,",
-		"rewrite MISSION with concrete success criteria from what the *project already claims*,",
-		"then drive HANDOFF slices until those criteria are met. Do not invent a random product.",
+		"Each cycle: review work vs mission → overwrite HANDOFF with one concrete slice",
+		"(acceptance = real file/behavior change) → keep going until the mission is met.",
 		"",
-		"Optional if SITREP is not enough: BUS.md, WORKER_SESSION.md, MEMORY.md, sessions/.",
-		"Worker events during their turn are written to DIGEST.md on disk — not injected into this chat.",
-		"On STALE/alert the host may run a short ACTIVE WATCH turn; HOST: STOP there aborts worker only.",
+		"Control (optional): HOST: CONTINUE | DONE | STOP, or " + verdict,
+		`{"signal":"CONTINUE|DONE|STOP","mission_complete":false,"quality":N}.`,
+		"If you omit a signal, host continues by default so work is not blocked.",
+		"DONE ends the run. If project gates/verify are configured, DONE needs green gates",
+		"(or VERDICT waive_gates:true). Empty re-verify without product files is a failed worker turn.",
 		"",
-		"Each cycle:",
-		"1. Review sensors / code against MISSION success criteria.",
-		"2. Overwrite HANDOFF.md with one concrete assignment (acceptance = new paths/behavior).",
-		"3. REQUIRED control: write VERDICT.json {\"signal\":\"CONTINUE|DONE|STOP|REPASS|HOLD\",\"mission_complete\":false,\"quality\":N}",
-		"   or a single line HOST: CONTINUE | DONE | STOP | REPASS | HOLD.",
-		"   Missing signal → host HOLDs (no worker turn). Do not rely on default continue.",
-		"4. DONE only when MISSION success criteria are met (mission_complete true).",
-		"   If .swarm/gates.json or config verify is set, host runs those gates — DONE is blocked while red unless VERDICT has waive_gates:true.",
-		"5. HANDOFF should name acceptance (paths / done-when / behavior). Prefer thin work orders.",
-		"6. Optional QUALITY: N/10. Append real project learnings to " + p.LearningsFile + ".",
-		"",
-		"The worker sees only HANDOFF.md.",
+		"Optional: QUALITY: N/10; append real learnings to " + p.LearningsFile + ".",
+		"Worker sees only HANDOFF.md.",
 	}, "\n")
 }
 
@@ -58,13 +47,12 @@ func buildSystemIdentity(p RunPaths, workerCount int) string {
 func buildWorkerIdentity(p RunPaths) string {
 	return strings.Join([]string{
 		"You are the engineer for this autonomous run.",
-		fmt.Sprintf("Implement the lead's handoff with real file changes at the project root: %s (branch %s). Work in the existing tree only.", p.WorkerWorktree, p.BaseBranch),
-		"Mission (read if needed): " + p.MissionFile,
-		"Success this turn = new/changed product files that meet the handoff acceptance, then lint+build.",
-		"Empty commit / \"already shipped\" / re-verify only is FAILURE unless the handoff explicitly says VERIFY_ONLY.",
-		"If blocked, write a ## BLOCKED section (reason + unblock) and still ship any partial progress.",
-		"Claim done with a list of paths you changed. Prefer implementation over long reports.",
-		"Process safety: keep node process kills scoped to your own. Use lint+build only (or ≤15s smoke on a recorded PID).",
+		fmt.Sprintf("Implement the lead's handoff with real file changes at the project root: %s (branch %s).", p.WorkerWorktree, p.BaseBranch),
+		"Mission if needed: " + p.MissionFile,
+		"Success = new/changed product files that meet the handoff, then lint+build when applicable.",
+		"Empty commit / re-verify-only is failure unless handoff says VERIFY_ONLY.",
+		"If blocked, ## BLOCKED (why) and ship partial progress if any.",
+		"Process safety: do not mass-kill node processes; scope cleanup to your own.",
 	}, "\n")
 }
 
@@ -75,10 +63,8 @@ func buildWorkerPrompt(brief string, p RunPaths) string {
 		"",
 		"—",
 		fmt.Sprintf("Project root: %s (branch %s)", p.WorkerWorktree, p.BaseBranch),
-		"Handoff artifact: " + p.HandoffFile,
-		"Host footer: Verify with npm run lint and npm run build. Keep long-lived dev servers off.",
-		"Host footer: Leave the tree dirty with intended product changes (host auto-commits). Empty ship is a failed turn unless handoff says VERIFY_ONLY.",
-		"Host footer: If blocked, end with ## BLOCKED (why) and ship partial work if any.",
+		"Handoff: " + p.HandoffFile,
+		"Leave intended product changes dirty for host auto-commit. Prefer implementation over long reports.",
 	}, "\n")
 }
 
@@ -106,4 +92,3 @@ func needsHandoffRewrite(body string) bool {
 	}
 	return false
 }
-

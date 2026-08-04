@@ -202,18 +202,20 @@ func GateDone(signal Signal, emptyStreak int, missionComplete bool, replyText st
 	return signal, false, ""
 }
 
-// EffectiveMerge: empty signal never invents CONTINUE — always HOLD.
-// defaultMerge only affects whether CONTINUE/DONE/REPASS advance baseline (caller).
-// Returns (signal, shouldMerge, wasEmpty).
+// EffectiveMerge maps empty signal using defaultMerge.
+// Value-focused default: missing VERDICT/HOST line → CONTINUE so work proceeds
+// (explicit STOP/HOLD/DONE still respected). Returns (signal, shouldMerge, wasEmpty).
 func EffectiveMerge(signal Signal, defaultMerge bool) (Signal, bool, bool) {
-	_ = defaultMerge // reserved: baseline merge still uses explicit signals only
 	if signal == SignalStop || signal == SignalHold {
 		return signal, false, false
 	}
 	if signal == SignalDone || signal == SignalContinue || signal == SignalRepass {
 		return signal, true, false
 	}
-	// Missing control plane → HOLD (lead must write VERDICT.json)
+	// Empty control line: keep the loop moving when defaultMerge (project default true).
+	if defaultMerge {
+		return SignalContinue, true, true
+	}
 	return SignalHold, false, true
 }
 

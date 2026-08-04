@@ -69,11 +69,9 @@ func writeSitrep(in SitrepInput) {
 	}
 
 	b.WriteString("\n## Your job this turn\n")
-	b.WriteString("1. Read this SITREP (and MISSION).\n")
-	b.WriteString("2. If mission is inferred (no user directive): open PROJECT_SCAN + rewrite MISSION with concrete success criteria.\n")
-	b.WriteString("3. Optionally open WORKER dump / BUS / git only if sensors are insufficient.\n")
-	b.WriteString("4. Overwrite HANDOFF.md with the next engineer assignment.\n")
-	b.WriteString("5. Write control signal to VERDICT.json (preferred) or a `HOST: CONTINUE|DONE|STOP` line.\n")
+	b.WriteString("1. Read SITREP + MISSION (PROJECT_SCAN if no user directive).\n")
+	b.WriteString("2. Overwrite HANDOFF.md with the next real ship.\n")
+	b.WriteString("3. Optional: HOST: CONTINUE|DONE|STOP or VERDICT.json (omit → host continues).\n")
 
 	b.WriteString("\n## Paths\n")
 	fmt.Fprintf(&b, "- mission: %s\n", p.MissionFile)

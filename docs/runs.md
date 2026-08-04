@@ -41,11 +41,10 @@ If `swarm run <folder>` is started **without** `--directive`:
 
 1. Host writes `PROJECT_SCAN.md` — capped inventory of README, manifests, docs, top-level tree.
 2. Host seeds `MISSION.md` as **inferred-mission** (instructions for the lead, not a product goal yet).
-3. Cycle 1 system prompt forces: open PROJECT_SCAN + project docs/code → rewrite MISSION with
-   observable success criteria → BACKLOG → first HANDOFF → VERDICT CONTINUE.
-4. Later cycles judge worker output against that rewritten MISSION (not against “make something”).
+3. Cycle 1 prompts the lead to set MISSION from PROJECT_SCAN + docs/code and write a first HANDOFF.
+4. Work proceeds even without a formal VERDICT line (default CONTINUE). Later cycles judge against MISSION.
 
-This keeps the host as sensors; the lead still owns judgment, but is grounded in the repo’s own intent.
+Host stays sensors/actuators; lead owns judgment, grounded in the repo’s own intent.
 
 ## Stopping
 
@@ -55,11 +54,9 @@ This keeps the host as sensors; the lead still owns judgment, but is grounded in
 - **Hard:** closing the terminal of a foreground run, or killing the process.
   The record stays `running` (displayed as `crashed`), and the run's opencode
   server may be orphaned until the next `swarm clean`.
-- **System-initiated:** lead writes `VERDICT.json` or emits `HOST: DONE` / `HOST: STOP`.
-  Host honors DONE/STOP immediately (no ambition intercept). DONE may be blocked only
-  when empty-ship streak is high without `mission_complete`.
-- **Watch STOP:** during ACTIVE WATCH, lead `HOST: STOP` aborts the stuck
-  **worker turn only** — the mission continues.
+- **System-initiated:** `HOST: DONE` / `STOP` or VERDICT — host honors immediately.
+  DONE may be blocked if optional gates are red or empty-ship streak is high without mission_complete.
+- **Watch STOP:** ACTIVE WATCH only aborts the worker turn; mission continues.
 
 ## Background (detached) runs
 
