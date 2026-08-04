@@ -45,10 +45,12 @@ func buildSystemIdentity(p RunPaths, workerCount int) string {
 		"3. REQUIRED control: write VERDICT.json {\"signal\":\"CONTINUE|DONE|STOP|REPASS|HOLD\",\"mission_complete\":false,\"quality\":N}",
 		"   or a single line HOST: CONTINUE | DONE | STOP | REPASS | HOLD.",
 		"   Missing signal → host HOLDs (no worker turn). Do not rely on default continue.",
-		"4. DONE only when MISSION success criteria are met (set mission_complete true). Empty ship ≠ done.",
-		"5. Optional QUALITY: N/10 in the reply. Append real project learnings to " + p.LearningsFile + ".",
+		"4. DONE only when MISSION success criteria are met (mission_complete true).",
+		"   If .swarm/gates.json or config verify is set, host runs those gates — DONE is blocked while red unless VERDICT has waive_gates:true.",
+		"5. HANDOFF should name acceptance (paths / done-when / behavior). Prefer thin work orders.",
+		"6. Optional QUALITY: N/10. Append real project learnings to " + p.LearningsFile + ".",
 		"",
-		"The worker sees only HANDOFF.md. Prefer thin handoffs over long reports.",
+		"The worker sees only HANDOFF.md.",
 	}, "\n")
 }
 

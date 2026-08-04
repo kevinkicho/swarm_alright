@@ -17,13 +17,14 @@ import (
 
 // RunOptions configures a run
 type RunOptions struct {
-	Project    string
-	Directive  string
-	Models     Models
-	MaxCycles  int
-	APIKey     string
-	ResumeFrom string
-	Workers    int // always forced to 1 (single worker on shared root)
+	Project     string
+	Directive   string
+	Models      Models
+	MaxCycles   int
+	MaxMinutes  int // wall-clock budget; 0 = unlimited
+	APIKey      string
+	ResumeFrom  string
+	Workers     int // always forced to 1 (single worker on shared root)
 }
 
 // Run is the main run state machine
@@ -52,6 +53,9 @@ type Run struct {
 	workerRotateMsgBase int
 	lastSyncOk          bool
 	lastSyncDetail      string
+	lastGatesOK         bool
+	lastGatesDetail     string
+	startedAt           time.Time
 	hbTimer             *time.Ticker
 	healthTimer         *time.Ticker
 	systemWatch         *SystemWatch
@@ -85,12 +89,27 @@ func NewRun(opts RunOptions) *Run {
 	runDir := filepath.Join(project, ".swarm", "runs", id)
 	paths := bindPaths(runDir, project)
 	return &Run{
-		opts:  opts,
-		id:    id,
-		paths: paths,
-		cycle: 0,
-		phase: PhaseBoot,
+		opts:      opts,
+		id:        id,
+		paths:     paths,
+		cycle:     0,
+		phase:     PhaseBoot,
+		startedAt: time.Now(),
+		lastGatesOK: true, // no gates yet = not blocking
 	}
+}
+
+// budgetExceeded reports wall-clock / cycle budget hits (host sensor).
+func (r *Run) budgetExceeded() (bool, string) {
+	if r.opts.MaxCycles > 0 && r.cycle > r.opts.MaxCycles {
+		return true, fmt.Sprintf("max-cycles %d reached", r.opts.MaxCycles)
+	}
+	if r.opts.MaxMinutes > 0 && !r.startedAt.IsZero() {
+		if time.Since(r.startedAt) >= time.Duration(r.opts.MaxMinutes)*time.Minute {
+			return true, fmt.Sprintf("max-minutes %d reached", r.opts.MaxMinutes)
+		}
+	}
+	return false, ""
 }
 
 func (r *Run) workerCount() int { return 1 }
@@ -311,8 +330,12 @@ func (r *Run) Start() error {
 		r.log(fmt.Sprintf("note: system and worker share model %s — prefer a stronger --system-model for review quality", r.opts.Models.System))
 	}
 	if r.opts.MaxCycles > 0 {
-		r.log(fmt.Sprintf("(test mode: will stop after %d cycle(s))", r.opts.MaxCycles))
+		r.log(fmt.Sprintf("budget: will stop after %d cycle(s)", r.opts.MaxCycles))
 	}
+	if r.opts.MaxMinutes > 0 {
+		r.log(fmt.Sprintf("budget: will stop after %d minute(s) wall clock", r.opts.MaxMinutes))
+	}
+	r.startedAt = time.Now()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -326,8 +349,9 @@ func (r *Run) Start() error {
 	failures := 0
 	for !r.stopping.Load() && !stopFileExists(r.paths.RunDir) {
 		r.cycle++
-		if r.opts.MaxCycles > 0 && r.cycle > r.opts.MaxCycles {
-			r.log(fmt.Sprintf("reached max cycles (%d)", r.opts.MaxCycles))
+		if hit, why := r.budgetExceeded(); hit {
+			r.log("budget stop: " + why)
+			r.transition(PhaseStopping, why)
 			break
 		}
 		r.rec.Cycle = r.cycle
@@ -546,10 +570,32 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 			signal = gated
 			verdict.Signal = ""
 			verdict.Note = gatedWhy
-			// Sensor only — one inject so lead sees the gate (not ambition policy)
 			r.sdk.sessionInjectContext(system.SessionID,
 				"[host sensor] "+gatedWhy+"\nWrite next HANDOFF. Set VERDICT signal CONTINUE.",
 				&modelRef{ProviderID: ProviderID, ModelID: bareModel(system.Model)})
+		}
+	}
+	// Mission gates: DONE blocked when gates red unless waive_gates
+	if signal == SignalDone {
+		gates, src := loadMissionGates(r.opts.Project, r.paths.RunDir, r.projectCfg.Verify)
+		if len(gates) > 0 {
+			allOK, results := runMissionGates(r.opts.Project, gates)
+			writeGateReport(r.paths.RunDir, r.cycle, allOK, results, src)
+			r.lastGatesOK = allOK
+			r.lastGatesDetail = fmt.Sprintf("gates all_ok=%v count=%d", allOK, len(results))
+			r.log("  [host:gates] " + r.lastGatesDetail + " source=" + src)
+			if !allOK && !verdict.WaiveGates {
+				why := "DONE blocked: mission gates red — see GATES_LAST.md (or set waive_gates:true in VERDICT)"
+				r.log("  [host] " + why)
+				signal = ""
+				verdict.Signal = ""
+				verdict.Note = why
+				r.sdk.sessionInjectContext(system.SessionID,
+					"[host sensor] "+why+"\nFix gates or continue shipping. Open GATES_LAST.md.",
+					&modelRef{ProviderID: ProviderID, ModelID: bareModel(system.Model)})
+			} else if !allOK && verdict.WaiveGates {
+				r.log("  [host] DONE with waive_gates=true despite red gates (lead override logged)")
+			}
 		}
 	}
 	verdict.Signal = string(signal)
@@ -560,7 +606,8 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	if qualityScore > 0 {
 		r.log(fmt.Sprintf("  [host] quality score: %d/10 (source=%s)", qualityScore, verdict.Source))
 	}
-	r.log(fmt.Sprintf("  [host:control] signal=%s source=%s mission_complete=%v", signal, verdict.Source, verdict.MissionComplete))
+	r.log(fmt.Sprintf("  [host:control] signal=%s source=%s mission_complete=%v waive_gates=%v",
+		signal, verdict.Source, verdict.MissionComplete, verdict.WaiveGates))
 
 	if r.cycle > 1 {
 		r.lastSystemProbe = captureSessionProbe(r.sdk, "system", system.SessionID, system.Directory, r.paths.SystemSessionFile, r.id, r.cycle)
@@ -579,6 +626,9 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	handoffChars := len(handoff)
 	if handoffChars > handoffCharsWarn {
 		r.log(fmt.Sprintf("  [host] handoff is %d chars (>%d) - prefer thinner HANDOFF next cycle", handoffChars, handoffCharsWarn))
+	}
+	for _, h := range handoffStructureHints(handoff) {
+		r.log("  [host:handoff] " + h)
 	}
 
 	// Empty / invalid control → HOLD (never invent CONTINUE via defaultMerge).
@@ -731,7 +781,22 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	r.log(fmt.Sprintf("  [host:git] commit: %v %s — %s [metric] commits_ahead=%d", committed, sha[:min(7, len(sha))], detail, ahead))
 	appendShipLog(r.paths.RunDir, sha, committed, false)
 
-	if r.projectCfg.Verify != "" && committed {
+	// Mission gates after ship (verify is included as a gate when configured)
+	gates, gateSrc := loadMissionGates(r.opts.Project, r.paths.RunDir, r.projectCfg.Verify)
+	if len(gates) > 0 && (committed || r.cycle > 0) {
+		allOK, results := runMissionGates(r.opts.Project, gates)
+		writeGateReport(r.paths.RunDir, r.cycle, allOK, results, gateSrc)
+		r.lastGatesOK = allOK
+		r.lastGatesDetail = fmt.Sprintf("all_ok=%v n=%d", allOK, len(results))
+		r.log(fmt.Sprintf("  [host:gates] %s source=%s", r.lastGatesDetail, gateSrc))
+		for _, gr := range results {
+			mark := "PASS"
+			if !gr.OK {
+				mark = "FAIL"
+			}
+			r.log(fmt.Sprintf("  [host:gates] %s %s — %s", mark, gr.Name, truncate(gr.Detail, 120)))
+		}
+	} else if r.projectCfg.Verify != "" && committed {
 		r.runVerify()
 	}
 
@@ -762,6 +827,12 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	emptyNote := ""
 	if r.emptyStreak >= 1 && !committed {
 		emptyNote = fmt.Sprintf("EMPTY_SHIP streak=%d — next cycle write a NEW HANDOFF slice (host will not auto re-scope mid-cycle).", r.emptyStreak)
+	}
+	if r.lastGatesDetail != "" {
+		if emptyNote != "" {
+			emptyNote += "\n"
+		}
+		emptyNote += "gates: " + r.lastGatesDetail + " (see GATES_LAST.md)"
 	}
 	writeSitrep(SitrepInput{
 		Cycle: r.cycle, Phase: "idle", RunID: r.id, Project: r.opts.Project,

@@ -35,7 +35,8 @@ run options:
   --worker-model M     (default %s)
   --model M            Same model for system and worker
   --api-key K          Or OLLAMA_API_KEY / .env
-  --max-cycles N       Stop after N cycles
+  --max-cycles N       Stop after N cycles (budget)
+  --max-minutes N      Stop after N minutes wall clock (budget)
   --detach             Background (survives terminal close)
 `
 
@@ -76,7 +77,7 @@ func Execute() error {
 
 func cmdRun() *cobra.Command {
 	var directive, systemModel, workerModel, model, apiKey string
-	var maxCycles, workers int
+	var maxCycles, maxMinutes, workers int
 	var detach, continueFlag bool
 
 	c := &cobra.Command{
@@ -104,14 +105,12 @@ func cmdRun() *cobra.Command {
 				workerModel = DefaultModels.Worker
 			}
 			if workers != 1 {
-				// Shared root has no path ownership — only single worker is supported.
 				if workers > 1 {
 					fmt.Fprintln(stdout, warning("--workers >1 is disabled (shared root); using 1"))
 				}
 				workers = 1
 			}
 
-			// --continue: find latest run on this project and resume from it
 			resumeFrom := ""
 			if continueFlag {
 				abs, _ := filepath.Abs(folder)
@@ -127,7 +126,6 @@ func cmdRun() *cobra.Command {
 				if latest != nil {
 					resumeFrom = latest.ID
 					fmt.Fprintf(stdout, "%s from run %s (cycle %d)\n", okMsg("continuing lineage"), latest.ID, latest.Cycle)
-					// Inherit models if not overridden
 					if systemModel == DefaultModels.System {
 						systemModel = latest.Models.System
 					}
@@ -137,19 +135,19 @@ func cmdRun() *cobra.Command {
 				}
 			}
 
-			// Detached mode: spawn self in background
 			if detach {
 				return spawnDetached(folder, directive, systemModel, workerModel, apiKey, maxCycles)
 			}
 
 			run := NewRun(RunOptions{
-				Project:    folder,
-				Directive:  directive,
-				Models:     Models{System: systemModel, Worker: workerModel},
-				MaxCycles:  maxCycles,
-				APIKey:     apiKey,
-				ResumeFrom: resumeFrom,
-				Workers:    workers,
+				Project:     folder,
+				Directive:   directive,
+				Models:      Models{System: systemModel, Worker: workerModel},
+				MaxCycles:   maxCycles,
+				MaxMinutes:  maxMinutes,
+				APIKey:      apiKey,
+				ResumeFrom:  resumeFrom,
+				Workers:     workers,
 			})
 			return run.Start()
 		},
@@ -159,7 +157,8 @@ func cmdRun() *cobra.Command {
 	c.Flags().StringVar(&workerModel, "worker-model", "", "Model for worker agent")
 	c.Flags().StringVar(&model, "model", "", "Same model for both agents")
 	c.Flags().StringVar(&apiKey, "api-key", "", "Ollama Cloud API key")
-	c.Flags().IntVar(&maxCycles, "max-cycles", 0, "Stop after N cycles")
+	c.Flags().IntVar(&maxCycles, "max-cycles", 0, "Stop after N cycles (budget)")
+	c.Flags().IntVar(&maxMinutes, "max-minutes", 0, "Stop after N minutes wall clock (budget)")
 	c.Flags().BoolVar(&detach, "detach", false, "Background mode (survives terminal close)")
 	c.Flags().BoolVar(&continueFlag, "continue", false, "Resume from latest run on this project")
 	c.Flags().IntVar(&workers, "workers", 1, "Worker count (only 1 supported; N>1 forced to 1)")

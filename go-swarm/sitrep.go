@@ -83,6 +83,7 @@ func writeSitrep(in SitrepInput) {
 	fmt.Fprintf(&b, "- handoff (write): %s\n", p.HandoffFile)
 	fmt.Fprintf(&b, "- backlog: %s\n", p.BacklogFile)
 	fmt.Fprintf(&b, "- verdict (write): %s\n", verdictPath(p.RunDir))
+	fmt.Fprintf(&b, "- gates last: %s\n", filepath.Join(p.RunDir, "GATES_LAST.md"))
 	fmt.Fprintf(&b, "- bus (live): %s\n", p.BusFile)
 	fmt.Fprintf(&b, "- worker dump: %s\n", p.WorkerSessionFile)
 	fmt.Fprintf(&b, "- digest (disk, not chat): %s\n", filepath.Join(p.RunDir, "DIGEST.md"))

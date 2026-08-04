@@ -49,13 +49,27 @@ Create `<project>/.swarm/config.json`:
 }
 ```
 
+Optional **mission gates** (preferred for multi-check):
+
+```json
+// <project>/.swarm/gates.json
+{
+  "gates": [
+    {"name": "test", "type": "cmd", "run": "npm test", "timeout_sec": 180},
+    {"name": "entry", "type": "path_exists", "path": "src/index.ts"}
+  ]
+}
+```
+
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `verify` | (none) | Shell command run in project root after auto-commit. Result logged. Fail-soft. |
+| `verify` | (none) | Shell command treated as a **cmd gate** after ships; also used alone if no gates.json |
 | `singleFlight` | `true` | Refuse a second concurrent alive run on the same project |
-| `defaultMerge` | `true` | Legacy name: baseline advances only on explicit CONTINUE/DONE/REPASS. **Missing VERDICT → HOLD** (never invents CONTINUE). |
+| `defaultMerge` | `true` | Legacy name: baseline advances only on explicit CONTINUE/DONE/REPASS. **Missing VERDICT → HOLD** |
 | `metrics` | `true` | Append cycle facts to `metrics.jsonl` for scorecards |
 | `redactDumps` | `true` | Redact common secret shapes in session dumps |
+
+**DONE** with configured gates: host re-runs gates; red → DONE blocked unless VERDICT `"waive_gates": true`.
 
 Editable via `swarm panel` or directly in the file — the run reads config each cycle.
 

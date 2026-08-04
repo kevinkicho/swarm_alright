@@ -48,10 +48,12 @@ type Verdict struct {
 	Signal          string `json:"signal"`
 	Quality         int    `json:"quality,omitempty"`
 	MissionComplete bool   `json:"mission_complete,omitempty"`
-	Note            string `json:"note,omitempty"`
-	Cycle           int    `json:"cycle"`
-	TS              string `json:"ts"`
-	Source          string `json:"source,omitempty"`
+	// WaiveGates: lead explicitly accepts DONE despite red mission gates (logged).
+	WaiveGates bool   `json:"waive_gates,omitempty"`
+	Note       string `json:"note,omitempty"`
+	Cycle      int    `json:"cycle"`
+	TS         string `json:"ts"`
+	Source     string `json:"source,omitempty"`
 }
 
 // DoneGateEmptyStreak matches host sensor threshold.

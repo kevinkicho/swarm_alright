@@ -4,6 +4,22 @@ Operating and evolving swarm_alright. These are **operator guidance**, not host-
 
 **Source of truth:** Go host in `go-swarm/`. TypeScript under `legacy/` is archive only.
 
+## Ranked next bets (upside / downside)
+
+| Rank | Bet | Upside | Downside | Status |
+| --- | --- | --- | --- | --- |
+| 1 | Light mission gates + DONE needs green | Closed-loop delivery | Gate gaming; flaky cmds | **Implemented** (`gates.json`, verify, waive_gates) |
+| 2 | Budgets (`max-cycles` / `max-minutes`) | Cost/time bounds | Early stop mid-value | **Implemented** |
+| 3 | Soft HANDOFF structure hints | Fewer empty ships | Noise if models ignore | **Implemented** (log only) |
+| 4 | Eval golden repos + scoreboard | Product proof | Maintenance $ | Deferred |
+| 5 | Interrupt-only lead wake | Token savings | Weaker supervision | Deferred |
+| 6 | Typed HANDOFF hard fail | Structure | Ceremony / invalid YAML thrash | Deferred (soft only) |
+| 7 | Multi-backend turn API | Portability | Platform sink | Deferred |
+| 8 | Multi-worker leases | Parallelism | Merge hell | Deferred (forced N=1) |
+| 9 | Hosted / GH Action product | Distribution | Support + liability | Deferred |
+
+**Default operator setup for real missions:** set `verify` or `.swarm/gates.json`, pass `--max-minutes` or `--max-cycles`, use a stronger `--system-model`.
+
 ## Product stance (keep)
 
 | Do | Don’t |

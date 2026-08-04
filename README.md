@@ -34,6 +34,11 @@ empty-ship streak is high without `mission_complete` (sensor, not “think bigge
 
 **Primary surface:** host-written **SITREP.md** (capped). Optional deep links in MATERIALS.
 
+**Mission gates (optional):** `.swarm/gates.json` and/or `verify` in config — host runs them after ships.
+**DONE** is blocked while gates are red unless VERDICT sets `"waive_gates": true`.
+
+**Budgets:** `--max-cycles N` and/or `--max-minutes N`.
+
 ### No `--directive`?
 
 The host writes **PROJECT_SCAN.md** (README, package manifests, docs excerpts, tree)
@@ -112,8 +117,10 @@ make check   # vet + test + build
 | Max turn retries | 3 | Aborted soft re-prompt; stall soft then fork |
 | Ambition ratchet | **removed** | Lead DONE/STOP final |
 | DONE gate | ≥2 empty ships without mission_complete | Host sensor only |
+| Mission gates | optional | DONE blocked if red (unless waive_gates) |
 | Digests | DIGEST.md disk | Chat only on STALE/alert |
 | Control | VERDICT.json | Explicit HOST: lines fallback |
+| Budgets | max-cycles / max-minutes | Wall clock + cycles |
 | Workers | **1 only** | Shared root |
 | Single flight | on | `.swarm/config.json` |
 | Default merge | on | `.swarm/config.json` |
