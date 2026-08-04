@@ -1,0 +1,30 @@
+{
+  "description": "Offline scorecard goldens for CI (no OpenCode)",
+  "fixtures": {
+    "metrics-healthy.jsonl": {
+      "min_cycles": 3,
+      "min_commits": 2,
+      "max_empty_streak": 0,
+      "require_flag_substr": ["healthy"]
+    },
+    "metrics-stuck.jsonl": {
+      "min_cycles": 4,
+      "max_commits": 0,
+      "min_empty_streak": 2,
+      "require_flag_substr": ["empty ship", "zero ships"]
+    },
+    "metrics-gates-green.jsonl": {
+      "min_cycles": 3,
+      "min_commits": 2,
+      "min_gates_pass": 2,
+      "max_gates_fail": 0,
+      "require_flag_substr": ["healthy"]
+    },
+    "metrics-gates-red.jsonl": {
+      "min_cycles": 4,
+      "min_gates_fail": 2,
+      "min_holds": 2,
+      "require_flag_substr": ["gates failed", "HOLD"]
+    }
+  }
+}

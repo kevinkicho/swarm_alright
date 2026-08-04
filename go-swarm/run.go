@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -644,6 +645,27 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		r.transition(PhaseHold, "missing VERDICT")
 	}
 
+	// Inferred mission: refuse to run worker while MISSION is still a placeholder.
+	// Cycle 1+ until rewrite — lead must lock success criteria from PROJECT_SCAN first.
+	if shouldRunWorker(signal) {
+		missionBody, _ := os.ReadFile(r.paths.MissionFile)
+		inferredMode := strings.TrimSpace(r.opts.Directive) == "" || missionIsInferredPlaceholder(string(missionBody))
+		if inferredMode && missionIsInferredPlaceholder(string(missionBody)) {
+			why := "HOLD: MISSION.md still placeholder (inferred mode) — rewrite from PROJECT_SCAN + project docs before CONTINUE"
+			r.log("  [host:control] " + why)
+			signal = SignalHold
+			verdict.Signal = string(SignalHold)
+			verdict.Note = why
+			verdict.Source = "host_mission_placeholder"
+			writeVerdict(r.paths.RunDir, verdict)
+			r.lastVerdict = SignalHold
+			r.transition(PhaseHold, "mission placeholder")
+			r.sdk.sessionInjectContext(system.SessionID,
+				"[host sensor] "+why+"\nOpen PROJECT_SCAN.md and rewrite MISSION.md with concrete success criteria, then HANDOFF + VERDICT CONTINUE.",
+				&modelRef{ProviderID: ProviderID, ModelID: bareModel(system.Model)})
+		}
+	}
+
 	// Lead owns terminal signal — host does not intercept DONE (no ambition ratchet).
 	if signal == SignalStop || signal == SignalDone {
 		r.log(fmt.Sprintf("[cycle %d] system said %s — stopping", r.cycle, signal))
@@ -659,16 +681,19 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	if r.stopping.Load() || !shouldRunWorker(signal) {
 		secs := int(time.Since(t0).Seconds())
 		r.log(fmt.Sprintf("[cycle %d] complete in %ds (no worker — %s)", r.cycle, secs, signal))
+		holdNote := ""
+		if signal == SignalHold {
+			holdNote = "HOLD: write VERDICT CONTINUE after locking MISSION (if inferred) and HANDOFF"
+			if verdict.Note != "" {
+				holdNote = verdict.Note
+			}
+		}
 		writeSitrep(SitrepInput{
 			Cycle: r.cycle, Phase: string(signal), RunID: r.id, Project: r.opts.Project,
 			EmptyStreak: r.emptyStreak, Signal: string(signal), Paths: r.paths,
-			Worker: r.lastWorkerProbe, Note: ternary(signal == SignalHold, "HOLD: write VERDICT.json with CONTINUE to run worker next cycle", ""),
+			Worker: r.lastWorkerProbe, Note: holdNote,
 		})
-		appendMetric(r.paths.RunDir, map[string]any{
-			"cycle": r.cycle, "secs": secs, "signal": string(signal),
-			"phase": "system-only", "quality_score": qualityScore, "handoff_chars": handoffChars,
-			"verdict_source": verdict.Source,
-		})
+		appendMetric(r.paths.RunDir, r.metricRow(secs, signal, qualityScore, handoffChars, verdict.Source, false, 0, "system-only"))
 		r.transition(PhaseIdle, "system-only "+string(signal))
 		r.heartbeat("idle")
 		return nil
@@ -845,11 +870,9 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	})
 
 	secs := int(time.Since(t0).Seconds())
-	appendMetric(r.paths.RunDir, map[string]any{
-		"cycle": r.cycle, "secs": secs, "signal": string(signal),
-		"committed": committed, "commits_ahead": ahead, "empty_streak": r.emptyStreak,
-		"phase": "complete", "quality_score": qualityScore, "handoff_chars": handoffChars,
-	})
+	row := r.metricRow(secs, signal, qualityScore, handoffChars, string(r.lastVerdict), committed, ahead, "complete")
+	row["empty_streak"] = r.emptyStreak
+	appendMetric(r.paths.RunDir, row)
 
 	r.transition(PhaseIdle, fmt.Sprintf("cycle complete %ds", secs))
 	r.log(fmt.Sprintf("[cycle %d] complete in %ds", r.cycle, secs))
@@ -857,6 +880,39 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	r.heartbeat("idle")
 	time.Sleep(2 * time.Second)
 	return nil
+}
+
+// metricRow builds a metrics.jsonl object including gate trajectory fields.
+func (r *Run) metricRow(secs int, signal HostSignal, quality, handoffChars int, verdictSource string, committed bool, ahead int, phase string) map[string]any {
+	row := map[string]any{
+		"cycle":          r.cycle,
+		"secs":           secs,
+		"signal":         string(signal),
+		"phase":          phase,
+		"quality_score":  quality,
+		"handoff_chars":  handoffChars,
+		"verdict_source": verdictSource,
+		"committed":      committed,
+		"commits_ahead":  ahead,
+		"gates_ok":       r.lastGatesOK,
+		"gates_detail":   r.lastGatesDetail,
+	}
+	// Parse fail count from last report if present
+	if data, err := os.ReadFile(filepath.Join(r.paths.RunDir, "GATES_LAST.json")); err == nil {
+		var rep GateReport
+		if json.Unmarshal(data, &rep) == nil {
+			row["gates_count"] = rep.Count
+			fails := 0
+			for _, gr := range rep.Results {
+				if !gr.OK {
+					fails++
+				}
+			}
+			row["gates_fail"] = fails
+			row["gates_ok"] = rep.AllOK
+		}
+	}
+	return row
 }
 
 func (r *Run) buildSystemPrompt(hasReviewPack bool) string {

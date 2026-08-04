@@ -16,6 +16,10 @@ type Scorecard struct {
 	EmptyShips     int
 	MaxEmptyStreak int
 	Signals        map[string]int
+	GatesCycles    int // cycles that reported gates
+	GatesPass      int
+	GatesFail      int
+	Holds          int
 	Flags          []string
 }
 
@@ -48,7 +52,6 @@ func scorecardFromMetrics(data []byte) Scorecard {
 		if shipped {
 			sc.CommitsShipped++
 		} else {
-			// Count empty only when we know a ship attempt happened
 			phase, _ := row["phase"].(string)
 			if phase == "" {
 				phase, _ = row["phase_end"].(string)
@@ -68,6 +71,25 @@ func scorecardFromMetrics(data []byte) Scorecard {
 
 		if sig, ok := row["signal"].(string); ok && sig != "" {
 			sc.Signals[sig]++
+			if strings.EqualFold(sig, "HOLD") {
+				sc.Holds++
+			}
+		}
+
+		// Gate trajectory (present when host ran gates)
+		if _, has := row["gates_ok"]; has || row["gates_count"] != nil {
+			sc.GatesCycles++
+			if ok, _ := row["gates_ok"].(bool); ok {
+				sc.GatesPass++
+			} else if row["gates_ok"] != nil {
+				sc.GatesFail++
+			}
+			if f, ok := row["gates_fail"].(float64); ok && f > 0 {
+				// ensure fail counted even if gates_ok missing
+				if sc.GatesFail == 0 && row["gates_ok"] == nil {
+					sc.GatesFail++
+				}
+			}
 		}
 	}
 	sc.Flags = scorecardFlags(sc)
@@ -85,7 +107,13 @@ func scorecardFlags(sc Scorecard) []string {
 	if sc.EmptyShips >= 3 {
 		flags = append(flags, fmt.Sprintf("many empty ships (%d)", sc.EmptyShips))
 	}
-	if sc.Cycles >= 3 && sc.CommitsShipped > 0 && sc.MaxEmptyStreak == 0 {
+	if sc.GatesFail >= 2 {
+		flags = append(flags, fmt.Sprintf("mission gates failed on %d cycle(s)", sc.GatesFail))
+	}
+	if sc.Holds >= 2 {
+		flags = append(flags, fmt.Sprintf("HOLD frequent (%d) — missing VERDICT or placeholder MISSION", sc.Holds))
+	}
+	if sc.Cycles >= 3 && sc.CommitsShipped > 0 && sc.MaxEmptyStreak == 0 && sc.GatesFail == 0 {
 		flags = append(flags, "trajectory looks healthy")
 	}
 	if len(flags) == 0 && sc.Cycles > 0 {
@@ -127,6 +155,12 @@ func runScorecard(runID string) {
 	fmt.Fprintf(stdout, "  commits shipped: %d\n", sc.CommitsShipped)
 	fmt.Fprintf(stdout, "  empty ships: %d\n", sc.EmptyShips)
 	fmt.Fprintf(stdout, "  max empty streak: %d\n", sc.MaxEmptyStreak)
+	if sc.GatesCycles > 0 {
+		fmt.Fprintf(stdout, "  gates: pass=%d fail=%d (cycles with gates=%d)\n", sc.GatesPass, sc.GatesFail, sc.GatesCycles)
+	}
+	if sc.Holds > 0 {
+		fmt.Fprintf(stdout, "  holds: %d\n", sc.Holds)
+	}
 	fmt.Fprintln(stdout, "  signals:")
 	for sig, count := range sc.Signals {
 		fmt.Fprintf(stdout, "    %s: %d\n", sig, count)

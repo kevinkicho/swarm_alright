@@ -1,0 +1,4 @@
+{"ts":"2026-01-01T00:00:00Z","cycle":1,"secs":35,"phase":"complete","signal":"CONTINUE","committed":true,"commits_ahead":1,"empty_streak":0,"gates_ok":false,"gates_count":2,"gates_fail":1,"handoff_chars":90}
+{"ts":"2026-01-01T00:10:00Z","cycle":2,"secs":40,"phase":"complete","signal":"CONTINUE","committed":false,"commits_ahead":0,"empty_streak":1,"gates_ok":false,"gates_count":2,"gates_fail":2,"handoff_chars":40}
+{"ts":"2026-01-01T00:20:00Z","cycle":3,"secs":20,"phase":"system-only","signal":"HOLD","committed":false,"empty_streak":1,"gates_ok":false,"gates_count":2,"gates_fail":1,"handoff_chars":30,"verdict_source":"host_mission_placeholder"}
+{"ts":"2026-01-01T00:30:00Z","cycle":4,"secs":25,"phase":"system-only","signal":"HOLD","committed":false,"empty_streak":2,"gates_ok":false,"gates_count":2,"gates_fail":2,"verdict_source":"host_default_hold"}
