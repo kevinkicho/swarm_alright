@@ -2,42 +2,23 @@
 
 ## API key
 
-Resolved in this order (first hit wins):
+Resolved in order (first hit wins):
 
-1. `--api-key` flag
-2. `OLLAMA_API_KEY` environment variable
-3. `.env` in the current directory
-4. `SWARM_HOME/.env` and install-root `.env`
-5. `~/.swarm/.env`
-6. `<project>/.env` or `<project>/.swarm/.env`
+1. `--api-key`
+2. `OLLAMA_API_KEY`
+3. `.env` in cwd
+4. Install / home `.swarm/.env`
+5. `<project>/.env` or `<project>/.swarm/.env`
 
-Get a key at <https://ollama.com/settings/keys>.
+Key: <https://ollama.com/settings/keys>.
 
 ## Models
 
-Models are [Ollama Cloud](https://ollama.com/search?c=cloud) ids. Defaults:
+Ollama Cloud ids. Defaults: `deepseek-v4-flash` for system and worker. Prefer a stronger `--system-model` when available.
 
-| Role | Default | Why |
-| --- | --- | --- |
-| system | `deepseek-v4-flash` | strong reasoning, 1M context |
-| worker | `deepseek-v4-flash` | strong agentic coding |
+## Project config (optional)
 
-Override per role (`--system-model`, `--worker-model`) or both at once (`--model`).
-`swarm models` lists what your account can use.
-
-Known context/output limits (used by OpenCode for compaction meter):
-
-| Model | Context | Output |
-| --- | --- | --- |
-| `deepseek-v4-flash` | 1,000,000 | 64,000 |
-| `deepseek-v4-pro` | 1,000,000 | 64,000 |
-| `gemma4:31b` | 262,144 | 16,384 |
-| `glm-5.2` | 1,000,000 | 64,000 |
-| Other | 131,072 | 16,384 |
-
-## Per-project config (optional)
-
-Create `<project>/.swarm/config.json`:
+`<project>/.swarm/config.json`:
 
 ```json
 {
@@ -49,81 +30,33 @@ Create `<project>/.swarm/config.json`:
 }
 ```
 
-Optional **mission gates** (preferred for multi-check):
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `verify` | (none) | Shell command used as a mission **cmd gate** after ships |
+| `singleFlight` | `true` | Block second concurrent run on same project |
+| `defaultMerge` | `true` | Empty control signal → CONTINUE; baseline on CONTINUE/DONE |
+| `metrics` | `true` | Append `metrics.jsonl` |
+| `redactDumps` | `true` | Redact secrets in session dumps |
+
+Optional gates file:
 
 ```json
 // <project>/.swarm/gates.json
 {
   "gates": [
-    {"name": "test", "type": "cmd", "run": "npm test", "timeout_sec": 180},
-    {"name": "entry", "type": "path_exists", "path": "src/index.ts"}
+    {"name": "test", "type": "cmd", "run": "go test ./...", "timeout_sec": 180},
+    {"name": "readme", "type": "path_exists", "path": "README.md"}
   ]
 }
 ```
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `verify` | (none) | Shell command treated as a **cmd gate** after ships; also used alone if no gates.json |
-| `singleFlight` | `true` | Refuse a second concurrent alive run on the same project |
-| `defaultMerge` | `true` | Empty control signal → CONTINUE (work proceeds). Baseline advances on CONTINUE/DONE/REPASS. |
-| `metrics` | `true` | Append cycle facts to `metrics.jsonl` for scorecards |
-| `redactDumps` | `true` | Redact common secret shapes in session dumps |
+DONE is blocked while any configured gate is red unless VERDICT has `"waive_gates": true`.
 
-**DONE** with configured gates: host re-runs gates; red → DONE blocked unless VERDICT `"waive_gates": true`.
+## Compile-time thresholds
 
-Editable via `swarm panel` or directly in the file — the run reads config each cycle.
+See `go-swarm/constants.go` (rotate intervals, stall, digest flush, etc.). Not editable at runtime.
 
-## Injected opencode config
+## Budgets (CLI)
 
-Every run's server gets this via `OPENCODE_CONFIG_CONTENT`:
-
-```json
-{
-  "enabled_providers": ["ollama"],
-  "model": "ollama/<system-model>",
-  "small_model": "ollama/<system-model>",
-  "share": "disabled",
-  "autoupdate": false,
-  "compaction": {
-    "auto": true,
-    "prune": true,
-    "tail_turns": 1
-  },
-  "permission": {
-    "edit": "allow",
-    "bash": "allow",
-    "webfetch": "allow",
-    "doom_loop": "allow",
-    "external_directory": "allow"
-  },
-  "provider": {
-    "ollama": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Ollama Cloud",
-      "options": { "baseURL": "https://ollama.com/v1", "apiKey": "<key>" },
-      "models": { "...": "..." }
-    }
-  }
-}
-```
-
-Permissions are fully pre-allowed so agents never pause for approval. OpenCode
-owns compaction (`auto` + `prune`).
-
-## Compile-time thresholds (not configurable via config.json)
-
-| Threshold | Value | Where |
-| --- | --- | --- |
-| Worker rotate threshold | 120 messages (growth since fork) | `run.go` |
-| System rotate interval | 8 cycles | `run.go` |
-| Digest inject interval | 3 minutes | `system_watch.go` |
-| Active watch cooldown | 8 minutes | `system_watch.go` |
-| Stall threshold | 20 minutes | `run.go` |
-| Max turn retries | 3 attempts | `run.go` |
-| Ambition ratchet | 1 intercept then stop | `run.go` |
-| DONE gate streak | ≥2 empty ships + no checklist | `prompts.go` |
-| Heartbeat interval | 30 seconds | `run.go` |
-| Health poll interval | 45 seconds | `run.go` |
-
-These are visible in `swarm panel` (read-only) and can be changed by editing
-the Go source and rebuilding.
+- `--max-cycles N`
+- `--max-minutes N`

@@ -280,10 +280,6 @@ func (c *SDKClient) sessionInjectContext(sessionID string, text string, model *m
 	return err
 }
 
-func (c *SDKClient) sessionDiff(sessionID string) ([]byte, error) {
-	return c.do("GET", "/session/"+sessionID+"/diff", nil)
-}
-
 // health checks if the opencode server is reachable
 func (c *SDKClient) health() error {
 	_, err := c.do("GET", "/session", nil)

@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-// Host timing / rotation limits (compile-time; panel lists these for operators).
+// Host timing / rotation limits (compile-time).
 const (
 	// System rotates (fork) every N cycles.
 	systemRotateCycleInterval = 8

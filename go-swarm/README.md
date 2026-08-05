@@ -19,9 +19,9 @@ Requires Go 1.22+ and the `opencode` CLI on PATH.
 ```powershell
 # API key: OLLAMA_API_KEY or .env
 ./swarm.exe run C:\path\to\project --directive "make this durable"
-./swarm.exe                  # interactive hub
-./swarm.exe materials <id>   # MATERIALS + session archives
+./swarm.exe                  # help
 ./swarm.exe scorecard <id>
+./swarm.exe postmortem <id>
 ```
 
 ## Layout

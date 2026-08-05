@@ -12,15 +12,12 @@ The previous TypeScript host lives under `legacy/` for reference only and is not
 
 ## Pattern
 
-1. **System** gets a materials sitrep + sticky lead identity; opens **`MATERIALS.md`**
-   and whatever it needs (session dumps, MEMORY, **project root**, git).
-2. It overwrites **`HANDOFF.md`** with the engineer assignment.
-3. **Host** advances **`BASELINE.sha`** when accepting last work (unless `HOST: STOP`).
-4. **Worker** receives the handoff and edits the **project root** (no nested worktrees).
-5. **Host** commits dirty files, probes/archives sessions, updates MEMORY / metrics / BUS.
-6. **SystemWatch** writes worker digests to **DIGEST.md** (disk only). Chat injects
-   happen only on STALE/alert **ACTIVE WATCH**.
-7. Loop until lead `HOST: DONE` / `STOP` (or `VERDICT.json`), or you `swarm stop`.
+1. **System** reads **SITREP** (+ MISSION / PROJECT_SCAN / code) and writes **HANDOFF.md**.
+2. **Host** advances **BASELINE.sha** when accepting work (CONTINUE/DONE).
+3. **Worker** implements the handoff in the **project root**.
+4. **Host** commits, runs optional gates/verify, updates metrics / BUS.
+5. **SystemWatch** writes **DIGEST.md** on disk; ACTIVE WATCH only on STALE/alert.
+6. Loop until DONE/STOP, budget, or `swarm stop`.
 
 **Control (optional):** `HOST: CONTINUE|DONE|STOP` or `VERDICT.json`.  
 Missing signal → **CONTINUE** by default (work is not blocked). Free prose is not a signal.
@@ -61,11 +58,7 @@ Install on PATH (Windows):
 # new terminal → swarm help
 ```
 
-Or from the interactive hub:
-
-```powershell
-./swarm.exe
-```
+Bare `./swarm.exe` prints help (no interactive wizard).
 
 Offline check (no API key):
 
@@ -111,7 +104,7 @@ Core flags: `--directive`, `--system-model`, `--worker-model`, `--max-cycles`, `
 | Metrics JSONL | on | `.swarm/config.json` |
 | Redact dumps | on | `.swarm/config.json` |
 
-Editable via `swarm panel` or `<project>/.swarm/config.json` for project flags. Timing thresholds are compile-time in `go-swarm/constants.go`.
+Project flags: edit `<project>/.swarm/config.json`. Timing thresholds are compile-time in `go-swarm/constants.go`.
 
 ## BUS honesty
 
@@ -149,7 +142,7 @@ go vet ./...               # or: make vet
 make check                 # vet + test + build
 ```
 
-Dependencies: [cobra](https://github.com/spf13/cobra), [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](https://github.com/charmbracelet/lipgloss).
+Dependency: [cobra](https://github.com/spf13/cobra) for the CLI.
 
 ## Docs
 

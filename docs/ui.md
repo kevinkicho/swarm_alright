@@ -1,62 +1,34 @@
-# Terminal UI
+# UI surfaces
 
-Everything is terminal-native; there is no web UI. Four surfaces:
+The host is a CLI. Observation and control use these surfaces:
 
-## 1. The wizard hub (`swarm` / `swarm init`)
+## 1. Terminal CLI
 
-A status panel of active runs above a numbered menu. Menu items:
-- start a new run (guided: folder → directive → models → confirm)
-- restart from history
-- list all runs
-- control panel
-- models
-- clean finished records
-- exit
+`swarm run`, `watch`, `logs`, `status`, `ls`, `stop`, `tui`, `doctor`, `scorecard`, `postmortem`.
 
-## 2. The dashboard (`swarm watch [id]`)
+ANSI colors when stdout is a TTY (`NO_COLOR` / `FORCE_COLOR` honored).
 
-- Line-clear refresh every 2 seconds
-- Shows: status badge, run id, cycle, phase, project name
-- No id: picks the single active run (or lists if multiple)
+## 2. OpenCode TUI
 
-## 3. The control panel (`swarm panel [id]`)
+`swarm tui [id] --agent system|worker` attaches the **real OpenCode TUI** to a live session.
 
-Built with [bubbletea](https://github.com/charmbracelet/bubbletea) +
-[lipgloss](https://github.com/charmbracelet/lipgloss):
+## 3. Run folder (source of truth for the lead)
 
-- **Top section:** live run state (status, cycle, phase, project, models)
-- **Agent info:** per-agent live session status (busy/idle), session ID, message
-  count — probed via SDK every 5 seconds
-- **Middle section:** guards & thresholds
-  - Editable fields (verify, singleFlight, defaultMerge, metrics, redactDumps) —
-    writes to `.swarm/config.json`, takes effect next cycle
-  - Read-only compile-time thresholds (rotation, stall, digest interval, etc.)
-- **Keybindings:** ↑/↓ navigate, enter edit, tab toggle, r refresh, q quit
-- Uses the terminal alternate screen buffer (no scrollback pollution)
+| File | Role |
+| --- | --- |
+| `SITREP.md` | Host facts (primary) |
+| `MATERIALS.md` | Thin pointer index to run surfaces |
+| `MISSION.md` | Goals |
+| `HANDOFF.md` | Worker assignment |
+| `PROJECT_SCAN.md` | No-directive inventory |
+| `BUS.md` / `DIGEST.md` | Live bus / worker events |
+| `GATES_LAST.md` | Last gate results (if configured) |
+| `events.log` | Host log |
 
-## 4. The opencode TUI (`swarm tui [id]`)
+## Removed UIs
 
-The genuine opencode terminal interface, attached to a live agent session
-(`opencode attach <url> --session <id>`):
+- Interactive wizard hub  
+- Bubbletea control panel  
+- Embedded web dashboard  
 
-- Full agent message stream live: reasoning, tool calls, file edits, shell
-  commands, diffs
-- Works per agent: system or worker (`--agent system` / `--agent worker`)
-- Read-only in practice — the swarm drives the session; `q`/Ctrl+C detaches
-  without affecting the run
-- Requires an active run (the TUI is a client of the run's opencode server)
-
-## Raw logs (`swarm logs [id]`)
-
-A proper file tail of `events.log` with offset tracking — every phase transition,
-tool call, agent reply, and error, timestamped.
-
-## Colors
-
-ANSI colors respect `NO_COLOR` / `FORCE_COLOR` / TTY detection:
-- Green: ACCEPT / CONTINUE / alive
-- Magenta: DONE / STOP
-- Yellow: tool calls / warnings
-- Red: errors / failures
-- Cyan: cycle markers / highlights
-- Gray: muted info / hints
+Config: edit `<project>/.swarm/config.json` directly.

@@ -20,11 +20,14 @@
   - `HANDOFF.md` — current engineer assignment
   - `HANDOFF_HISTORY.md` — prior assignments
   - `BACKLOG.md` — living mission slices (system maintains)
-  - `STANDARDS.md` — lead quality bars (system may edit)
-  - `MATERIALS.md` — host inventory for system investigation
+
+  - `SITREP.md` — primary capped host facts for the lead
+  - `MATERIALS.md` — thin pointer index → SITREP + run paths
+  - `PROJECT_SCAN.md` — no-directive kickoff inventory
   - `BASELINE.sha` — accepted work tip
   - `BUS.md` — live OpenCode event surface (`work_health`, not host_tick alone)
   - `BUS.jsonl` — append-only event history
+  - `DIGEST.md` — worker bus digests on disk
   - `WORKER_SESSION.md` — worker session dump
   - `SYSTEM_SESSION.md` — system session archive
   - `metrics.jsonl` — cycle metrics for scorecards
@@ -95,21 +98,19 @@ Uses OpenCode SDK's `session.fork`:
 
 ## Housekeeping the host does each cycle
 
-1. Sync worker from integration (git merge)
-2. Re-home dirty paths from project root
-3. Probe worker session (dump to WORKER_SESSION.md)
-4. Write MEMORY.md with review pack (git diff + probe summary)
-5. Write MATERIALS.md (host inventory)
-6. Write BUS.md (live event surface)
-7. SystemWatch digests (every 3 min during worker turns)
-8. Auto-commit dirty project root
-9. Run verify command if configured
-10. Restore tracked paths to HEAD after commit
-11. Advance BASELINE.sha on accept
-12. Append ship.log + metrics.jsonl
-13. Write session index
-14. Empty ship recovery (same-cycle re-scope if no commits)
-15. Exception escalation (if worker turn fails)
+1. Sync / merge when defaultMerge is on
+2. Probe worker session (dump to WORKER_SESSION.md)
+3. Write MEMORY.md with review pack (git diff + probe summary)
+4. Write SITREP.md (primary) + MATERIALS.md (pointer index)
+5. Write BUS.md (live event surface)
+6. SystemWatch digests (DIGEST.md every ~3 min during worker turns)
+7. Auto-commit dirty project root
+8. Run optional gates/verify if configured
+9. Restore tracked paths to HEAD after commit
+10. Advance BASELINE.sha on accept (CONTINUE/DONE)
+11. Append ship.log + metrics.jsonl
+12. Empty ship → SITREP note for next lead turn (no forced same-cycle re-scope)
+13. Exception escalation (if worker turn fails)
 
 ## Troubleshooting
 

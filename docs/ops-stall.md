@@ -68,7 +68,6 @@ session only. The run continues so the system can re-plan next cycle.
 swarm doctor [folder]
 swarm scorecard <id>
 swarm postmortem <id>
-swarm materials <id>
-swarm tally <id>
-swarm panel <id>
+swarm watch <id>
+swarm logs <id>
 ```

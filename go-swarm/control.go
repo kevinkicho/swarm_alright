@@ -61,10 +61,6 @@ func parseHostSignal(text string) HostSignal {
 	return runcontrol.ParseSignalExplicit(text)
 }
 
-func parseHostSignalExplicit(text string) HostSignal {
-	return runcontrol.ParseSignalExplicit(text)
-}
-
 func gateDoneSignal(signal HostSignal, emptyCommitStreak int, missionComplete bool, replyText string) (HostSignal, bool, string) {
 	return runcontrol.GateDone(signal, emptyCommitStreak, missionComplete, replyText)
 }
@@ -80,8 +76,4 @@ func shouldRunWorker(signal HostSignal) bool {
 
 func shouldAcceptBaseline(signal HostSignal) bool {
 	return runcontrol.ShouldAcceptBaseline(signal)
-}
-
-func hasMissionDoneChecklist(text string) bool {
-	return runcontrol.HasMissionComplete(text)
 }

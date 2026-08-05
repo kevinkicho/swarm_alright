@@ -435,5 +435,5 @@ func runDoctor(projectArg string) {
 	for _, r := range onProj {
 		fmt.Fprintf(stdout, "  %s %s cycle=%d phase=%s\n", statusBadge(regEffectiveStatus(&r)), r.ID, r.Cycle, r.Phase)
 	}
-	fmt.Fprintln(stdout, muted("Surfaces: swarm materials <id> · SITREP.md · VERDICT.json · PHASES.jsonl"))
+	fmt.Fprintln(stdout, muted("Surfaces: SITREP.md · MATERIALS.md · VERDICT.json · swarm scorecard|postmortem"))
 }
