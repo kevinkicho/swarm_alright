@@ -79,26 +79,14 @@ make check   # vet + test + build
 
 | Command | Purpose |
 | --- | --- |
-| `swarm` | Interactive hub (status panel + guided menus) |
-| `swarm run <folder>` | Start a run (`--directive`, `--system-model`, `--worker-model`, `--model`, `--detach`, `--max-cycles`, `--continue`, `--workers`, `--api-key`) |
-| `swarm restart [id]` | Resume same id + run folder |
-| `swarm ls` | List all runs with status badges |
-| `swarm status [id]` | Live facilitation snapshot |
-| `swarm doctor [folder]` | Diagnose dirty root, registry |
-| `swarm tally [id]` | Situation counts from events.log |
-| `swarm scorecard [id]` | Trajectory scorecard from metrics.jsonl |
-| `swarm postmortem [id]` | Run summary with recent events |
-| `swarm materials [id]` | MATERIALS.md path + newest session archives |
-| `swarm watch [id]` | Live status refresh |
-| `swarm logs [id]` | Tail events.log |
-| `swarm tui [id]` | Attach OpenCode TUI to a live agent session (`--agent system\|worker`) |
-| `swarm panel [id]` | Interactive control panel — live state + editable guards |
-| `swarm stop [id]` | Graceful stop (finishes current turn; salvages dirty tree) |
-| `swarm clean` | Prune finished registry records |
-| `swarm models` | List Ollama Cloud models |
-| `swarm dashboard [id]` | Browser dashboard |
+| `swarm run <folder>` | Start a run |
+| `swarm restart [id]` | Resume same run folder |
+| `swarm ls` / `status` / `watch` / `logs` / `stop` | Observe and stop |
+| `swarm tui [id]` | Attach OpenCode TUI (`--agent system\|worker`) |
+| `swarm doctor` / `scorecard` / `postmortem` | Offline diagnostics |
+| `swarm models` / `clean` | List models; prune registry |
 
-`--workers` is **always 1** (shared project root has no path ownership). Values >1 are rejected/clamped.
+Core flags: `--directive`, `--system-model`, `--worker-model`, `--max-cycles`, `--max-minutes`, `--detach`.
 
 ## Guards & thresholds (Go host)
 
@@ -139,30 +127,16 @@ Append-only history: `BUS.jsonl`.
 
 ```
 <project>/.swarm/runs/<run-id>/
-  MISSION.md          — the mission (directive or system-inferred)
-  DIALOGUE.md         — append-only system↔worker conversation log
-  MEMORY.md           — host notes + review pack per cycle
-  HANDOFF.md          — current engineer assignment (system writes)
-  HANDOFF_HISTORY.md  — prior assignments (append-only)
-  BACKLOG.md          — living mission slices (system maintains)
-  STANDARDS.md        — lead quality bars (system may edit)
-  SITREP.md           — primary host sitrep (capped; open first)
-  VERDICT.json        — structured control signal from lead
-  PHASES.jsonl        — host phase transitions
-  DIGEST.md           — worker bus events on disk (not lead chat)
-  MATERIALS.md        — thin index → SITREP + optional deep links
-  BASELINE.sha        — accepted work tip (host advances on CONTINUE/DONE)
-  BUS.md              — live OpenCode event surface (work_health)
-  BUS.jsonl           — append-only event history
-  WORKER_SESSION.md   — worker session dump (host probes each cycle)
-  SYSTEM_SESSION.md   — system session archive (postmortems)
-  metrics.jsonl       — cycle metrics for scorecards
-  events.log          — every phase, tool call, reply, and error
-  run.json            — registry record (dual-written)
-  sessions/           — archived session dumps
-  ship.log            — every auto-commit/verify record
-  EXCEPTION.md        — host exception details (when escalated)
-  STOP                — created by `swarm stop`
+  MISSION.md          — directive or inferred mission
+  SITREP.md           — primary host sitrep (open first)
+  PROJECT_SCAN.md     — no-directive project inventory
+  HANDOFF.md          — engineer assignment
+  VERDICT.json        — optional control signal
+  DIGEST.md / BUS.md  — worker bus (disk; work_health)
+  GATES_LAST.md       — last gate run (if configured)
+  MEMORY.md / DIALOGUE.md / ship.log / metrics.jsonl / events.log
+  sessions/           — archives
+  STOP                — swarm stop
 ```
 
 ## Building from source

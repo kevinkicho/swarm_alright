@@ -1,34 +1,12 @@
 {
   "name": "swarm-alright",
-  "version": "0.2.0",
-  "description": "Autonomous multi-agent runs on any project folder — Go host powered by OpenCode + Ollama Cloud",
-  "type": "module",
-  "author": "kimi k3 from moonshot ai",
+  "version": "0.3.0",
+  "description": "Autonomous system↔worker runs — Go host (OpenCode + Ollama Cloud). Build from go-swarm/.",
+  "private": true,
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/kevinkicho/swarm_alright.git"
-  },
-  "homepage": "https://github.com/kevinkicho/swarm_alright#readme",
-  "bugs": "https://github.com/kevinkicho/swarm_alright/issues",
-  "keywords": [
-    "opencode",
-    "agents",
-    "swarm",
-    "autonomous",
-    "ollama",
-    "ollama-cloud",
-    "ai-agents",
-    "go"
-  ],
   "scripts": {
     "build": "cd go-swarm && go build -o swarm.exe .",
     "test": "cd go-swarm && go test ./...",
-    "check": "cd go-swarm && go vet ./... && go test ./... && go build -o swarm_check.exe .",
-    "swarm": "cd go-swarm && go run ."
-  },
-  "engines": {
-    "node": ">=22.6"
-  },
-  "private": true
+    "check": "cd go-swarm && go vet ./... && go test ./... && go build -o swarm_check.exe ."
+  }
 }

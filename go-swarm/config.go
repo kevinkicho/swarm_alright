@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -89,10 +88,6 @@ func bareModel(id string) string {
 		return strings.TrimPrefix(id, ProviderID+"/")
 	}
 	return id
-}
-
-func qualifiedModel(id string) string {
-	return ProviderID + "/" + bareModel(id)
 }
 
 // modelLimit returns context + output limits for a model
@@ -183,18 +178,16 @@ type ProviderConfig struct {
 
 // ProjectConfig is the optional per-project .swarm/config.json
 type ProjectConfig struct {
-	Verify       *string          `json:"verify,omitempty"`
-	LinkDirs     []string         `json:"linkDirs,omitempty"`
-	SingleFlight *bool            `json:"singleFlight,omitempty"`
-	DefaultMerge *bool            `json:"defaultMerge,omitempty"`
-	Metrics      *bool            `json:"metrics,omitempty"`
-	RedactDumps  *bool            `json:"redactDumps,omitempty"`
-	Provider     *ProviderConfig  `json:"provider,omitempty"`
+	Verify       *string         `json:"verify,omitempty"`
+	SingleFlight *bool           `json:"singleFlight,omitempty"`
+	DefaultMerge *bool           `json:"defaultMerge,omitempty"`
+	Metrics      *bool           `json:"metrics,omitempty"`
+	RedactDumps  *bool           `json:"redactDumps,omitempty"`
+	Provider     *ProviderConfig `json:"provider,omitempty"`
 }
 
 type ResolvedProjectConfig struct {
 	Verify       string
-	LinkDirs     []string
 	SingleFlight bool
 	DefaultMerge bool
 	Metrics      bool
@@ -231,14 +224,6 @@ func loadProjectConfig(project string) ResolvedProjectConfig {
 		cfg.RedactDumps = *raw.RedactDumps
 	}
 	cfg.Provider = raw.Provider
-	if len(raw.LinkDirs) > 0 {
-		cfg.LinkDirs = raw.LinkDirs
-	} else {
-		// Auto-detect node_modules
-		if fileExists(filepath.Join(project, "package.json")) && fileExists(filepath.Join(project, "node_modules")) {
-			cfg.LinkDirs = []string{"node_modules"}
-		}
-	}
 	return cfg
 }
 
@@ -246,6 +231,3 @@ func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
-
-// Unused but kept for reference
-var _ = runtime.GOOS

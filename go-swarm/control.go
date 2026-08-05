@@ -82,10 +82,6 @@ func shouldAcceptBaseline(signal HostSignal) bool {
 	return runcontrol.ShouldAcceptBaseline(signal)
 }
 
-func parseQualityScore(text string) int {
-	return runcontrol.ParseQuality(text)
-}
-
 func hasMissionDoneChecklist(text string) bool {
 	return runcontrol.HasMissionComplete(text)
 }

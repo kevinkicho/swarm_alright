@@ -38,7 +38,6 @@ func buildSystemIdentity(p RunPaths, workerCount int) string {
 		"DONE ends the run. If project gates/verify are configured, DONE needs green gates",
 		"(or VERDICT waive_gates:true). Empty re-verify without product files is a failed worker turn.",
 		"",
-		"Optional: QUALITY: N/10; append real learnings to " + p.LearningsFile + ".",
 		"Worker sees only HANDOFF.md.",
 	}, "\n")
 }
@@ -66,19 +65,6 @@ func buildWorkerPrompt(brief string, p RunPaths) string {
 		"Handoff: " + p.HandoffFile,
 		"Leave intended product changes dirty for host auto-commit. Prefer implementation over long reports.",
 	}, "\n")
-}
-
-// handoffFingerprint returns a hash of handoff text for stale detection
-func handoffFingerprint(body string) string {
-	t := strings.TrimSpace(body)
-	if len(t) > 2500 {
-		t = t[:2500]
-	}
-	h := 0
-	for _, c := range t {
-		h = (31*h + int(c)) | 0
-	}
-	return fmt.Sprintf("%d:%d", len(t), h)
 }
 
 // needsHandoffRewrite detects thin/missing handoff

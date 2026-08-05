@@ -15,24 +15,22 @@ type RunPaths struct {
 	MissionFile       string
 	DialogueFile      string
 	MemoryFile        string
-	StandardsFile     string
-	HandoffFile       string
+	HandoffFile        string
 	HandoffHistoryFile string
-	BacklogFile       string
-	MaterialsFile     string
-	MetricsFile       string
-	EventsLogFile     string
-	BusFile           string
-	BusJsonlFile      string
-	WorkerSessionFile string
-	SystemSessionFile string
-	SessionsDir       string
-	SessionIndexFile  string
-	ShipLogFile       string
-	BaseBranch        string
-	WorkerWorktree    string
-	LearningsFile     string // project-level cross-run memory
-	ProjectScanFile   string // host inventory when mission is inferred
+	BacklogFile        string
+	MaterialsFile      string
+	MetricsFile        string
+	EventsLogFile      string
+	BusFile            string
+	BusJsonlFile       string
+	WorkerSessionFile  string
+	SystemSessionFile  string
+	SessionsDir        string
+	SessionIndexFile   string
+	ShipLogFile        string
+	BaseBranch         string
+	WorkerWorktree     string
+	ProjectScanFile    string
 }
 
 func bindPaths(runDir, project string) RunPaths {
@@ -42,24 +40,22 @@ func bindPaths(runDir, project string) RunPaths {
 		MissionFile:       filepath.Join(runDir, "MISSION.md"),
 		DialogueFile:      filepath.Join(runDir, "DIALOGUE.md"),
 		MemoryFile:        filepath.Join(runDir, "MEMORY.md"),
-		StandardsFile:     filepath.Join(runDir, "STANDARDS.md"),
-		HandoffFile:       filepath.Join(runDir, "HANDOFF.md"),
+		HandoffFile:        filepath.Join(runDir, "HANDOFF.md"),
 		HandoffHistoryFile: filepath.Join(runDir, "HANDOFF_HISTORY.md"),
-		BacklogFile:       filepath.Join(runDir, "BACKLOG.md"),
-		MaterialsFile:     filepath.Join(runDir, "MATERIALS.md"),
-		MetricsFile:       filepath.Join(runDir, "metrics.jsonl"),
-		EventsLogFile:     filepath.Join(runDir, "events.log"),
-		BusFile:           filepath.Join(runDir, "BUS.md"),
-		BusJsonlFile:      filepath.Join(runDir, "BUS.jsonl"),
-		WorkerSessionFile: filepath.Join(runDir, "WORKER_SESSION.md"),
-		SystemSessionFile: filepath.Join(runDir, "SYSTEM_SESSION.md"),
-		SessionsDir:       filepath.Join(runDir, "sessions"),
-		SessionIndexFile:  filepath.Join(runDir, "sessions", "index.md"),
-		ShipLogFile:       filepath.Join(runDir, "ship.log"),
-		BaseBranch:        "",
-		WorkerWorktree:    project, // root mode — agents use project root
-		LearningsFile:     filepath.Join(filepath.Dir(filepath.Dir(runDir)), "LEARNINGS.md"), // <project>/.swarm/LEARNINGS.md
-		ProjectScanFile:   filepath.Join(runDir, "PROJECT_SCAN.md"),
+		BacklogFile:        filepath.Join(runDir, "BACKLOG.md"),
+		MaterialsFile:      filepath.Join(runDir, "MATERIALS.md"),
+		MetricsFile:        filepath.Join(runDir, "metrics.jsonl"),
+		EventsLogFile:      filepath.Join(runDir, "events.log"),
+		BusFile:            filepath.Join(runDir, "BUS.md"),
+		BusJsonlFile:       filepath.Join(runDir, "BUS.jsonl"),
+		WorkerSessionFile:  filepath.Join(runDir, "WORKER_SESSION.md"),
+		SystemSessionFile:  filepath.Join(runDir, "SYSTEM_SESSION.md"),
+		SessionsDir:        filepath.Join(runDir, "sessions"),
+		SessionIndexFile:   filepath.Join(runDir, "sessions", "index.md"),
+		ShipLogFile:        filepath.Join(runDir, "ship.log"),
+		BaseBranch:         "",
+		WorkerWorktree:     project,
+		ProjectScanFile:    filepath.Join(runDir, "PROJECT_SCAN.md"),
 	}
 }
 

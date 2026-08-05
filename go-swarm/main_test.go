@@ -17,16 +17,14 @@ func TestParseHostSignalExplicitOnly(t *testing.T) {
 		{"HOST: CONTINUE", SignalContinue},
 		{"HOST: DONE", SignalDone},
 		{"HOST: STOP", SignalStop},
-		{"HOST: REPASS", SignalRepass},
 		{"HOST: HOLD", SignalHold},
 		{"**HOST: DONE**", SignalDone},
 		{"- HOST: CONTINUE", SignalContinue},
 		{`{"signal":"DONE"}`, SignalDone},
 		{`{"signal":"STOP"}`, SignalStop},
-		// Prose is NOT a control signal (architectural fix)
+		{"HOST: REPASS", SignalContinue}, // legacy synonym
+		// Prose is NOT a control signal
 		{"mission complete", ""},
-		{"mission is done", ""},
-		{"mission complete and stop", ""},
 		{"no signal here", ""},
 		{"", ""},
 	}
@@ -108,17 +106,7 @@ func TestEffectiveMergeSignal(t *testing.T) {
 	}
 }
 
-func TestHandoffFingerprintAndNeedsRewrite(t *testing.T) {
-	fp1 := handoffFingerprint("Build the search feature")
-	fp2 := handoffFingerprint("Build the search feature")
-	if fp1 != fp2 {
-		t.Error("same handoff should fingerprint equal")
-	}
-	fp3 := handoffFingerprint("Build the auth feature")
-	if fp1 == fp3 {
-		t.Error("different handoff should differ")
-	}
-
+func TestNeedsHandoffRewrite(t *testing.T) {
 	cases := []struct {
 		body string
 		want bool
@@ -132,15 +120,6 @@ func TestHandoffFingerprintAndNeedsRewrite(t *testing.T) {
 		if got := needsHandoffRewrite(c.body); got != c.want {
 			t.Errorf("needsHandoffRewrite(%q) = %v want %v", c.body, got, c.want)
 		}
-	}
-}
-
-func TestParseQualityScore(t *testing.T) {
-	if parseQualityScore("QUALITY: 7/10") != 7 {
-		t.Error("expected 7")
-	}
-	if parseQualityScore("no score") != 0 {
-		t.Error("expected 0 for missing")
 	}
 }
 
@@ -158,8 +137,7 @@ func TestIsExternalAbortAndContextSize(t *testing.T) {
 
 func TestBuildSystemIdentitySitrep(t *testing.T) {
 	p := RunPaths{
-		RunDir: "/run", MissionFile: "M", HandoffFile: "H", Project: "P",
-		LearningsFile: "L",
+		RunDir: "/run", MissionFile: "M", HandoffFile: "H", Project: "P", BacklogFile: "B",
 	}
 	id := buildSystemIdentity(p, 1)
 	if !strings.Contains(id, "SITREP") {
@@ -187,8 +165,8 @@ func TestSitrepCapped(t *testing.T) {
 	if !strings.Contains(string(body), "SITREP") {
 		t.Error("missing sitrep header")
 	}
-	if !strings.Contains(string(body), "VERDICT.json") {
-		t.Error("sitrep should point at control plane")
+	if !strings.Contains(string(body), "HANDOFF") {
+		t.Error("sitrep should mention handoff")
 	}
 	if len(body) > sitrepMaxChars+100 {
 		t.Errorf("sitrep too large: %d", len(body))

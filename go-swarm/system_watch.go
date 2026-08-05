@@ -352,29 +352,6 @@ func syncWorkerFromIntegration(repo, integrationBranch, workerBranch string) (bo
 	return false, "merge conflict with " + integrationBranch + ": " + strings.TrimSpace(stderr)
 }
 
-func rehomeDirtyIntoWorktree(project, worktree string, paths []string) []string {
-	var copied []string
-	for _, rel := range paths {
-		if rel == "" || strings.Contains(rel, "..") || strings.HasPrefix(rel, ".swarm/") || strings.HasPrefix(rel, ".git/") {
-			continue
-		}
-		src := filepath.Join(project, rel)
-		dest := filepath.Join(worktree, rel)
-		if !fileExists(src) {
-			continue
-		}
-		data, err := os.ReadFile(src)
-		if err != nil {
-			continue
-		}
-		os.MkdirAll(filepath.Dir(dest), 0755)
-		if err := os.WriteFile(dest, data, 0644); err == nil {
-			copied = append(copied, rel)
-		}
-	}
-	return copied
-}
-
 func restoreTrackedPaths(repo string, paths []string) []string {
 	var restored []string
 	for _, rel := range paths {
@@ -429,54 +406,6 @@ func (r *Run) escalateToSystem(system, worker AgentRecord, kind, phase, message 
 	_ = worker
 }
 
-func (r *Run) emptyShipRecover(system, worker AgentRecord, committed bool) {
-	if committed || r.emptyStreak < 1 {
-		return
-	}
-	r.transition(PhaseEmptyShip, fmt.Sprintf("streak=%d", r.emptyStreak))
-	r.log(fmt.Sprintf("[cycle %d] EMPTY_SHIP - no product commit (streak=%d); re-scope via system", r.cycle, r.emptyStreak))
-
-	ok, detail := syncWorkerFromIntegration(r.opts.Project, r.baseBranch, "HEAD")
-	r.lastSyncOk = ok
-	r.lastSyncDetail = detail
-	r.log("  [host:git] sync worker: " + detail)
-
-	writeSitrep(SitrepInput{
-		Cycle: r.cycle, Phase: "empty_ship", RunID: r.id, Project: r.opts.Project,
-		EmptyStreak: r.emptyStreak, Paths: r.paths, Worker: r.lastWorkerProbe,
-		Note: "Worker produced no product commit. Write a NEW Handoff slice. Mission is NOT done.",
-	})
-
-	identity := buildSystemIdentity(r.paths, 1)
-	prompt := fmt.Sprintf("Cycle %d - EMPTY_SHIP recovery.\n\nRead SITREP.md. Worker produced no new git commit. Mission is NOT done.\nOverwrite HANDOFF with a NEW concrete assignment.\nWrite VERDICT.json signal CONTINUE (or HOST: CONTINUE).",
-		r.cycle)
-
-	text, _, err := r.turn(system, prompt, identity)
-	if err != nil {
-		r.log("  [host] empty ship recover failed: " + truncate(err.Error(), 200))
-		return
-	}
-	appendDialogue(r.paths.DialogueFile, "system-empty-recover", r.cycle, text)
-
-	newHandoff := readHandoffFile(r.paths.HandoffFile)
-	if len(newHandoff) > 40 {
-		workerPrompt := buildWorkerPrompt(newHandoff, r.paths)
-		r.heartbeat("worker-recover")
-		r.log(fmt.Sprintf("[cycle %d] worker (recovery)...", r.cycle))
-		wText, _, err := r.turn(worker, workerPrompt, buildWorkerIdentity(r.paths))
-		if err != nil {
-			return
-		}
-		r.lastWorkerReply = wText
-		appendDialogue(r.paths.DialogueFile, "worker-recover", r.cycle, wText)
-
-		committed2, sha2, _ := commitWorktree(r.opts.Project, fmt.Sprintf("swarm %s worker: cycle %d (recovery auto-commit)", r.id, r.cycle))
-		appendShipLog(r.paths.RunDir, sha2, committed2, false)
-		if committed2 {
-			r.emptyStreak = 0
-		}
-	}
-}
 
 func runDoctor(projectArg string) {
 	project, _ := filepath.Abs(projectArg)

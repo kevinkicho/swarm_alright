@@ -204,48 +204,6 @@ func commitWorktree(worktree, message string) (committed bool, sha, detail strin
 	return true, sha, "committed " + sha[:min(7, len(sha))]
 }
 
-// acceptBranch fast-forwards or merges workerBranch into integrationBranch
-func acceptBranch(repo, integrationBranch, workerBranch, runID string) (ok bool, detail string) {
-	// Try fast-forward
-	code, _, _ := gitAllowFail(repo, "merge-base", "--is-ancestor", integrationBranch, workerBranch)
-	if code == 0 {
-		c, _, stderr := gitAllowFail(repo, "branch", "-f", integrationBranch, workerBranch)
-		if c != 0 {
-			tip, _ := git(repo, "rev-parse", workerBranch)
-			_, err := git(repo, "update-ref", "refs/heads/"+integrationBranch, tip)
-			if err != nil {
-				return false, "fast-forward failed: " + stderr
-			}
-		}
-		tip, _ := git(repo, "rev-parse", integrationBranch)
-		return true, "fast-forward " + integrationBranch + " -> " + tip[:min(7, len(tip))]
-	}
-	// Real merge via scratch worktree
-	mergeTmp := filepath.Join(repo, ".swarm", "merge-tmp")
-	_, _ = git(repo, "worktree", "remove", "--force", mergeTmp)
-	os.RemoveAll(mergeTmp)
-	_, err := git(repo, "worktree", "add", mergeTmp, integrationBranch)
-	if err != nil {
-		return false, "merge worktree add failed: " + err.Error()
-	}
-	defer func() {
-		_, _ = git(repo, "worktree", "remove", "--force", mergeTmp)
-		os.RemoveAll(mergeTmp)
-	}()
-	code, _, stderr := gitAllowFail(mergeTmp, "merge", "--no-ff", "-m",
-		fmt.Sprintf("swarm %s: merge %s", runID, workerBranch), workerBranch)
-	if code != 0 {
-		_, _ = git(mergeTmp, "merge", "--abort")
-		return false, "merge conflict: " + strings.TrimSpace(stderr)
-	}
-	tip, _ := git(mergeTmp, "rev-parse", "HEAD")
-	c, _, _ := gitAllowFail(repo, "branch", "-f", integrationBranch, tip)
-	if c != 0 {
-		_, _ = git(repo, "update-ref", "refs/heads/"+integrationBranch, tip)
-	}
-	return true, "merged " + workerBranch + " into " + integrationBranch + " at " + tip[:min(7, len(tip))]
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a

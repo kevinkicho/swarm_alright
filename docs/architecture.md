@@ -54,3 +54,6 @@ MISSION (directive or inferred from PROJECT_SCAN)
 | `gates.go` | Optional machine checks |
 | `project_scan.go` / `sitrep.go` | Host inventory |
 | `eventbus.go` / `bus_surface.go` | OpenCode events |
+| `cli.go` | Core commands only (run/restart/ls/stop/logs/watch/tui/doctor/scorecard/postmortem/models/clean) |
+
+Removed chrome: panel, dashboard, PR helper, tally, materials, interactive wizard, bubbletea deps.

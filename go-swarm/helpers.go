@@ -19,13 +19,7 @@ func splitLines(s string) []string {
 func startsWith(s, prefix string) bool { return strings.HasPrefix(s, prefix) }
 func indexOf(s, sub string) int        { return strings.Index(s, sub) }
 func contains(s, sub string) bool      { return strings.Contains(s, sub) }
-func trimSpace(s string) string        { return strings.TrimSpace(s) }
 func toLower(s string) string          { return strings.ToLower(s) }
-func toUpper(s string) string          { return strings.ToUpper(s) }
-func hasPrefix(s, prefix string) bool  { return strings.HasPrefix(s, prefix) }
-func hasSuffix(s, suffix string) bool  { return strings.HasSuffix(s, suffix) }
-func split(s, sep string) []string     { return strings.Split(s, sep) }
-func join(parts []string, sep string) string { return strings.Join(parts, sep) }
 
 var httpClient = &http.Client{}
 
@@ -42,13 +36,9 @@ func jsonMarshal(v any) ([]byte, error) {
 }
 
 func regexpReplace(text, pattern, replacement string) string {
-	re, err := regexpCompile(pattern)
+	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return text
 	}
 	return re.ReplaceAllString(text, replacement)
-}
-
-func regexpCompile(pattern string) (*regexp.Regexp, error) {
-	return regexp.Compile(pattern)
 }

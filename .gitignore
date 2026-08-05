@@ -1,3 +1,10 @@
 .env
 node_modules/
 opencode/
+# Go host is go-swarm/ only. legacy/ is archive (not the entrypoint).
+# Local OpenCode monorepo checkouts / npm installs are not the product.
+swarm.exe
+swarm_race.exe
+*.exe
+*.test
+go-swarm/.gotmp/

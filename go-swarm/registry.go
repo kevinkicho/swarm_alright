@@ -178,6 +178,23 @@ func randSuffix() string {
 }
 
 // regPruneFinished removes finished/dead records from the registry
+// resolveRunRecord picks a run by id, or the newest registry entry.
+func resolveRunRecord(runID string) *RunRecord {
+	regReconcileCrashed()
+	if runID != "" {
+		if rec := regLoad(runID); rec != nil {
+			return rec
+		}
+		cwd, _ := os.Getwd()
+		return regLoadFromDisk(cwd, runID)
+	}
+	runs := regList()
+	if len(runs) == 0 {
+		return nil
+	}
+	return &runs[0]
+}
+
 func regPruneFinished() (pruned, kept int) {
 	regReconcileCrashed()
 	runs := regList()

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,40 +11,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const usage = `swarm — command center for autonomous runs (OpenCode + Ollama Cloud)
+const usage = `swarm — autonomous system↔worker runs (OpenCode + Ollama Cloud)
 
 Usage:
-  swarm                          Interactive command center (status + actions)
-  swarm run <folder> [options]   Start a run on a project folder
-  swarm restart [run-id]         Resume a past run (same run id + run folder)
-  swarm ls                       List all runs
-  swarm watch [run-id]           Live mission + activity
-  swarm tui [run-id]             Attach OpenCode TUI to an agent session
-  swarm panel [run-id]           Interactive control panel — live state + guards
-  swarm logs [run-id]            Tail events.log
-  swarm stop [run-id]            Graceful stop
-  swarm materials [run-id]       MATERIALS.md + newest session archives
-  swarm clean                    Prune finished registry records
-  swarm models                   List Ollama Cloud models
-  swarm help                     This help
+  swarm run <folder> [options]   Start a run
+  swarm restart [run-id]         Resume a past run
+  swarm ls | status | watch | logs | stop | tui
+  swarm doctor | scorecard | postmortem | models | clean
+  swarm help
 
 run options:
-  --directive "..."    Mission (system infers from project if omitted)
+  --directive "..."    Mission (omit = infer from project docs/code)
   --system-model M     (default %s)
   --worker-model M     (default %s)
-  --model M            Same model for system and worker
+  --model M            Same model for both
   --api-key K          Or OLLAMA_API_KEY / .env
-  --max-cycles N       Stop after N cycles (budget)
-  --max-minutes N      Stop after N minutes wall clock (budget)
-  --detach             Background (survives terminal close)
+  --max-cycles N       Budget: stop after N cycles
+  --max-minutes N      Budget: wall clock
+  --detach             Background mode
 `
 
 // Execute runs the CLI
 func Execute() error {
 	root := &cobra.Command{
-		Use:  "swarm",
+		Use:   "swarm",
+		Short: "Autonomous multi-agent runs on a project folder",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWizard()
+			return cmd.Help()
 		},
 	}
 
@@ -57,17 +49,12 @@ func Execute() error {
 		cmdLogs(),
 		cmdWatch(),
 		cmdTui(),
-		cmdPanel(),
 		cmdClean(),
 		cmdModels(),
 		cmdStatus(),
 		cmdDoctor(),
-		cmdTally(),
 		cmdPostmortem(),
 		cmdScorecard(),
-		cmdMaterials(),
-		cmdPR(),
-		cmdDashboard(),
 	)
 
 	root.SilenceUsage = true
@@ -524,21 +511,6 @@ func cmdTui() *cobra.Command {
 	return c
 }
 
-func cmdPanel() *cobra.Command {
-	return &cobra.Command{
-		Use:   "panel [run-id]",
-		Short: "Interactive control panel — live state + editable guards",
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id := ""
-			if len(args) > 0 {
-				id = args[0]
-			}
-			return runPanel(id)
-		},
-	}
-}
-
 func cmdClean() *cobra.Command {
 	return &cobra.Command{
 		Use:   "clean",
@@ -571,22 +543,6 @@ func cmdDoctor() *cobra.Command {
 	}
 }
 
-func cmdTally() *cobra.Command {
-	return &cobra.Command{
-		Use:   "tally [run-id]",
-		Short: "Situation counts from events.log",
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id := ""
-			if len(args) > 0 {
-				id = args[0]
-			}
-			runTally(id)
-			return nil
-		},
-	}
-}
-
 func cmdPostmortem() *cobra.Command {
 	return &cobra.Command{
 		Use:   "postmortem [run-id]",
@@ -614,22 +570,6 @@ func cmdScorecard() *cobra.Command {
 				id = args[0]
 			}
 			runScorecard(id)
-			return nil
-		},
-	}
-}
-
-func cmdMaterials() *cobra.Command {
-	return &cobra.Command{
-		Use:   "materials [run-id]",
-		Short: "MATERIALS.md path + newest session archives",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id := ""
-			if len(args) > 0 {
-				id = args[0]
-			}
-			runMaterials(id)
 			return nil
 		},
 	}
@@ -690,209 +630,3 @@ func cmdStatus() *cobra.Command {
 	}
 }
 
-// runWizard is the interactive command center
-func runWizard() error {
-	if !isTTY() {
-		fmt.Fprintln(stdout, muted("non-interactive terminal — use `swarm help` for the command list"))
-		return nil
-	}
-
-	for {
-		// Show status panel
-		regReconcileCrashed()
-		runs := regList()
-		active := []RunRecord{}
-		for _, r := range runs {
-			if r.Status == "running" && regAlive(r.PID) {
-				active = append(active, r)
-			}
-		}
-
-		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, highlight("swarm command center"))
-		if len(active) > 0 {
-			for _, r := range active {
-				eff := regEffectiveStatus(&r)
-				fmt.Fprintf(stdout, "  %s %s  cycle %s  %s  %s\n",
-					success("●"), bold(r.ID), cyan(fmt.Sprintf("%d", r.Cycle)), r.Phase, truncate(r.Project, 50))
-				_ = eff
-			}
-		} else {
-			fmt.Fprintln(stdout, muted("  no active runs"))
-		}
-		if len(runs) > 0 && len(active) == 0 {
-			fmt.Fprintln(stdout, muted("  (restart a past run to resume it)"))
-		}
-
-		// Show menu
-		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "  1) start a new run")
-		if len(runs) > 0 {
-			fmt.Fprintln(stdout, "  2) restart a run from history")
-			fmt.Fprintln(stdout, "  3) list all runs")
-			fmt.Fprintln(stdout, "  4) panel (control + guards)")
-			fmt.Fprintln(stdout, "  5) models")
-			fmt.Fprintln(stdout, "  6) clean finished records")
-			fmt.Fprintln(stdout, "  7) exit")
-		} else {
-			fmt.Fprintln(stdout, "  2) models")
-			fmt.Fprintln(stdout, "  3) exit")
-		}
-		fmt.Fprint(stdout, "\n> ")
-
-		var choice string
-		fmt.Scanln(&choice)
-		choice = strings.TrimSpace(choice)
-
-		switch choice {
-		case "1":
-			return runNewRunFlow()
-		case "2":
-			if len(runs) > 0 {
-				return cmdRestart().Execute()
-			}
-			return cmdModels().Execute()
-		case "3":
-			if len(runs) > 0 {
-				return cmdLs().Execute()
-			}
-			return nil
-		case "4":
-			if len(runs) > 0 {
-				return runPanel("")
-			}
-			return nil
-		case "5":
-			if len(runs) > 0 {
-				return cmdModels().Execute()
-			}
-			return nil
-		case "6":
-			if len(runs) > 0 {
-				return cmdClean().Execute()
-			}
-			return nil
-		case "7", "exit", "q":
-			return nil
-		default:
-			fmt.Fprintln(stdout, muted("unknown choice"))
-		}
-
-		// After commands that return (run, restart), we don't loop
-		// For ls/models/clean, loop back to menu
-		fmt.Fprintln(stdout, muted("(press Enter to continue)"))
-		fmt.Scanln()
-	}
-}
-
-// runNewRunFlow is the guided new-run setup
-func runNewRunFlow() error {
-	fmt.Fprint(stdout, "project folder: ")
-	var folder string
-	fmt.Scanln(&folder)
-	folder = strings.TrimSpace(folder)
-	if folder == "" {
-		fmt.Fprintln(stdout, muted("cancelled"))
-		return nil
-	}
-	abs, err := filepath.Abs(folder)
-	if err != nil || !fileExists(abs) {
-		fmt.Fprintln(stdout, warning("not a folder: "+folder))
-		return nil
-	}
-
-	fmt.Fprint(stdout, "directive (empty = system infers from project): ")
-	var directive string
-	fmt.Scanln(&directive)
-
-	fmt.Fprint(stdout, "system model (empty = deepseek-v4-flash): ")
-	var sysModel string
-	fmt.Scanln(&sysModel)
-	if sysModel == "" {
-		sysModel = "deepseek-v4-flash"
-	}
-
-	fmt.Fprint(stdout, "worker model (empty = deepseek-v4-flash): ")
-	var wModel string
-	fmt.Scanln(&wModel)
-	if wModel == "" {
-		wModel = "deepseek-v4-flash"
-	}
-
-	fmt.Fprintf(stdout, "\n%s\n", bold("about to start:"))
-	fmt.Fprintf(stdout, "  %s %s\n", muted("project:"), abs)
-	fmt.Fprintf(stdout, "  %s %s\n", muted("directive:"), ternary(directive == "", muted("(system infers from project)"), directive))
-	fmt.Fprintf(stdout, "  %s %s\n", muted("models:"), muted(fmt.Sprintf("system=%s  worker=%s", sysModel, wModel)))
-	fmt.Fprintf(stdout, "  %s %s\n", muted("agents:"), "system + worker")
-	fmt.Fprint(stdout, "\nstart? [Y/n]: ")
-	var confirm string
-	fmt.Scanln(&confirm)
-	if confirm != "" && !strings.EqualFold(confirm, "y") && !strings.EqualFold(confirm, "yes") {
-		fmt.Fprintln(stdout, muted("cancelled"))
-		return nil
-	}
-
-	run := NewRun(RunOptions{
-		Project:   abs,
-		Directive: directive,
-		Models:    Models{System: sysModel, Worker: wModel},
-	})
-	return run.Start()
-}
-
-func isTTY() bool {
-	fi, _ := os.Stdin.Stat()
-	return (fi.Mode() & os.ModeCharDevice) != 0
-}
-
-// SortedRuns returns runs sorted by startedAt desc
-func SortedRuns() []RunRecord {
-	runs := regList()
-	sort.Slice(runs, func(i, j int) bool {
-		return runs[i].StartedAt > runs[j].StartedAt
-	})
-	return runs
-}
-
-func cmdDashboard() *cobra.Command {
-	return &cobra.Command{
-		Use:   "dashboard [run-id]",
-		Short: "Open web dashboard for a run",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			id := ""
-			if len(args) > 0 {
-				id = args[0]
-			}
-			if id == "" {
-				for _, r := range regList() {
-					if r.Status == "running" && regAlive(r.PID) {
-						id = r.ID
-						break
-					}
-				}
-			}
-			if id == "" {
-				runs := regList()
-				if len(runs) > 0 {
-					id = runs[0].ID
-				}
-			}
-			rec := regLoad(id)
-			if rec == nil {
-				return fmt.Errorf("unknown run id %q", id)
-			}
-			dash, err := startDashboard(rec)
-			if err != nil {
-				return fmt.Errorf("failed to start dashboard: %v", err)
-			}
-			url := dash.URL()
-			fmt.Fprintf(stdout, "%s %s\n", okMsg("dashboard running"), cyan(url))
-			fmt.Fprintln(stdout, muted("(Ctrl+C to stop)"))
-			// Try to open browser
-			openBrowser(url)
-			// Block until Ctrl+C
-			select {}
-		},
-	}
-}

@@ -129,6 +129,9 @@ func ParseSignalExplicit(text string) Signal {
 	jsonRe := regexp.MustCompile(`\{[^}]*"signal"\s*:\s*"(\w+)"[^}]*\}`)
 	if m := jsonRe.FindStringSubmatch(text); m != nil {
 		sig := Signal(strings.ToUpper(m[1]))
+		if sig == SignalRepass {
+			return SignalContinue
+		}
 		if IsValidSignal(sig) {
 			return sig
 		}
@@ -137,7 +140,12 @@ func ParseSignalExplicit(text string) Signal {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if m := lineRe.FindStringSubmatch(line); m != nil {
-			return Signal(strings.ToUpper(m[1]))
+			sig := Signal(strings.ToUpper(m[1]))
+			// REPASS is legacy synonym for CONTINUE
+			if sig == SignalRepass {
+				return SignalContinue
+			}
+			return sig
 		}
 	}
 	return ""

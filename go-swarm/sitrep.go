@@ -22,7 +22,6 @@ type SitrepInput struct {
 	Ahead       int
 	LastShip    string
 	Worker      *probeMeta
-	HandoffFP   string
 	HandoffHint string
 	Note        string
 	Paths       RunPaths
@@ -57,9 +56,6 @@ func writeSitrep(in SitrepInput) {
 			in.Worker.MessageCount, in.Worker.ToolCalls, in.Worker.ToolErrors, in.Worker.Status)
 	} else {
 		b.WriteString("- worker: (no probe yet)\n")
-	}
-	if in.HandoffFP != "" {
-		fmt.Fprintf(&b, "- handoff_fingerprint: %s\n", in.HandoffFP)
 	}
 	if in.HandoffHint != "" {
 		fmt.Fprintf(&b, "- handoff: %s\n", in.HandoffHint)

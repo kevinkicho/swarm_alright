@@ -284,26 +284,6 @@ func (c *SDKClient) sessionDiff(sessionID string) ([]byte, error) {
 	return c.do("GET", "/session/"+sessionID+"/diff", nil)
 }
 
-// sessionInit runs the SDK's "Analyze the app and create an AGENTS.md file"
-func (c *SDKClient) sessionInit(sessionID string, model modelRef) error {
-	body := map[string]any{
-		"providerID": model.ProviderID,
-		"modelID":    model.ModelID,
-	}
-	_, err := c.do("POST", "/session/"+sessionID+"/init", body)
-	return err
-}
-
-// tuiShowToast pushes a toast notification into the opencode TUI
-func (c *SDKClient) tuiShowToast(title, body string) error {
-	toastBody := map[string]any{
-		"title": title,
-		"body":  body,
-	}
-	_, err := c.do("POST", "/tui/show-toast", toastBody)
-	return err
-}
-
 // health checks if the opencode server is reachable
 func (c *SDKClient) health() error {
 	_, err := c.do("GET", "/session", nil)

@@ -48,7 +48,6 @@ type Run struct {
 	lastSystemReview    string
 	lastSystemProbe     *probeMeta
 	lastWorkerProbe     *probeMeta
-	lastHandoffFp       string
 	phase               HostPhase
 	lastSystemRotate    int
 	workerRotateMsgBase int
@@ -148,12 +147,6 @@ func (r *Run) heartbeat(phase string) {
 	regSave(r.rec)
 }
 
-func (r *Run) toast(title, body string) {
-	if r.sdk != nil {
-		_ = r.sdk.tuiShowToast(title, body)
-	}
-}
-
 var errStopped = fmt.Errorf("stopped")
 
 func (r *Run) throwIfStopped() error {
@@ -237,16 +230,6 @@ func (r *Run) Start() error {
 			body := fmt.Sprintf("# MISSION — run %s\n\n%s\n", r.id, strings.TrimSpace(r.opts.Directive))
 			_ = os.WriteFile(r.paths.MissionFile, []byte(body), 0644)
 		}
-	}
-
-	if _, err := os.Stat(r.paths.StandardsFile); os.IsNotExist(err) {
-		os.MkdirAll(r.paths.RunDir, 0755)
-		os.WriteFile(r.paths.StandardsFile, []byte("# Lead standards (optional)\n\nThe system (technical lead) may update this file with quality bars, style notes,\nand ongoing priorities for the worker. Host never rewrites judgment here.\n"), 0644)
-	}
-
-	if _, err := os.Stat(r.paths.LearningsFile); os.IsNotExist(err) {
-		os.MkdirAll(filepath.Dir(r.paths.LearningsFile), 0755)
-		os.WriteFile(r.paths.LearningsFile, []byte("# Project Learnings\n\nCross-run memory. The system appends discoveries here so future runs inherit knowledge.\n\n## Discoveries\n\n"), 0644)
 	}
 
 	if resuming {
@@ -398,15 +381,6 @@ func (r *Run) createAgents(resuming bool) ([]AgentRecord, error) {
 		Model:     r.opts.Models.System,
 	})
 
-	if !resuming {
-		r.log("  [host] session.init — analyzing project for AGENTS.md...")
-		if err := r.sdk.sessionInit(sysID, modelRef{ProviderID: ProviderID, ModelID: bareModel(r.opts.Models.System)}); err != nil {
-			r.log("  [host] session.init failed (non-fatal): " + truncate(err.Error(), 160))
-		} else {
-			r.log("  [host] session.init ok — AGENTS.md created")
-		}
-	}
-
 	wID, err := r.sdk.sessionCreate(fmt.Sprintf("swarm %s worker", r.id))
 	if err != nil {
 		return nil, fmt.Errorf("create worker session: %v", err)
@@ -533,7 +507,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	writeSitrep(SitrepInput{
 		Cycle: r.cycle, Phase: "system", RunID: r.id, Project: r.opts.Project,
 		EmptyStreak: r.emptyStreak, Signal: string(r.lastVerdict), Ahead: aheadForSitrep,
-		Worker: r.lastWorkerProbe, HandoffFP: r.lastHandoffFp, Paths: r.paths,
+		Worker: r.lastWorkerProbe, Paths: r.paths,
 		HandoffHint: "overwrite HANDOFF.md this turn",
 	})
 	writeMaterialsIndex(r.paths.RunDir, r.cycle, "system", r.lastWorkerProbe)
@@ -542,7 +516,6 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	})
 
 	r.log(fmt.Sprintf("[cycle %d] system...", r.cycle))
-	r.toast(fmt.Sprintf("Cycle %d — system turn", r.cycle), "System is reviewing (SITREP + HANDOFF)")
 	identity := buildSystemIdentity(r.paths, 1)
 	systemPrompt := r.buildSystemPrompt(hasReviewPack)
 	sysText, _, err := r.turn(system, systemPrompt, identity)
@@ -561,9 +534,6 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	// Control plane: VERDICT.json preferred over chat scrape
 	signal, verdict := resolveControlSignal(r.paths.RunDir, sysText)
 	verdict.Cycle = r.cycle
-	if verdict.Quality == 0 {
-		verdict.Quality = parseQualityScore(sysText)
-	}
 	if signal == SignalDone {
 		gated, isGated, gatedWhy := gateDoneSignal(signal, r.emptyStreak, verdict.MissionComplete, sysText)
 		if isGated {
@@ -603,10 +573,6 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	writeVerdict(r.paths.RunDir, verdict)
 	r.lastVerdict = signal
 
-	qualityScore := verdict.Quality
-	if qualityScore > 0 {
-		r.log(fmt.Sprintf("  [host] quality score: %d/10 (source=%s)", qualityScore, verdict.Source))
-	}
 	r.log(fmt.Sprintf("  [host:control] signal=%s source=%s mission_complete=%v waive_gates=%v",
 		signal, verdict.Source, verdict.MissionComplete, verdict.WaiveGates))
 
@@ -622,7 +588,6 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	if !needsHandoffRewrite(handoff) {
 		appendHandoffHistory(r.paths.HandoffHistoryFile, r.cycle, handoff)
 	}
-	r.lastHandoffFp = handoffFingerprint(handoff)
 
 	handoffChars := len(handoff)
 	if handoffChars > handoffCharsWarn {
@@ -663,7 +628,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 			EmptyStreak: r.emptyStreak, Signal: string(signal), Paths: r.paths,
 			Worker: r.lastWorkerProbe, Note: string(signal),
 		})
-		appendMetric(r.paths.RunDir, r.metricRow(secs, signal, qualityScore, handoffChars, verdict.Source, false, 0, "system-only"))
+		appendMetric(r.paths.RunDir, r.metricRow(secs, signal, handoffChars, verdict.Source, false, 0, "system-only"))
 		r.transition(PhaseIdle, "system-only "+string(signal))
 		r.heartbeat("idle")
 		return nil
@@ -680,7 +645,6 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		}
 	}
 	r.log(fmt.Sprintf("[cycle %d] worker...", r.cycle))
-	r.toast(fmt.Sprintf("Cycle %d — worker", r.cycle), "Implementing HANDOFF")
 
 	workerIDs := []string{}
 	for _, w := range r.workers {
@@ -832,7 +796,7 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	writeSitrep(SitrepInput{
 		Cycle: r.cycle, Phase: "idle", RunID: r.id, Project: r.opts.Project,
 		EmptyStreak: r.emptyStreak, Signal: string(signal), Ahead: ahead,
-		Worker: r.lastWorkerProbe, HandoffFP: r.lastHandoffFp, Paths: r.paths,
+		Worker: r.lastWorkerProbe, Paths: r.paths,
 		LastShip: ternary(committed, sha, "none"), Note: emptyNote,
 	})
 	writeBusSnapshot(r.paths.RunDir, BusSnapshotOpts{
@@ -840,26 +804,24 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	})
 
 	secs := int(time.Since(t0).Seconds())
-	row := r.metricRow(secs, signal, qualityScore, handoffChars, string(r.lastVerdict), committed, ahead, "complete")
+	row := r.metricRow(secs, signal, handoffChars, string(r.lastVerdict), committed, ahead, "complete")
 	row["empty_streak"] = r.emptyStreak
 	appendMetric(r.paths.RunDir, row)
 
 	r.transition(PhaseIdle, fmt.Sprintf("cycle complete %ds", secs))
 	r.log(fmt.Sprintf("[cycle %d] complete in %ds", r.cycle, secs))
-	r.toast(fmt.Sprintf("Cycle %d complete (%ds)", r.cycle, secs), fmt.Sprintf("Signal: %s, commits: %d", signal, ahead))
 	r.heartbeat("idle")
 	time.Sleep(2 * time.Second)
 	return nil
 }
 
 // metricRow builds a metrics.jsonl object including gate trajectory fields.
-func (r *Run) metricRow(secs int, signal HostSignal, quality, handoffChars int, verdictSource string, committed bool, ahead int, phase string) map[string]any {
+func (r *Run) metricRow(secs int, signal HostSignal, handoffChars int, verdictSource string, committed bool, ahead int, phase string) map[string]any {
 	row := map[string]any{
 		"cycle":          r.cycle,
 		"secs":           secs,
 		"signal":         string(signal),
 		"phase":          phase,
-		"quality_score":  quality,
 		"handoff_chars":  handoffChars,
 		"verdict_source": verdictSource,
 		"committed":      committed,

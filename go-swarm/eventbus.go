@@ -51,12 +51,6 @@ func (b *EventBus) lastActivityFor(sessionID string) int64 {
 	return b.lastEventAt[sessionID]
 }
 
-func (b *EventBus) streamFresh(maxAgeMs int64) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return time.Now().UnixMilli()-b.streamAliveAt < maxAgeMs
-}
-
 func (b *EventBus) hasRunningTools(sessionID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
