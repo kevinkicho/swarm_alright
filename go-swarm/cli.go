@@ -233,7 +233,7 @@ func cmdRestart() *cobra.Command {
 			fmt.Fprintf(stdout, "%s cycle was %d\n", key("from:"), rec.Cycle)
 			fmt.Fprintf(stdout, "%s %s\n", key("models:"), muted(fmt.Sprintf("system=%s  worker=%s", sysModel, wModel)))
 			if detach {
-				return spawnDetachedRestart(id, directiveFinal, sysModel, wModel, apiKey, maxCycles)
+				return spawnDetachedRestart(id, rec.Project, directiveFinal, sysModel, wModel, apiKey, maxCycles)
 			}
 			run := NewRun(RunOptions{
 				Project:    rec.Project,
@@ -398,6 +398,20 @@ func cmdWatch() *cobra.Command {
 				id = args[0]
 			}
 			regReconcileCrashed()
+			// If an id is given, watch that record even when not "running" (shows crashed/stopped).
+			if id != "" {
+				rec := regLoad(id)
+				if rec == nil {
+					return fmt.Errorf("unknown run id %q — try swarm ls or swarm restart --project <folder>", id)
+				}
+				eff := regEffectiveStatus(rec)
+				if eff != "running" && eff != "alive" {
+					fmt.Fprintf(stdout, "%s  %s  cycle %d  %s  %s\n",
+						statusBadge(eff), bold(rec.ID), rec.Cycle, rec.Phase, filepath.Base(rec.Project))
+					fmt.Fprintln(stdout, muted("not running — resume with: ")+cyan(fmt.Sprintf("swarm restart %s --detach --yes", id)))
+					return nil
+				}
+			}
 			runs := regList()
 			active := []RunRecord{}
 			for _, r := range runs {
@@ -406,7 +420,8 @@ func cmdWatch() *cobra.Command {
 				}
 			}
 			if len(active) == 0 {
-				fmt.Fprintln(stdout, muted("no active runs — start one with: swarm run <folder>"))
+				fmt.Fprintln(stdout, muted("no active runs — start one with: swarm run <folder> --detach"))
+				fmt.Fprintln(stdout, muted("or resume: swarm restart <id> --detach --yes"))
 				return nil
 			}
 			if id == "" && len(active) == 1 {
@@ -426,10 +441,16 @@ func cmdWatch() *cobra.Command {
 					fmt.Fprintln(stdout, danger("run "+id+" not found"))
 					return nil
 				}
+				eff := regEffectiveStatus(rec)
 				fmt.Fprintf(stdout, "\r\033[K%s %s %s  cycle %s  %s  %s   %s",
-					brand("swarm watch"), statusBadge(regEffectiveStatus(rec)), bold(rec.ID),
+					brand("swarm watch"), statusBadge(eff), bold(rec.ID),
 					cyan(strconv.Itoa(rec.Cycle)), rec.Phase, filepath.Base(rec.Project),
-					muted("(Ctrl+C to quit)"))
+					muted("(Ctrl+C to quit watch only)"))
+				if eff != "running" && eff != "alive" {
+					fmt.Fprintln(stdout)
+					fmt.Fprintln(stdout, muted("run ended — ")+cyan(fmt.Sprintf("swarm restart %s --detach --yes", id)))
+					return nil
+				}
 				time.Sleep(2 * time.Second)
 			}
 		},
