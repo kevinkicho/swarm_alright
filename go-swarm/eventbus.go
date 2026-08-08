@@ -57,6 +57,12 @@ func (b *EventBus) hasRunningTools(sessionID string) bool {
 	return b.runningTools[sessionID] > 0
 }
 
+func (b *EventBus) runningToolCount(sessionID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.runningTools[sessionID]
+}
+
 // clearStaleRunningTools drops stuck running-tool flags when bus is quiet.
 // Returns true if something was cleared.
 func (b *EventBus) clearStaleRunningTools(sessionID string, maxQuietMs int64) bool {

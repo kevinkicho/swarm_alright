@@ -266,13 +266,16 @@ func (r *Run) waitForIdle(sessionID string, timeoutSecs int) {
 }
 
 // waitForIdleWithStall waits for idle; returns stall error if bus quiet too long.
+// Emits periodic alive heartbeats so long model/tool turns do not look dead in the terminal.
 func (r *Run) waitForIdleWithStall(agent AgentRecord) error {
 	deadline := time.Now().Add(12 * time.Hour)
 	seenBusy := false
 	started := time.Now()
 	sessionID := agent.SessionID
 	lastLogStallHint := time.Time{}
+	lastAliveLog := time.Time{}
 	stallMs := int64(stallThreshold / time.Millisecond)
+	const aliveEvery = 45 * time.Second
 
 	for time.Now().Before(deadline) {
 		if r.stopping.Load() || stopFileExists(r.paths.RunDir) {
@@ -290,6 +293,10 @@ func (r *Run) waitForIdleWithStall(agent AgentRecord) error {
 
 		statuses, err := r.sdk.sessionStatus()
 		if err != nil {
+			if time.Since(lastAliveLog) > aliveEvery {
+				r.log(fmt.Sprintf("  [host] %s waiting — status poll error (will retry): %s", agent.Role, truncate(err.Error(), 120)))
+				lastAliveLog = time.Now()
+			}
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -300,6 +307,10 @@ func (r *Run) waitForIdleWithStall(agent AgentRecord) error {
 			}
 			if time.Since(started) > 90*time.Second {
 				return nil
+			}
+			if time.Since(lastAliveLog) > aliveEvery {
+				r.log(fmt.Sprintf("  [host] %s waiting to become busy… elapsed %ds", agent.Role, int(time.Since(started).Seconds())))
+				lastAliveLog = time.Now()
 			}
 			time.Sleep(2 * time.Second)
 			continue
@@ -326,6 +337,14 @@ func (r *Run) waitForIdleWithStall(agent AgentRecord) error {
 				r.log(fmt.Sprintf("  [host] cleared stale running-tool flag on %s (no bus events)", agent.Role))
 			}
 
+			// Periodic "still alive" so Ctrl+C isn't the default when thinking is quiet.
+			if time.Since(lastAliveLog) > aliveEvery {
+				tools := r.bus.runningToolCount(sessionID)
+				r.log(fmt.Sprintf("  [host] %s still working — status=%s bus_quiet=%ds tools_running=%d elapsed=%ds (auto-stall at %dm; do not Ctrl+C)",
+					agent.Role, st.Type, quietMs/1000, tools, int(time.Since(started).Seconds()), stallMs/60_000))
+				lastAliveLog = time.Now()
+			}
+
 			if r.bus.hasRunningTools(sessionID) && quietMs < int64(2*time.Minute/time.Millisecond) {
 				time.Sleep(5 * time.Second)
 				continue
@@ -341,9 +360,12 @@ func (r *Run) waitForIdleWithStall(agent AgentRecord) error {
 			}
 
 			if quietMs >= int64(5*time.Minute/time.Millisecond) && time.Since(lastLogStallHint) > 5*time.Minute {
-				r.log(fmt.Sprintf("  [host] %s quiet ~%dm (stall at %dm)", agent.Role, quietMs/60_000, stallMs/60_000))
+				r.log(fmt.Sprintf("  [host] %s quiet ~%dm (stall at %dm) — host will soft-recover; leave it running", agent.Role, quietMs/60_000, stallMs/60_000))
 				lastLogStallHint = time.Now()
 			}
+		} else if seenBusy && time.Since(lastAliveLog) > aliveEvery {
+			r.log(fmt.Sprintf("  [host] %s still working — status=%s elapsed=%ds", agent.Role, st.Type, int(time.Since(started).Seconds())))
+			lastAliveLog = time.Now()
 		}
 
 		time.Sleep(5 * time.Second)

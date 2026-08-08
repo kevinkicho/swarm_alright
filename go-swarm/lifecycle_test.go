@@ -115,3 +115,26 @@ func TestSitrepMentionsEmptyShipNote(t *testing.T) {
 		t.Fatal(string(body))
 	}
 }
+
+func TestCommitsSinceBaselineUsesShaNotBranch(t *testing.T) {
+	// Synthetic run with BASELINE.sha only — no git needed for empty baseline.
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, ".swarm", "runs", "rtest")
+	_ = os.MkdirAll(runDir, 0755)
+	r := &Run{
+		opts:  RunOptions{Project: dir},
+		id:    "rtest",
+		paths: bindPaths(runDir, dir),
+	}
+	if n := r.commitsSinceBaseline(); n != 0 {
+		t.Fatalf("no baseline → 0, got %d", n)
+	}
+	// Write a fake baseline path; without a real git repo commitsAhead returns 0.
+	_ = os.WriteFile(filepath.Join(runDir, "BASELINE.sha"), []byte("deadbeef"), 0644)
+	if got := r.readBaseline(); got != "deadbeef" {
+		t.Fatalf("baseline %q", got)
+	}
+	if r.baselineOrBranch() != "deadbeef" {
+		t.Fatalf("baselineOrBranch should prefer sha")
+	}
+}

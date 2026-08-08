@@ -61,6 +61,10 @@ type Run struct {
 	systemWatch         *SystemWatch
 	watchMu             sync.Mutex
 	workers             []AgentRecord
+	// tool log throttle (part.updated floods)
+	lastToolLogAt       time.Time
+	lastToolLogLine     string
+	toolLogSuppressed   int
 }
 
 // probeMeta is a simplified session probe result
@@ -482,15 +486,16 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 			}
 		}
 
-		ahead := commitsAhead(r.opts.Project, r.baseBranch, "HEAD")
+		baseRef := r.baselineOrBranch()
+		ahead := r.commitsSinceBaseline()
 		if ahead > 0 {
 			hasReviewPack = true
 			// Cap MEMORY: pointers + short log only — not full diffs (token / sprawl hygiene).
-			log := shortLog(r.opts.Project, r.baseBranch, "HEAD")
+			log := shortLog(r.opts.Project, baseRef, "HEAD")
 			if len(log) > 1200 {
 				log = log[:1200] + "\n… (log truncated)"
 			}
-			names := rangeDiff(r.opts.Project, r.baseBranch, "HEAD", 1500)
+			names := rangeDiff(r.opts.Project, baseRef, "HEAD", 1500)
 			reviewSections = append(reviewSections, fmt.Sprintf(
 				"### project git\nstatus: HAS_COMMITS (%d since baseline)\nlog (short):\n%s\nname-status (capped):\n```\n%s\n```\nRun `git diff baseline..HEAD` in project root for full patch — not embedded here.",
 				ahead, log, names))
@@ -500,10 +505,10 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 
 	r.writeHostMemory("system", []string{
 		"Phase: system review",
-		"Primary: SITREP.md. Control: VERDICT.json required (missing → HOLD).",
+		"Primary: SITREP.md. Control: optional VERDICT.json / HOST: line (omit → CONTINUE).",
 	}, reviewSections)
 
-	aheadForSitrep := commitsAhead(r.opts.Project, r.baseBranch, "HEAD")
+	aheadForSitrep := r.commitsSinceBaseline()
 	writeSitrep(SitrepInput{
 		Cycle: r.cycle, Phase: "system", RunID: r.id, Project: r.opts.Project,
 		EmptyStreak: r.emptyStreak, Signal: string(r.lastVerdict), Ahead: aheadForSitrep,
@@ -724,6 +729,12 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	r.watchMu.Unlock()
 
 	if workerErr != nil && lastReply == "" {
+		// Graceful stop (Ctrl+C / swarm stop / SIGTERM): do not treat as exception theater.
+		if workerErr == errStopped || r.stopping.Load() || stopFileExists(r.paths.RunDir) ||
+			strings.Contains(strings.ToLower(workerErr.Error()), "stopped") {
+			r.log("  [host] worker turn ended by stop request — exiting cleanly")
+			return errStopped
+		}
 		r.escalateToSystem(system, wAgent, "worker_turn_error", "worker", workerErr.Error())
 		return workerErr
 	}
@@ -736,8 +747,10 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 	r.heartbeat("commit")
 	r.log(fmt.Sprintf("[cycle %d] host auto-commit dirty project root...", r.cycle))
 	committed, sha, detail := commitWorktree(r.opts.Project, fmt.Sprintf("swarm %s worker: cycle %d (host auto-commit)", r.id, r.cycle))
-	ahead := commitsAhead(r.opts.Project, r.baseBranch, "HEAD")
-	r.log(fmt.Sprintf("  [host:git] commit: %v %s — %s [metric] commits_ahead=%d", committed, sha[:min(7, len(sha))], detail, ahead))
+	// Single-branch root: commitsAhead(branch, HEAD) is always 0. Ship truth is "committed this cycle";
+	// "ahead" is commits since BASELINE.sha (for SITREP / review pack).
+	ahead := r.commitsSinceBaseline()
+	r.log(fmt.Sprintf("  [host:git] commit: %v %s — %s [metric] shipped=%v commits_since_baseline=%d", committed, sha[:min(7, len(sha))], detail, committed, ahead))
 	appendShipLog(r.paths.RunDir, sha, committed, false)
 
 	// Mission gates after ship (verify is included as a gate when configured)
@@ -766,15 +779,17 @@ func (r *Run) runCycle(agents []AgentRecord) error {
 		}
 	}
 
-	// Baseline only on explicit CONTINUE/DONE/REPASS — never invent accept from empty signal.
-	if ahead > 0 && shouldAcceptBaseline(signal) {
+	// Empty-ship = no product commit this cycle. Baseline advances on CONTINUE/DONE/REPASS when we shipped.
+	if committed {
+		r.emptyStreak = 0
 		headSha, _ := git(r.opts.Project, "rev-parse", "HEAD")
-		if headSha != "" {
+		if headSha != "" && (shouldAcceptBaseline(signal) || r.readBaseline() == "") {
+			// Seed baseline on first ship even without signal; thereafter only on accept signals.
 			r.writeBaseline(headSha)
+			ahead = 0
 			r.log("  [host:git] ACCEPT: baseline advanced to " + headSha[:min(7, len(headSha))])
-			r.emptyStreak = 0
 		}
-	} else if ahead == 0 && r.cycle > 1 {
+	} else if r.cycle > 1 {
 		r.emptyStreak++
 		r.log(fmt.Sprintf("[cycle %d] no commits last cycle [metric] empty_commit_streak=%d", r.cycle, r.emptyStreak))
 		// Next-cycle lead ownership: note on SITREP only — no same-cycle forced re-scope thrash.
@@ -907,6 +922,23 @@ func (r *Run) shutdown(status string) {
 	}
 }
 
+// logToolThrottled collapses bursty tool part updates so the terminal stays readable
+// and long quiet gaps are less likely to be mistaken for a hang.
+func (r *Run) logToolThrottled(line string) {
+	now := time.Now()
+	if line == r.lastToolLogLine && now.Sub(r.lastToolLogAt) < 3*time.Second {
+		r.toolLogSuppressed++
+		return
+	}
+	if r.toolLogSuppressed > 0 {
+		r.log(fmt.Sprintf("  [tool] … (%d similar tool events suppressed)", r.toolLogSuppressed))
+		r.toolLogSuppressed = 0
+	}
+	r.log(line)
+	r.lastToolLogLine = line
+	r.lastToolLogAt = now
+}
+
 func (r *Run) onEvent(evt SwarmEvent) {
 	// Publish significant events to BUS.jsonl / ring
 	summary, kind := formatWatchEvent(evt)
@@ -924,9 +956,11 @@ func (r *Run) onEvent(evt SwarmEvent) {
 
 	logLine := formatEventForLog(evt)
 	if logLine != "" {
-		// Avoid flooding events.log: only tool starts and errors (not every status tick)
-		if strings.HasPrefix(logLine, "  [tool]") || strings.HasPrefix(logLine, "  [error]") || strings.Contains(logLine, "compacted") {
+		// Avoid flooding events.log: errors/compact always; tools throttled (part updates spam).
+		if strings.HasPrefix(logLine, "  [error]") || strings.Contains(logLine, "compacted") {
 			r.log(logLine)
+		} else if strings.HasPrefix(logLine, "  [tool]") {
+			r.logToolThrottled(logLine)
 		}
 	}
 	if evt.Type == "session.compacted" {
@@ -1001,6 +1035,28 @@ func (r *Run) readBaseline() string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// baselineOrBranch returns BASELINE.sha when set, else the integration branch name.
+func (r *Run) baselineOrBranch() string {
+	if b := r.readBaseline(); b != "" {
+		return b
+	}
+	if r.baseBranch != "" {
+		return r.baseBranch
+	}
+	return "HEAD"
+}
+
+// commitsSinceBaseline counts product commits after the last accepted baseline.
+// On single-branch project-root runs this is the correct "ahead" sensor (not branch..HEAD).
+func (r *Run) commitsSinceBaseline() int {
+	base := r.readBaseline()
+	if base == "" {
+		// No baseline yet: first ship should not look like an empty streak forever.
+		return 0
+	}
+	return commitsAhead(r.opts.Project, base, "HEAD")
 }
 
 func (r *Run) runVerify() {

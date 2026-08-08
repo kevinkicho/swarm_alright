@@ -37,7 +37,21 @@ scorecards; they are **not** prompt law and are not wired into agents.
 | `turn error attempt k/3` | Transient failure before retry |
 | `external abort … re-prompt` | Human/TUI cancel — soft recover |
 | `watch HOST: STOP` | Lead aborted **worker only** (mission continues) |
-| `empty ship` / `empty_commit_streak` | Worker idle without commits |
+| `empty ship` / `empty_commit_streak` | **No product commit this cycle** (not branch..HEAD) |
+| `still working — status=busy` | Alive heartbeat ~45s during long turns — **not hung** |
+| `SIGINT` / `stopped` | Operator stop; clean exit (no exception escalate) |
+
+## Do not Ctrl+C when quiet
+
+Model turns often go silent while thinking. Host logs
+`still working` every ~45s and only stalls after **20 minutes** of bus quiet.
+Prefer:
+
+```powershell
+swarm restart <id> --detach --yes   # autonomous; survives terminal close
+swarm watch <id>                    # observe without owning the process
+swarm stop <id>                     # graceful end
+```
 | `salvage commit` | Dirty tree committed on stop/crash path |
 
 ## External abort (human / TUI)

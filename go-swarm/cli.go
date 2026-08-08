@@ -123,7 +123,7 @@ func cmdRun() *cobra.Command {
 			}
 
 			if detach {
-				return spawnDetached(folder, directive, systemModel, workerModel, apiKey, maxCycles)
+				return spawnDetachedRun(folder, directive, systemModel, workerModel, apiKey, maxCycles, maxMinutes)
 			}
 
 			run := NewRun(RunOptions{
@@ -146,7 +146,7 @@ func cmdRun() *cobra.Command {
 	c.Flags().StringVar(&apiKey, "api-key", "", "Ollama Cloud API key")
 	c.Flags().IntVar(&maxCycles, "max-cycles", 0, "Stop after N cycles (budget)")
 	c.Flags().IntVar(&maxMinutes, "max-minutes", 0, "Stop after N minutes wall clock (budget)")
-	c.Flags().BoolVar(&detach, "detach", false, "Background mode (survives terminal close)")
+	c.Flags().BoolVar(&detach, "detach", false, "Background mode (survives terminal close; preferred for autonomous runs)")
 	c.Flags().BoolVar(&continueFlag, "continue", false, "Resume from latest run on this project")
 	c.Flags().IntVar(&workers, "workers", 1, "Worker count (only 1 supported; N>1 forced to 1)")
 	return c
@@ -155,7 +155,7 @@ func cmdRun() *cobra.Command {
 func cmdRestart() *cobra.Command {
 	var directive, systemModel, workerModel, model, apiKey, projectFlag string
 	var maxCycles int
-	var yesFlag bool
+	var yesFlag, detach bool
 	c := &cobra.Command{
 		Use:   "restart [run-id]",
 		Short: "Resume a past run (same run id + run folder)",
@@ -232,6 +232,9 @@ func cmdRestart() *cobra.Command {
 			fmt.Fprintf(stdout, "%s %s (reused — same run folder)\n", key("run id:"), cyan(id))
 			fmt.Fprintf(stdout, "%s cycle was %d\n", key("from:"), rec.Cycle)
 			fmt.Fprintf(stdout, "%s %s\n", key("models:"), muted(fmt.Sprintf("system=%s  worker=%s", sysModel, wModel)))
+			if detach {
+				return spawnDetachedRestart(id, directiveFinal, sysModel, wModel, apiKey, maxCycles)
+			}
 			run := NewRun(RunOptions{
 				Project:    rec.Project,
 				Directive:  directiveFinal,
@@ -251,6 +254,7 @@ func cmdRestart() *cobra.Command {
 	c.Flags().IntVar(&maxCycles, "max-cycles", 0, "Stop after N cycles")
 	c.Flags().StringVar(&projectFlag, "project", "", "Load run history from this project's .swarm/runs")
 	c.Flags().BoolVar(&yesFlag, "yes", false, "Keep previous models without prompting")
+	c.Flags().BoolVar(&detach, "detach", false, "Background mode (survives terminal close; preferred for autonomous runs)")
 	return c
 }
 

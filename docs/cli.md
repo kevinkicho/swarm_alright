@@ -35,7 +35,13 @@ Start a run until DONE/STOP, budget, or `swarm stop`.
 
 ### swarm restart [run-id]
 
-Resume a past run (same run id + folder). Optional model/directive overrides, `--yes`, `--project`.
+Resume a past run (same run id + folder). Optional model/directive overrides, `--yes`, `--project`, **`--detach`**.
+
+For autonomous resume (survives closing the terminal):
+
+```powershell
+swarm restart r20260808a5a721 --detach --yes
+```
 
 ### swarm ls
 
