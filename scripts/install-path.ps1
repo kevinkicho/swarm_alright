@@ -55,17 +55,15 @@ if (-not (Test-Path $srcExe)) {
 }
 
 if (-not (Test-Path $srcExe)) {
-  Write-Error "Missing $srcExe — build failed or Go not installed."
+  Write-Error "Missing $srcExe - build failed or Go not installed."
 }
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 Copy-Item -Force $srcExe $destExe
 
 # thin cmd wrapper so `swarm` works without extension
-@"
-@echo off
-"%~dp0swarm.exe" %*
-"@ | Set-Content -Encoding ASCII $destCmd
+$cmdWrapper = "@echo off`r`n`"%~dp0swarm.exe`" %*`r`n"
+Set-Content -Path $destCmd -Value $cmdWrapper -Encoding ASCII -NoNewline
 
 [Environment]::SetEnvironmentVariable("SWARM_HOME", $repoRoot, "User")
 
@@ -88,8 +86,14 @@ if (-not $has) {
   Write-Host "Path already contains $binDir."
 }
 
+# Also refresh this session so `swarm` works immediately
+if ($env:Path -notlike "*$normBin*") {
+  $env:Path = "$binDir;$env:Path"
+}
+
 Write-Host "Installed:"
 Write-Host "  SWARM_HOME=$repoRoot"
 Write-Host "  $destExe"
 Write-Host "  $destCmd"
-Write-Host "Open a new terminal, then run: swarm help"
+Write-Host "This session is ready. New terminals pick up Path automatically."
+Write-Host "Try: swarm help"
